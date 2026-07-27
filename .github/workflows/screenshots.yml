@@ -1,0 +1,115 @@
+name: Refresh README screenshots
+
+on:
+  schedule:
+    # Run during the Mountain Time overnight window (01:17 MST / 02:17 MDT).
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      commit_changes:
+        description: Commit changed screenshots to main after the test run
+        type: boolean
+        default: false
+
+# The stable group prevents two manual/scheduled runs from racing a main push.
+concurrency:
+  group: readme-screenshots-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    name: Capture guide screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm --filter @signalhaven/frontend exec playwright install --with-deps chromium
+
+      - name: Build shared package
+        run: pnpm --filter @signalhaven/shared build
+
+      - name: Build frontend
+        env:
+          # Next.js bakes the API rewrite destination into its production build.
+          SIGNALHAVEN_BACKEND_ORIGIN: http://127.0.0.1:43200
+        run: pnpm --filter @signalhaven/frontend build
+
+      - name: Start deterministic screenshot environment
+        env:
+          SIGNALHAVEN_BACKEND_ORIGIN: http://127.0.0.1:43200
+        run: |
+          PORT=43200 node apps/frontend/scripts/lighthouse-mock-backend.mjs > "$RUNNER_TEMP/screenshot-backend.log" 2>&1 &
+          echo "SCREENSHOT_BACKEND_PID=$!" >> "$GITHUB_ENV"
+          PORT=43100 pnpm --filter @signalhaven/frontend start > "$RUNNER_TEMP/screenshot-frontend.log" 2>&1 &
+          echo "SCREENSHOT_FRONTEND_PID=$!" >> "$GITHUB_ENV"
+
+          # Fail with service logs instead of letting Playwright time out opaquely.
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:43100/guide >/dev/null && curl -fsS http://127.0.0.1:43200/api/v1/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat "$RUNNER_TEMP/screenshot-backend.log"
+          cat "$RUNNER_TEMP/screenshot-frontend.log"
+          exit 1
+
+      - name: Capture README screenshots
+        run: node apps/frontend/scripts/capture-readme-screenshots.mjs
+
+      - name: Stop screenshot environment
+        if: always()
+        run: |
+          # Release both listeners even when capture fails before artifact upload.
+          kill "${SCREENSHOT_FRONTEND_PID:-}" "${SCREENSHOT_BACKEND_PID:-}" 2>/dev/null || true
+
+      - name: Upload screenshots for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-screenshots
+          path: docs/screenshots/*.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Commit changed screenshots
+        if: github.event_name == 'schedule' || inputs.commit_changes
+        run: |
+          if git diff --quiet -- docs/screenshots; then
+            echo "README screenshots are already current."
+            exit 0
+          fi
+
+          # Refuse to attach captures from an older revision to a newer main tip.
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "main advanced during capture; rerun against the new tip." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots
+          git commit -m "docs: refresh README screenshots"
+          git push origin HEAD:main

@@ -1,0 +1,16 @@
+{
+	"name": "@signalhaven/shared",
+	"version": "1.0.0",
+	"private": true,
+	"type": "commonjs",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"scripts": {
+		"build": "tsc --build",
+		"lint": "eslint --cache --cache-location ../../node_modules/.cache/eslint/shared --ext .ts src"
+	},
+	"dependencies": {
+		"@asteasolutions/zod-to-openapi": "^8.5.0",
+		"zod": "^4.1.12"
+	}
+}

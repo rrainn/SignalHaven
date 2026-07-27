@@ -1,0 +1,276 @@
+name: Docker image
+
+on:
+  release:
+    types: [published]
+
+# Serialize each release so duplicate publication events cannot race image updates.
+concurrency:
+  group: docker-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Build records are useful for short-term diagnosis but otherwise duplicate logs.
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
+
+jobs:
+  # Validate the exact release image on amd64 before publishing either platform.
+  build-and-test:
+    name: Build & smoke test
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: signalhaven-ci
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # Fail before the expensive build if the GitHub release cannot map to SemVer tags.
+          if [[ ! "$RELEASE_TAG" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must be semantic, for example v1.2.3: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (load into local docker)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: signalhaven:ci
+          build-args: |
+            SIGNALHAVEN_VERSION=${{ github.event.release.tag_name }}
+            SIGNALHAVEN_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=signalhaven-linux-amd64
+          # A stable per-platform scope lets every release advance the same cache.
+          cache-to: type=gha,scope=signalhaven-linux-amd64,mode=max
+
+      - name: Verify FFmpeg is present in the image
+        run: docker run --rm signalhaven:ci ffmpeg -version
+
+      - name: Compose smoke test
+        run: |
+          cp .env.example .env
+          # Point compose at the locally-built image so we don't pull from
+          # the registry during CI.
+          export SIGNALHAVEN_IMAGE=signalhaven:ci
+          # Pre-seed a root-owned volume so Docker does not copy image ownership.
+          recordings_volume="${COMPOSE_PROJECT_NAME}_signalhaven-recordings"
+          docker volume create "$recordings_volume"
+          docker run --rm --user 0 --entrypoint sh \
+            -v "$recordings_volume:/recordings" signalhaven:ci \
+            -c 'mkdir -p /recordings/.signalhaven-ci-volume-seed; chown root:root /recordings; chmod 0755 /recordings'
+          docker compose up -d
+          # Wait up to ~60s for SignalHaven to become healthy.
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:3000/api/v1/health || true)
+            if [ "$status" = "200" ]; then
+              echo "SignalHaven is healthy:"
+              cat /tmp/health.json
+              if ! grep -q '"db":{"ok":true}' /tmp/health.json; then
+                echo "Health payload did not report db: ok"
+                exit 1
+              fi
+              # Verify the application UID can create DVR output on the mount.
+              docker compose exec -T --user 10001:10001 signalhaven \
+                sh -c 'probe=/var/lib/signalhaven/recordings/.signalhaven-ci-write-probe; : > "$probe"; rm -f "$probe"'
+              exit 0
+            fi
+            echo "Waiting for SignalHaven health ($i)..."
+            sleep 2
+          done
+          echo "SignalHaven did not become healthy in time"
+          docker compose logs
+          exit 1
+
+      - name: Tear down compose stack
+        if: always()
+        run: docker compose down -v || true
+
+  # Build each architecture on matching hardware after the amd64 smoke test.
+  publish_platform:
+    name: Build & push ${{ matrix.platform }}
+    needs: build-and-test
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            artifact: amd64
+            cache_scope: signalhaven-linux-amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact: arm64
+            cache_scope: signalhaven-linux-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name
+        id: image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          # OCI repository names are lowercase even when the GitHub repo is not.
+          echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name }}
+            type=semver,pattern={{major}},value=${{ github.event.release.tag_name }}
+            type=sha
+
+      - name: Build and push platform image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          tags: ${{ steps.image.outputs.name }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SIGNALHAVEN_VERSION=${{ github.event.release.tag_name }}
+            SIGNALHAVEN_GIT_SHA=${{ github.sha }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          # Version build args are consumed only in the final runtime layer.
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
+
+      - name: Record platform digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          # Reject malformed action output before using it as an artifact path.
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Unexpected image digest: $DIGEST" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload platform digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble the native platform images only after both digest pushes succeed.
+  publish_manifest:
+    name: Publish multi-arch manifest
+    needs: publish_platform
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name
+        id: image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          # Match the normalized name used by each platform build.
+          echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Derive manifest metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name }}
+            type=semver,pattern={{major}},value=${{ github.event.release.tag_name }}
+            type=sha
+
+      - name: Create and verify multi-arch manifest
+        env:
+          DIGEST_DIRECTORY: ${{ runner.temp }}/digests
+          IMAGE: ${{ steps.image.outputs.name }}
+          METADATA_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          # Arrays preserve each generated tag as one argument without eval.
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          mapfile -t digest_files < <(find "$DIGEST_DIRECTORY" -maxdepth 1 -type f -print | sort)
+
+          if [[ "${#tags[@]}" -eq 0 ]]; then
+            echo "No image tags were generated" >&2
+            exit 1
+          fi
+          if [[ "${#digest_files[@]}" -ne 2 ]]; then
+            echo "Expected two platform digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          tag_arguments=()
+          for tag in "${tags[@]}"; do
+            tag_arguments+=(--tag "$tag")
+          done
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="$(basename "$digest_file")"
+            if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Unexpected digest artifact: $digest" >&2
+              exit 1
+            fi
+            sources+=("$IMAGE@sha256:$digest")
+          done
+
+          docker buildx imagetools create "${tag_arguments[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${tags[0]}"

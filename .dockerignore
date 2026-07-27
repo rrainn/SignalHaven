@@ -1,0 +1,24 @@
+**/node_modules
+**/dist
+**/.next
+**/.eslintcache
+**/.turbo
+**/coverage
+**/*.log
+
+.git
+.github
+.husky
+.vscode
+.idea
+
+# Don't ship local environment files into the image.
+.env
+.env.*
+
+# Documentation / tooling not needed inside the image.
+*.md
+
+# Build artifacts
+recordings/
+tmp/

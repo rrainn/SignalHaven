@@ -1,0 +1,25 @@
+packages:
+  # Keep application and shared-library packages in one dependency graph.
+  - "apps/*"
+  - "packages/*"
+
+# Require commands to use the exact pnpm version declared by the project.
+pmOnFail: error
+
+# CI installs explicitly; avoid a second implicit install before every command.
+verifyDepsBeforeRun: false
+
+# Match the npm-style layout required by existing transitive type imports.
+nodeLinker: hoisted
+
+# Explicitly review every dependency that requests an install-time script.
+allowBuilds:
+  "@scarf/scarf": false
+  "@swc/core": true
+  cpu-features: true
+  esbuild: true
+  msw: true
+  protobufjs: true
+  sharp: true
+  ssh2: true
+  unrs-resolver: true

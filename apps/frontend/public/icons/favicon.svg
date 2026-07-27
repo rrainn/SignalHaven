@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+	<!-- This compact source avoids embedded text so it stays clear at 16 pixels. -->
+	<rect width="64" height="64" rx="14" fill="#0b0e16"/>
+	<path d="M14 24C22.6 13.7 41.4 13.7 50 24" fill="none" stroke="#2f6bff" stroke-linecap="round" stroke-width="5.4"/>
+	<path d="M21 30C27 23.3 37 23.3 43 30" fill="none" stroke="#42d8ff" stroke-linecap="round" stroke-width="5.4"/>
+	<path d="M13 31 21 36v3c0 5.2 3.9 9.4 11 12.8C39.1 48.4 43 44.2 43 39v-3l8-5c-.5 12.7-6.9 20.7-19 26-12.1-5.3-18.5-13.3-19-26Zm16 5v11l9.5-5.5L29 36Z" fill="#fff" fill-rule="evenodd"/>
+</svg>

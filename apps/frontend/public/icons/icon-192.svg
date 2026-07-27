@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+	<!-- The generous inset keeps the symbol clear inside maskable PWA icon crops. -->
+	<rect width="192" height="192" rx="42" fill="#0b0e16"/>
+	<path d="M42 71C68 40 124 40 150 71" fill="none" stroke="#2f6bff" stroke-linecap="round" stroke-width="16"/>
+	<path d="M62 89C80 69 112 69 130 89" fill="none" stroke="#42d8ff" stroke-linecap="round" stroke-width="16"/>
+	<path d="M38 92 63 107v10c0 16 12 29 33 39 21-10 33-23 33-39v-10l25-15c-2 39-22 64-58 80-36-16-56-41-58-80Zm48 15v35l30-17.5L86 107Z" fill="#fff" fill-rule="evenodd"/>
+</svg>

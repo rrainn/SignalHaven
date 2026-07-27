@@ -1,0 +1,198 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Semantic color tokens.
+ *
+ * Values are R G B triplets (no commas, no `rgb(...)`) so Tailwind's
+ * `<alpha-value>` modifier works (e.g. `bg-surface/50`). Light theme is the
+ * default at `:root`; the `.dark` class on `<html>` switches the palette.
+ *
+ * Both palettes have been chosen to satisfy WCAG AA contrast (≥ 4.5:1 for
+ * body text against `--color-background` and `--color-surface`).
+ */
+@layer base {
+	:root {
+		--color-background: 250 250 252; /* near white */
+		--color-surface: 255 255 255;
+		--color-surface-muted: 241 243 247;
+
+		--color-text-primary: 17 24 39; /* slate-900 — 16.6:1 on background */
+		--color-text-secondary: 55 65 81; /* slate-700 — 9.6:1 */
+		--color-text-muted: 100 116 139; /* slate-500 — 4.7:1 */
+
+		--color-accent: 37 99 235; /* blue-600 — 4.6:1 white-on-accent */
+		--color-accent-foreground: 255 255 255;
+		--color-live: 14 116 144; /* cyan-700 — broadcast status */
+		--color-live-foreground: 255 255 255;
+
+		--color-border: 226 232 240;
+
+		--color-danger: 220 38 38;
+		--color-success: 22 163 74;
+	}
+
+	html.dark {
+		--color-background: 9 12 20; /* near black */
+		--color-surface: 17 24 39; /* slate-900 */
+		--color-surface-muted: 30 41 59; /* slate-800 */
+
+		--color-text-primary: 248 250 252; /* slate-50 — 17.0:1 */
+		--color-text-secondary: 203 213 225; /* slate-300 — 12.3:1 */
+		--color-text-muted: 148 163 184; /* slate-400 — 7.0:1 */
+
+		--color-accent: 96 165 250; /* blue-400 — 7.4:1 on bg */
+		--color-accent-foreground: 9 12 20;
+		--color-live: 34 211 238; /* cyan-400 — 10.9:1 on dark bg */
+		--color-live-foreground: 9 12 20;
+
+		--color-border: 51 65 85;
+
+		--color-danger: 248 113 113;
+		--color-success: 74 222 128;
+	}
+
+	html,
+	body {
+		background-color: rgb(var(--color-background));
+		color: rgb(var(--color-text-primary));
+	}
+
+	/*
+   * Visible, high-contrast focus ring. We hide it for mouse-only focus to
+   * reduce visual noise but always show it for keyboard / programmatic
+   * focus.
+   */
+	*:focus {
+		outline: none;
+	}
+
+	*:focus-visible {
+		outline: 2px solid rgb(var(--color-accent));
+		outline-offset: 2px;
+		border-radius: 4px;
+	}
+
+	/*
+   * Honour the user's "Animations off" choice from the Settings →
+   * Appearance section. Mirrors `prefers-reduced-motion: reduce` so any
+   * component that already uses Tailwind's `motion-reduce:` modifier
+   * also disables transitions when the explicit setting is off.
+   */
+	html[data-animations="off"] *,
+	html[data-animations="off"] *::before,
+	html[data-animations="off"] *::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	/* Compact density reduces shared chrome while preserving readable content. */
+	html[data-density="compact"] #main-content {
+		padding-top: 0.75rem;
+	}
+
+	html[data-density="compact"] [data-density-section="header"] {
+		gap: 0.25rem;
+		padding: 0.75rem;
+	}
+
+	html[data-density="compact"] [data-density-section="content"],
+	html[data-density="compact"] [data-density-section="footer"] {
+		padding: 0.75rem;
+		padding-top: 0;
+	}
+
+	html[data-density="compact"]
+		[data-density-control="button"][data-density-size="md"],
+	html[data-density="compact"]
+		[data-density-control="input"][data-density-size="md"],
+	html[data-density="compact"] [data-density-control="select"] {
+		height: 2.25rem;
+	}
+
+	html[data-density="compact"]
+		[data-density-control="button"][data-density-size="lg"],
+	html[data-density="compact"]
+		[data-density-control="input"][data-density-size="lg"] {
+		height: 2.5rem;
+	}
+
+	html[data-density="compact"]
+		[data-density-control="icon-button"][data-density-size="md"] {
+		height: 2.25rem;
+		width: 2.25rem;
+	}
+
+	html[data-density="compact"] [data-density-control="tabs-list"] {
+		height: 2.25rem;
+		padding: 0.125rem;
+	}
+
+	html[data-density="compact"] [data-density-control="tabs-trigger"] {
+		padding: 0.25rem 0.625rem;
+	}
+
+	/*
+   * The guide owns horizontal schedule browsing. Its component-level styles
+   * contain that axis while leaving vertical overscroll free to advance the
+   * page, avoiding a nested-scroll trap near the mobile bottom navigation.
+   */
+	.guide-scrollbar {
+		scrollbar-color: rgb(var(--color-text-muted) / 0.55)
+			rgb(var(--color-surface-muted));
+		scrollbar-width: thin;
+	}
+
+	.guide-scrollbar::-webkit-scrollbar {
+		height: 10px;
+		width: 10px;
+	}
+
+	.guide-scrollbar::-webkit-scrollbar-track {
+		background: rgb(var(--color-surface-muted));
+	}
+
+	.guide-scrollbar::-webkit-scrollbar-thumb {
+		background: rgb(var(--color-text-muted) / 0.55);
+		border: 2px solid rgb(var(--color-surface-muted));
+		border-radius: 999px;
+	}
+
+	/*
+   * Phone chrome stacks above the grid, while desktop controls share a row.
+   * The responsive allowance avoids trapping a nested scroller below the
+   * viewport and still leaves enough height for several channel rows.
+   */
+	.guide-grid-viewport {
+		max-height: min(38rem, max(18rem, calc(100dvh - 24rem)));
+	}
+
+	@media (min-width: 64rem) {
+		.guide-grid-viewport {
+			max-height: calc(100dvh - 15rem);
+		}
+	}
+
+	/* Guide navigation remains comfortably tappable in compact density. */
+	html[data-density="compact"]
+		[data-guide-navigation]
+		[data-density-control="button"],
+	html[data-density="compact"]
+		[data-guide-navigation]
+		[data-density-control="select"] {
+		height: 2.75rem;
+		min-height: 2.75rem;
+	}
+
+	/* The day rail stays tactile without adding a second prominent scrollbar. */
+	.guide-date-rail {
+		scrollbar-width: none;
+	}
+
+	.guide-date-rail::-webkit-scrollbar {
+		display: none;
+	}
+}

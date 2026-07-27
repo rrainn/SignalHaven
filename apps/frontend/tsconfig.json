@@ -1,0 +1,23 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"target": "ES2020",
+		"lib": ["dom", "dom.iterable", "es2020"],
+		"allowJs": false,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"jsx": "preserve",
+		"incremental": true,
+		"composite": true,
+		"types": ["node"],
+		"tsBuildInfoFile": "../../node_modules/.cache/tsc/frontend.tsbuildinfo",
+		"plugins": [{ "name": "next" }]
+	},
+	"references": [{ "path": "../../packages/shared" }],
+	"include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+	"exclude": ["node_modules", ".next"]
+}

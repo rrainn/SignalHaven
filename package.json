@@ -1,0 +1,57 @@
+{
+	"name": "signalhaven",
+	"version": "1.0.0",
+	"private": true,
+	"description": "SignalHaven monorepo",
+	"packageManager": "pnpm@11.10.0",
+	"workspaces": [
+		"apps/*",
+		"packages/*"
+	],
+	"scripts": {
+		"dev": "concurrently -n backend,frontend \"pnpm --filter @signalhaven/backend dev\" \"pnpm --filter @signalhaven/frontend dev\"",
+		"build": "pnpm -r --if-present run build",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"lint": "pnpm -r --if-present run lint",
+		"test": "pnpm run test:brand && pnpm run test:preview && pnpm run test:ci-config && pnpm -r --if-present run test",
+		"test:brand": "node scripts/check-branding.mjs",
+		"test:ci-config": "node --test scripts/frontend-ci-changes.test.mjs scripts/release-workflow.test.mjs scripts/screenshots-workflow.test.mjs",
+		"test:preview": "node --test scripts/safe-preview.test.mjs",
+		"test:coverage": "pnpm run test:ci-config && pnpm --filter @signalhaven/shared build && concurrently --kill-others-on-fail -n backend,frontend \"pnpm --filter @signalhaven/backend test:coverage\" \"pnpm --filter @signalhaven/frontend test\"",
+		"typecheck": "tsc --build --pretty false",
+		"preview:safe": "node scripts/safe-preview.mjs safe",
+		"preview:build": "node scripts/safe-preview.mjs build",
+		"preview:start": "node scripts/safe-preview.mjs start",
+		"preview:stop": "node scripts/safe-preview.mjs stop",
+		"screenshots:readme": "node apps/frontend/scripts/capture-readme-screenshots.mjs",
+		"prepare": "husky",
+		"db:migrate": "pnpm --filter @signalhaven/backend db:migrate"
+	},
+	"lint-staged": {
+		"*.{ts,tsx,js,jsx,mjs,cjs}": [
+			"prettier --write",
+			"eslint --cache --fix"
+		],
+		"*.{css,html,json,json5,jsonc,md,mdx,webmanifest,yml,yaml}": [
+			"prettier --write"
+		]
+	},
+	"keywords": [],
+	"author": "rrainn LLC",
+	"license": "MIT",
+	"devDependencies": {
+		"@typescript-eslint/eslint-plugin": "^8.46.1",
+		"@typescript-eslint/parser": "^8.46.1",
+		"concurrently": "^9.2.4",
+		"eslint": "^8.57.1",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-import-resolver-typescript": "^4.4.4",
+		"eslint-plugin-import": "^2.32.0",
+		"eslint-plugin-unused-imports": "^4.3.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^16.2.4",
+		"prettier": "^3.6.2",
+		"typescript": "^6.0.3"
+	}
+}

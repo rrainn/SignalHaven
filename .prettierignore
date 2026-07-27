@@ -1,0 +1,2 @@
+# pnpm owns the lockfile format, which can differ across pnpm releases.
+pnpm-lock.yaml

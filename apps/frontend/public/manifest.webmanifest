@@ -1,0 +1,26 @@
+{
+	"name": "SignalHaven",
+	"short_name": "SignalHaven",
+	"description": "SignalHaven — over-the-air TV streaming and DVR.",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#0b0e16",
+	"theme_color": "#0b0e16",
+	"categories": ["entertainment", "video"],
+	"icons": [
+		{
+			"src": "/icons/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any maskable"
+		}
+	]
+}

@@ -1,0 +1,27 @@
+node_modules
+.pnpm-store
+.signalhaven-preview/
+dist
+.next
+.eslintcache
+coverage
+build
+
+# Ladle build output
+.ladle/build
+
+# Local docker compose environment overrides.
+.env
+
+# Runtime data produced when running SignalHaven locally.
+/recordings/
+
+# Playwright outputs
+apps/frontend/playwright-report/
+apps/frontend/test-results/
+apps/frontend/blob-report/
+
+# Lighthouse CI outputs
+.lighthouseci/
+
+AGENTS.md

@@ -1,0 +1,476 @@
+{
+	"schemaVersion": 2,
+	"generatedAt": "2026-07-25T22:37:57Z",
+	"title": "Design System: SignalHaven",
+	"extensions": {
+		"colorMeta": {
+			"haven-navy": {
+				"role": "neutral",
+				"displayName": "Haven Navy",
+				"canonical": "#0B0E16",
+				"tonalRamp": [
+					"#05070C",
+					"#0B0E16",
+					"#151B29",
+					"#263247",
+					"#46556E",
+					"#718097",
+					"#A9B3C2",
+					"#EDF0F4"
+				]
+			},
+			"mineral-blue": {
+				"role": "primary",
+				"displayName": "Mineral Blue",
+				"canonical": "#2F6BFF",
+				"tonalRamp": [
+					"#071A4D",
+					"#0F2E7A",
+					"#1746AE",
+					"#235DE4",
+					"#2F6BFF",
+					"#6A94FF",
+					"#AAC2FF",
+					"#EDF3FF"
+				]
+			},
+			"signal-cyan": {
+				"role": "secondary",
+				"displayName": "Signal Cyan",
+				"canonical": "#42D8FF",
+				"tonalRamp": [
+					"#062D38",
+					"#075267",
+					"#087896",
+					"#149FC2",
+					"#42D8FF",
+					"#7EE6FF",
+					"#B8F1FF",
+					"#EFFCFF"
+				]
+			},
+			"background": {
+				"role": "neutral",
+				"displayName": "Daylight Canvas / Night Canvas",
+				"canonical": "rgb(var(--color-background))",
+				"tonalRamp": [
+					"#090C14",
+					"#111827",
+					"#1E293B",
+					"#475569",
+					"#64748B",
+					"#94A3B8",
+					"#CBD5E1",
+					"#FAFAFC"
+				]
+			},
+			"surface": {
+				"role": "neutral",
+				"displayName": "Quiet Surface / Raised Navy",
+				"canonical": "rgb(var(--color-surface))",
+				"tonalRamp": [
+					"#0B101B",
+					"#111827",
+					"#263244",
+					"#4A586D",
+					"#78869A",
+					"#AFBAC8",
+					"#E2E7EE",
+					"#FFFFFF"
+				]
+			},
+			"surface-muted": {
+				"role": "neutral",
+				"displayName": "Slate Wash / Deep Slate",
+				"canonical": "rgb(var(--color-surface-muted))",
+				"tonalRamp": [
+					"#0D1420",
+					"#1E293B",
+					"#354257",
+					"#59677B",
+					"#8490A1",
+					"#B2BBC7",
+					"#D9DEE6",
+					"#F1F3F7"
+				]
+			},
+			"text-primary": {
+				"role": "neutral",
+				"displayName": "Graphite / Frost",
+				"canonical": "rgb(var(--color-text-primary))",
+				"tonalRamp": [
+					"#090D16",
+					"#111827",
+					"#2B3545",
+					"#536071",
+					"#8490A0",
+					"#B7C0CB",
+					"#DCE2E9",
+					"#F8FAFC"
+				]
+			},
+			"text-secondary": {
+				"role": "neutral",
+				"displayName": "Secondary Graphite / Silver Slate",
+				"canonical": "rgb(var(--color-text-secondary))",
+				"tonalRamp": [
+					"#111720",
+					"#27313F",
+					"#374151",
+					"#596576",
+					"#8490A0",
+					"#AEB9C7",
+					"#CBD5E1",
+					"#F2F5F8"
+				]
+			},
+			"text-muted": {
+				"role": "neutral",
+				"displayName": "Muted Slate / Muted Steel",
+				"canonical": "rgb(var(--color-text-muted))",
+				"tonalRamp": [
+					"#18202B",
+					"#303B49",
+					"#4A5869",
+					"#64748B",
+					"#8795A7",
+					"#AAB5C3",
+					"#CED5DE",
+					"#F0F3F6"
+				]
+			},
+			"control-blue": {
+				"role": "primary",
+				"displayName": "Control Blue",
+				"canonical": "rgb(var(--color-accent))",
+				"tonalRamp": [
+					"#071D4B",
+					"#0D3585",
+					"#164DBF",
+					"#2563EB",
+					"#4A82F2",
+					"#60A5FA",
+					"#A8D0FD",
+					"#EFF7FF"
+				]
+			},
+			"control-on-blue": {
+				"role": "neutral",
+				"displayName": "Control-on-Blue",
+				"canonical": "rgb(var(--color-accent-foreground))",
+				"tonalRamp": [
+					"#090C14",
+					"#1B2029",
+					"#3A404A",
+					"#606772",
+					"#90969E",
+					"#BFC3C9",
+					"#E2E4E7",
+					"#FFFFFF"
+				]
+			},
+			"live-signal": {
+				"role": "secondary",
+				"displayName": "Live Signal",
+				"canonical": "rgb(var(--color-live))",
+				"tonalRamp": [
+					"#062D38",
+					"#0A5266",
+					"#0E7490",
+					"#159AB5",
+					"#22D3EE",
+					"#67E8F9",
+					"#A5F3FC",
+					"#ECFEFF"
+				]
+			},
+			"live-on-signal": {
+				"role": "neutral",
+				"displayName": "Live-on-Signal",
+				"canonical": "rgb(var(--color-live-foreground))",
+				"tonalRamp": [
+					"#090C14",
+					"#1B2029",
+					"#3A404A",
+					"#606772",
+					"#90969E",
+					"#BFC3C9",
+					"#E2E4E7",
+					"#FFFFFF"
+				]
+			},
+			"cool-border": {
+				"role": "neutral",
+				"displayName": "Cool Border",
+				"canonical": "rgb(var(--color-border))",
+				"tonalRamp": [
+					"#111823",
+					"#233044",
+					"#334155",
+					"#5A687B",
+					"#8793A3",
+					"#B5BEC9",
+					"#E2E8F0",
+					"#F6F8FA"
+				]
+			},
+			"danger": {
+				"role": "tertiary",
+				"displayName": "Danger",
+				"canonical": "rgb(var(--color-danger))",
+				"tonalRamp": [
+					"#470909",
+					"#7F1111",
+					"#B91C1C",
+					"#DC2626",
+					"#EF4444",
+					"#F87171",
+					"#FCA5A5",
+					"#FEF2F2"
+				]
+			},
+			"success": {
+				"role": "tertiary",
+				"displayName": "Success",
+				"canonical": "rgb(var(--color-success))",
+				"tonalRamp": [
+					"#052E16",
+					"#0A5428",
+					"#117A3A",
+					"#16A34A",
+					"#34C968",
+					"#4ADE80",
+					"#9AE6B4",
+					"#F0FDF4"
+				]
+			}
+		},
+		"typographyMeta": {
+			"headline": {
+				"displayName": "Headline",
+				"purpose": "Top-level page titles with restrained authority."
+			},
+			"title": {
+				"displayName": "Title",
+				"purpose": "Cards, groups, dialogs, and significant object names."
+			},
+			"body": {
+				"displayName": "Body",
+				"purpose": "Descriptions, guidance, program metadata, and most interface copy."
+			},
+			"label": {
+				"displayName": "Label",
+				"purpose": "Badges, compact navigation, dense metadata, and terse controls."
+			}
+		},
+		"shadows": [
+			{
+				"name": "surface-rest",
+				"value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+				"purpose": "Minimal ambient support for bordered cards and resting media cells."
+			},
+			{
+				"name": "control-lift",
+				"value": "0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10)",
+				"purpose": "Compact local lift for active tabs, switches, and selected timeline items."
+			},
+			{
+				"name": "floating-utility",
+				"value": "0 10px 15px -3px rgb(0 0 0 / 0.10), 0 4px 6px -4px rgb(0 0 0 / 0.10)",
+				"purpose": "Menus and toasts that float above the active task."
+			},
+			{
+				"name": "modal-plane",
+				"value": "0 20px 25px -5px rgb(0 0 0 / 0.10), 0 8px 10px -6px rgb(0 0 0 / 0.10)",
+				"purpose": "Dialogs, drawers, and major media overlays."
+			}
+		],
+		"motion": [
+			{
+				"name": "state-color",
+				"value": "150ms cubic-bezier(0.4, 0, 0.2, 1)",
+				"purpose": "Default hover, selection, and focus-adjacent color transitions."
+			},
+			{
+				"name": "brand-hover",
+				"value": "200ms cubic-bezier(0.4, 0, 0.2, 1)",
+				"purpose": "The restrained scale response on the application brand mark."
+			},
+			{
+				"name": "motion-disabled",
+				"value": "0.001ms",
+				"purpose": "Effective duration when reduced motion or the application's animations-off preference is active."
+			}
+		],
+		"breakpoints": [
+			{ "name": "sm", "value": "640px" },
+			{ "name": "md", "value": "768px" },
+			{ "name": "lg", "value": "1024px" }
+		]
+	},
+	"components": [
+		{
+			"name": "Primary Button",
+			"kind": "button",
+			"refersTo": "button-primary",
+			"description": "The clearest next action, used once per local decision group.",
+			"html": "<button class=\"ds-btn-primary\">Save changes</button>",
+			"css": ".ds-btn-primary { height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; border: 0; border-radius: 6px; background: rgb(var(--color-accent)); color: rgb(var(--color-accent-foreground)); font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-btn-primary:hover { background: rgb(var(--color-accent) / 0.9); } .ds-btn-primary:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; } .ds-btn-primary:disabled { pointer-events: none; opacity: 0.5; }"
+		},
+		{
+			"name": "Secondary Button",
+			"kind": "button",
+			"refersTo": "button-secondary",
+			"description": "A contained alternative that remains quieter than the primary action.",
+			"html": "<button class=\"ds-btn-secondary\">Review guide</button>",
+			"css": ".ds-btn-secondary { height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; border: 1px solid rgb(var(--color-border)); border-radius: 6px; background: rgb(var(--color-surface-muted)); color: rgb(var(--color-text-primary)); font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-btn-secondary:hover { background: rgb(var(--color-surface-muted) / 0.7); } .ds-btn-secondary:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; } .ds-btn-secondary:disabled { pointer-events: none; opacity: 0.5; }"
+		},
+		{
+			"name": "Ghost Button",
+			"kind": "button",
+			"refersTo": "button-ghost",
+			"description": "A low-emphasis action for already structured toolbars and surfaces.",
+			"html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+			"css": ".ds-btn-ghost { height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; border: 0; border-radius: 6px; background: transparent; color: rgb(var(--color-text-primary)); font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-btn-ghost:hover { background: rgb(var(--color-surface-muted)); } .ds-btn-ghost:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; } .ds-btn-ghost:disabled { pointer-events: none; opacity: 0.5; }"
+		},
+		{
+			"name": "Text Input",
+			"kind": "input",
+			"refersTo": "input",
+			"description": "A clear, labelled field with strong focus and invalid-state recovery cues.",
+			"html": "<label class=\"ds-field\"><span>Playlist URL</span><input class=\"ds-input\" placeholder=\"https://example.com/playlist.m3u\"></label>",
+			"css": ".ds-field { display: grid; gap: 6px; color: rgb(var(--color-text-primary)); font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; } .ds-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid rgb(var(--color-border)); border-radius: 6px; background: rgb(var(--color-surface)); color: rgb(var(--color-text-primary)); font: 400 14px/20px ui-sans-serif, system-ui, sans-serif; transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-input::placeholder { color: rgb(var(--color-text-muted)); } .ds-input:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; } .ds-input[aria-invalid=\"true\"] { border-color: rgb(var(--color-danger)); } .ds-input[aria-invalid=\"true\"]:focus-visible { outline-color: rgb(var(--color-danger)); } .ds-input:disabled { cursor: not-allowed; opacity: 0.6; }"
+		},
+		{
+			"name": "Content Card",
+			"kind": "card",
+			"refersTo": "card",
+			"description": "One coherent object or task grouped with a single precise boundary.",
+			"html": "<section class=\"ds-card\"><h3>Storage &amp; DVR</h3><p>Choose where recordings live and how much space SignalHaven may use.</p></section>",
+			"css": ".ds-card { padding: 24px; border: 1px solid rgb(var(--color-border)); border-radius: 8px; background: rgb(var(--color-surface)); color: rgb(var(--color-text-primary)); box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); font-family: ui-sans-serif, system-ui, sans-serif; } .ds-card h3 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; letter-spacing: -0.025em; } .ds-card p { margin: 6px 0 0; max-width: 65ch; color: rgb(var(--color-text-secondary)); font-size: 14px; line-height: 24px; }"
+		},
+		{
+			"name": "Status Badge",
+			"kind": "chip",
+			"refersTo": "badge",
+			"description": "A compact semantic label that never relies on color alone.",
+			"html": "<span class=\"ds-badge\"><span class=\"ds-badge-dot\"></span>Live</span>",
+			"css": ".ds-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid rgb(var(--color-border)); border-radius: 9999px; background: rgb(var(--color-surface-muted)); color: rgb(var(--color-text-primary)); font: 500 12px/16px ui-sans-serif, system-ui, sans-serif; } .ds-badge-dot { width: 6px; height: 6px; border-radius: 9999px; background: rgb(var(--color-live)); }"
+		},
+		{
+			"name": "Peer Tabs",
+			"kind": "nav",
+			"description": "A single quiet rail for peer sections, with one locally elevated selection.",
+			"html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab is-active\" role=\"tab\" aria-selected=\"true\">Tuners</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">EPG</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">Storage</button></div>",
+			"css": ".ds-tabs { display: inline-flex; align-items: center; gap: 4px; height: 40px; padding: 4px; border-radius: 6px; background: rgb(var(--color-surface-muted)); color: rgb(var(--color-text-secondary)); } .ds-tab { padding: 6px 12px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; } .ds-tab:hover { color: rgb(var(--color-text-primary)); } .ds-tab.is-active { background: rgb(var(--color-surface)); color: rgb(var(--color-text-primary)); box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10); } .ds-tab:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; }"
+		},
+		{
+			"name": "Primary Navigation",
+			"kind": "nav",
+			"description": "Compact application navigation that stays secondary to the current media task.",
+			"html": "<nav class=\"ds-nav\" aria-label=\"Primary\"><a class=\"ds-nav-item is-active\" href=\"#\">Guide</a><a class=\"ds-nav-item\" href=\"#\">Channels</a><a class=\"ds-nav-item\" href=\"#\">Recordings</a><a class=\"ds-nav-item\" href=\"#\">Settings</a></nav>",
+			"css": ".ds-nav { display: flex; align-items: center; gap: 4px; font-family: ui-sans-serif, system-ui, sans-serif; } .ds-nav-item { padding: 8px 12px; border-radius: 4px; color: rgb(var(--color-text-secondary)); font-size: 14px; line-height: 20px; text-decoration: none; } .ds-nav-item:hover { background: rgb(var(--color-surface-muted)); color: rgb(var(--color-text-primary)); } .ds-nav-item.is-active { background: rgb(var(--color-surface-muted)); color: rgb(var(--color-text-primary)); font-weight: 500; } .ds-nav-item:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; }"
+		},
+		{
+			"name": "Modal Dialog",
+			"kind": "custom",
+			"description": "A clearly elevated, task-focused plane with explicit recovery and dismissal.",
+			"html": "<section class=\"ds-modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ds-modal-title\"><h2 id=\"ds-modal-title\">Record this program?</h2><p>Choose a one-time recording or create a series rule.</p><div class=\"ds-modal-actions\"><button class=\"ds-modal-cancel\">Cancel</button><button class=\"ds-modal-confirm\">Record</button></div></section>",
+			"css": ".ds-modal { width: min(100%, 512px); display: grid; gap: 16px; padding: 24px; border: 1px solid rgb(var(--color-border)); border-radius: 8px; background: rgb(var(--color-surface)); color: rgb(var(--color-text-primary)); box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.10), 0 8px 10px -6px rgb(0 0 0 / 0.10); font-family: ui-sans-serif, system-ui, sans-serif; } .ds-modal h2 { margin: 0; font-size: 18px; line-height: 18px; font-weight: 600; letter-spacing: -0.025em; } .ds-modal p { margin: 0; color: rgb(var(--color-text-secondary)); font-size: 14px; line-height: 20px; } .ds-modal-actions { display: flex; justify-content: flex-end; gap: 8px; } .ds-modal button { height: 40px; padding: 0 16px; border-radius: 6px; font: 500 14px/20px ui-sans-serif, system-ui, sans-serif; } .ds-modal-cancel { border: 0; background: transparent; color: rgb(var(--color-text-primary)); } .ds-modal-cancel:hover { background: rgb(var(--color-surface-muted)); } .ds-modal-confirm { border: 0; background: rgb(var(--color-accent)); color: rgb(var(--color-accent-foreground)); } .ds-modal-confirm:hover { background: rgb(var(--color-accent) / 0.9); } .ds-modal button:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; }"
+		},
+		{
+			"name": "SignalHaven Brand Mark",
+			"kind": "custom",
+			"description": "The authoritative signal, haven, and playback symbol rendered at application-header size.",
+			"html": "<div class=\"ds-brand\"><svg class=\"ds-brand-mark\" viewBox=\"0 0 64 64\" aria-hidden=\"true\"><path d=\"M10 22C20.5 9.5 43.5 9.5 54 22\" fill=\"none\" stroke=\"#2F6BFF\" stroke-linecap=\"round\" stroke-width=\"6\"/><path d=\"M18 29C25.4 20.6 38.6 20.6 46 29\" fill=\"none\" stroke=\"#42D8FF\" stroke-linecap=\"round\" stroke-width=\"6\"/><path d=\"M8 30 18 36v4c0 6.4 4.8 11.5 14 16 9.2-4.5 14-9.6 14-16v-4l10-6c-.6 15.6-8.6 25.4-24 32C16.6 55.4 8.6 45.6 8 30Zm20 6v14l12-7-12-7Z\" fill=\"currentColor\" fill-rule=\"evenodd\"/></svg><span>SignalHaven</span></div>",
+			"css": ".ds-brand { display: inline-flex; align-items: center; gap: 8px; color: rgb(var(--color-text-primary)); font: 600 16px/24px ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.025em; } .ds-brand-mark { width: 32px; height: 32px; transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-brand:hover .ds-brand-mark { transform: scale(1.04); } .ds-brand:focus-visible { outline: 2px solid rgb(var(--color-accent)); outline-offset: 2px; border-radius: 4px; }"
+		}
+	],
+	"narrative": {
+		"northStar": "The Private Broadcast Deck",
+		"overview": "SignalHaven is advanced media infrastructure presented as a private broadcast deck: calm, precise, approachable, and dependable. It should feel ready and capable without looking aggressive, ornamental, or needlessly technical. Video is the product's most critical path and the reason the interface exists; whenever media is present, the interface recedes so playback becomes the unmistakable center of gravity.\n\nThe system earns polish through refined, restrained components, responsive layouts, legible density, exact state communication, and complete edge-state handling. Familiar system typography, slate surfaces, and purposeful color keep a technically sophisticated homelab product approachable during everyday use.\n\nThe brand mark combines signal, haven, and playback: two broadcast arcs sit over a protective lower form with a negative-space play symbol. Production SVGs are authoritative; the concept board at `docs/brand/signalhaven-logo-concept.png` is reference material only.",
+		"keyCharacteristics": [
+			"Calm, precise, approachable, and dependable.",
+			"Content-first composition with compact application chrome.",
+			"Video-first hierarchy that protects playback prominence, continuity, and control.",
+			"Dense when the task rewards scanning; relaxed when the user is configuring or learning.",
+			"Light and dark themes with identical hierarchy and meaning.",
+			"Fast, functional motion and explicit reduced-motion support."
+		],
+		"rules": [
+			{
+				"name": "The One Control Voice Rule",
+				"body": "Control Blue owns actions, links, selection, and focus. The Signal Cyan family must not become a competing action color.",
+				"section": "colors"
+			},
+			{
+				"name": "The Meaning Survives Theme Rule",
+				"body": "Theme changes may alter luminance and contrast, never layout, hierarchy, semantics, or information density.",
+				"section": "colors"
+			},
+			{
+				"name": "The Contrast Before Identity Rule",
+				"body": "Identity accents never override accessible text and control tokens. Use the theme-aware Live-on-Signal foreground for content on live-state fills; fixed artwork cyan is not a text color.",
+				"section": "colors"
+			},
+			{
+				"name": "The Native Speed Rule",
+				"body": "Use the system stack throughout the application. Do not add a webfont merely to create personality; any future type change must justify its loading, rendering, and legibility cost.",
+				"section": "typography"
+			},
+			{
+				"name": "The Dense, Not Cramped Rule",
+				"body": "Reduce chrome before compressing content. Labels must remain readable, and explanatory text keeps a relaxed line height even in compact density.",
+				"section": "typography"
+			},
+			{
+				"name": "The Content Owns the Viewport Rule",
+				"body": "Interface chrome must never be the largest, brightest, or most detailed region in the first viewport.",
+				"section": "layout"
+			},
+			{
+				"name": "The Playback Is the Product Rule",
+				"body": "When video is present, it receives the strongest hierarchy and the most useful space. Navigation, metadata, and management controls must support playback without competing with it.",
+				"section": "layout"
+			},
+			{
+				"name": "The Bounded Overflow Rule",
+				"body": "Only an explicit component such as the guide grid or tab rail may scroll horizontally; page-level horizontal overflow is a defect.",
+				"section": "layout"
+			},
+			{
+				"name": "The Flat-by-Default Rule",
+				"body": "A surface remains flat unless it represents a distinct object or moves onto a higher interaction plane.",
+				"section": "elevation"
+			},
+			{
+				"name": "The One Boundary Rule",
+				"body": "Do not stack bordered cards inside bordered cards unless the inner boundary represents a genuinely independent object.",
+				"section": "elevation"
+			},
+			{
+				"name": "The Radius Has Meaning Rule",
+				"body": "Use full pills only for true badges, dots, tracks, or circular controls—not as a generic way to soften every container.",
+				"section": "shapes"
+			}
+		],
+		"dos": [
+			"Do let the active task, media, and data own the viewport.",
+			"Do give video the strongest hierarchy and protect playback startup, continuity, recovery, and controls as the application's highest-priority experience.",
+			"Do preserve identical hierarchy, density, and semantics across light and dark themes.",
+			"Do use Control Blue for interaction, reserve the theme-aware Live Signal token for live or healthy application states, and keep fixed Signal Cyan in brand artwork.",
+			"Do keep interfaces responsive on realistic homelab hardware and treat loading, recovery, accessibility, and responsive behavior as part of the finished experience.",
+			"Do use the committed production mark without redrawing it and test new placements at 16 px as well as their intended size.",
+			"Do update this guide, production SVGs, generated raster assets, application metadata, and relevant tests together when approved identity geometry or palette changes."
+		],
+		"donts": [
+			"Don't introduce gradients, glows, glass effects, bevels, decorative 3D depth, or detailed imagery behind the mark.",
+			"Don't add a persistent desktop sidebar, decorative dashboard shell, status widgets, or storage meters that compete with the current task.",
+			"Don't use color alone for state, use fixed artwork cyan as interface text, or allow a second general-purpose action color.",
+			"Don't use a separate card for every field, stack boundaries without meaning, or turn every compact shape into a pill.",
+			"Don't compress labels, controls, or explanations merely to keep a desktop row intact on narrow screens.",
+			"Don't put text inside the favicon or app icon, outline the play cutout, split the haven into competing colors, or replace the mark with a generic broadcast, house, antenna, lighthouse, TV frame, or shield.",
+			"Don't change the mark's arc thickness, spacing, corner treatment, play geometry, or component alignment without updating every approved asset and testing favicon, header, and 512 px icon sizes."
+		]
+	}
+}

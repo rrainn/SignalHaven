@@ -1,0 +1,260 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Default to a least-privilege token for every job. Individual jobs can opt
+# into more permissions if they ever need to (e.g. publishing artifacts).
+permissions:
+  contents: read
+
+# Cancel in-flight runs for the same ref/PR when a new commit is pushed.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Lint, typecheck, test & build
+    runs-on: ubuntu-latest
+    outputs:
+      frontend-changed: ${{ steps.frontend-changes.outputs.enabled }}
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: signalhaven
+          POSTGRES_USER: signalhaven
+          POSTGRES_PASSWORD: signalhaven
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U signalhaven -d signalhaven"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      SIGNALHAVEN_DATABASE_URL: postgres://signalhaven:signalhaven@localhost:5432/signalhaven
+      # Minimum line coverage (%) required for the backend test suite.
+      # Override by editing this value or via repository/workflow variables.
+      COVERAGE_LINES_THRESHOLD: "70"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect frontend-relevant changes
+        id: frontend-changes
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          enabled=true
+
+          # Fetch only the comparison commit instead of paying for the full history.
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]] && ! git cat-file -e "$BASE_SHA^{commit}"; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+          fi
+
+          # Unknown bases must run the checks so a shallow or unusual event cannot
+          # accidentally bypass frontend validation.
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]] && git cat-file -e "$BASE_SHA^{commit}"; then
+            enabled="$(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA" | node scripts/frontend-ci-changes.mjs)"
+          fi
+
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # Reuse pnpm's content-addressed store between workflow runs.
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Git hooks are local, so CI is the authoritative formatting gate.
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Run tests and enforce backend coverage
+        run: pnpm run test:coverage
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Upload backend coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: apps/backend/coverage/
+          if-no-files-found: warn
+          # Successful diagnostics age out quickly; failures remain available longer.
+          retention-days: ${{ job.status == 'failure' && 30 || 7 }}
+
+  e2e:
+    name: E2E smoke tests (Playwright)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: needs.build-and-test.outputs.frontend-changed == 'true'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @signalhaven/frontend exec playwright install --with-deps chromium
+
+      - name: Build shared package
+        run: pnpm --filter @signalhaven/shared build
+
+      - name: Build frontend
+        run: pnpm --filter @signalhaven/frontend build
+
+      - name: Run Playwright smoke tests
+        run: pnpm --filter @signalhaven/frontend e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/frontend/playwright-report/
+          if-no-files-found: ignore
+          # Successful diagnostics age out quickly; failures remain available longer.
+          retention-days: ${{ job.status == 'failure' && 30 || 7 }}
+
+  # Lighthouse CI: enforces mobile performance / accessibility / best-
+  # practices budgets on the four user-facing screens called out in the
+  # U12-perf acceptance criteria. Failing budgets fail this job and
+  # therefore the workflow. See `.lighthouserc.json` for the thresholds
+  # and `docs/perf-baseline.md` for the rationale + baseline numbers.
+  lighthouse:
+    name: Lighthouse budgets
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: needs.build-and-test.outputs.frontend-changed == 'true'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        # @signalhaven/shared resolves via its `main`/`types` (dist/), so it must
+        # be compiled before the frontend type-checks during `next build`.
+        run: pnpm --filter @signalhaven/shared build
+
+      - name: Build frontend
+        env:
+          # Bake the mock backend's origin into the rewrite destination
+          # so the production server forwards `/api/*` to the mock during
+          # the Lighthouse run. Next 16 + Turbopack inline rewrite URLs
+          # at build time, so this *must* be set here, not just for
+          # `next start`.
+          SIGNALHAVEN_BACKEND_ORIGIN: http://127.0.0.1:43200
+        run: pnpm --filter @signalhaven/frontend build
+
+      - name: Start mock backend
+        # The four screens we measure are client-rendered and call
+        # `/api/v1/*` on first paint. Without a backend their initial
+        # data fetches fail and the pages stay in a spinner — which
+        # crushes LCP and the perf score. The mock answers GETs with
+        # the smallest fixtures that satisfy the shared Zod schemas;
+        # see apps/frontend/scripts/lighthouse-mock-backend.mjs.
+        run: |
+          PORT=43200 node apps/frontend/scripts/lighthouse-mock-backend.mjs > /tmp/mock-backend.log 2>&1 &
+          echo "MOCK_BACKEND_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:43200/api/v1/health >/dev/null; then
+              echo "Mock backend is up."
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Start frontend
+        env:
+          # Point the Next.js `/api/:path*` rewrite at the mock backend
+          # we just started so the client-side fetches resolve.
+          SIGNALHAVEN_BACKEND_ORIGIN: http://127.0.0.1:43200
+        run: |
+          PORT=43100 pnpm --filter @signalhaven/frontend start > /tmp/next.log 2>&1 &
+          echo "FRONTEND_PID=$!" >> "$GITHUB_ENV"
+          # Wait for the server to accept connections.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:43100/ >/dev/null; then
+              echo "Frontend is up."
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run Lighthouse CI
+        # `pnpm dlx` runs the pinned CLI without adding it to the workspace. The config
+        # in .lighthouserc.json sets the URLs, mobile throttling profile,
+        # and per-category assertions (Perf ≥ 90, A11y ≥ 95, BP ≥ 95).
+        run: pnpm dlx @lhci/cli@0.14.x autorun --config=./.lighthouserc.json
+
+      - name: Stop frontend
+        if: always()
+        run: |
+          if [ -n "${FRONTEND_PID:-}" ]; then
+            kill "$FRONTEND_PID" || true
+          fi
+          if [ -n "${MOCK_BACKEND_PID:-}" ]; then
+            kill "$MOCK_BACKEND_PID" || true
+          fi
+
+      - name: Upload Lighthouse report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-report
+          path: |
+            .lighthouseci/
+            /tmp/next.log
+            /tmp/mock-backend.log
+          # LHCI writes reports to a dot-directory, which upload-artifact skips by default.
+          include-hidden-files: true
+          if-no-files-found: warn
+          # Successful diagnostics age out quickly; failures remain available longer.
+          retention-days: ${{ job.status == 'failure' && 30 || 7 }}
