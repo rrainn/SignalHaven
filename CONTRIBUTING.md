@@ -35,7 +35,9 @@ pnpm run dev
 ```
 
 - Frontend: typically `http://localhost:3000`
-- Backend API: set `PORT` for backend if needed (for example `PORT=3001 pnpm --filter @signalhaven/backend dev`)
+- Backend API: `http://localhost:3001` when started by the root development command
+- For separate processes, set `PORT=3001` on the backend and
+  `SIGNALHAVEN_BACKEND_ORIGIN=http://localhost:3001` on the frontend.
 
 ## Resource-bounded frontend preview
 

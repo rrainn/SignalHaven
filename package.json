@@ -9,14 +9,15 @@
 		"packages/*"
 	],
 	"scripts": {
-		"dev": "concurrently -n backend,frontend \"pnpm --filter @signalhaven/backend dev\" \"pnpm --filter @signalhaven/frontend dev\"",
+		"dev": "concurrently -n backend,frontend \"PORT=3001 pnpm --filter @signalhaven/backend dev\" \"SIGNALHAVEN_BACKEND_ORIGIN=http://localhost:3001 pnpm --filter @signalhaven/frontend dev\"",
 		"build": "pnpm -r --if-present run build",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"lint": "pnpm -r --if-present run lint",
-		"test": "pnpm run test:brand && pnpm run test:preview && pnpm run test:ci-config && pnpm -r --if-present run test",
+		"test": "pnpm run test:brand && pnpm run test:preview && pnpm run test:dev-config && pnpm run test:ci-config && pnpm -r --if-present run test",
 		"test:brand": "node scripts/check-branding.mjs",
 		"test:ci-config": "node --test scripts/frontend-ci-changes.test.mjs scripts/release-workflow.test.mjs scripts/screenshots-workflow.test.mjs",
+		"test:dev-config": "node --test scripts/dev-workflow.test.mjs",
 		"test:preview": "node --test scripts/safe-preview.test.mjs",
 		"test:coverage": "pnpm run test:ci-config && pnpm --filter @signalhaven/shared build && concurrently --kill-others-on-fail -n backend,frontend \"pnpm --filter @signalhaven/backend test:coverage\" \"pnpm --filter @signalhaven/frontend test\"",
 		"typecheck": "tsc --build --pretty false",
