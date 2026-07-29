@@ -154,7 +154,11 @@ export class SeriesRulesService {
 		priority: number;
 		retentionDays?: number | null;
 	}): Promise<SeriesRuleRecord> {
-		return this.options.rules.create(input);
+		const created = await this.options.rules.create(input);
+		// Evaluate before returning so matching programs appear in Upcoming
+		// immediately instead of waiting for the recurring background job.
+		await this.evaluate();
+		return created;
 	}
 
 	async update(
@@ -169,7 +173,11 @@ export class SeriesRulesService {
 			retentionDays?: number | null;
 		}
 	): Promise<SeriesRuleRecord | null> {
-		return this.options.rules.update(id, patch);
+		const updated = await this.options.rules.update(id, patch);
+		if (!updated) return null;
+		// Rule changes can make additional EPG programs eligible immediately.
+		await this.evaluate();
+		return updated;
 	}
 
 	async delete(id: string): Promise<boolean> {

@@ -50,11 +50,46 @@ class FakeRulesRepo {
 	async getById(id: string): Promise<SeriesRuleRecord | null> {
 		return this.rows.get(id) ?? null;
 	}
-	async create(): Promise<SeriesRuleRecord> {
-		throw new Error("not used");
+	async create(input: {
+		title: string;
+		channelId?: string | null;
+		epgChannelId?: string | null;
+		keepCount: number;
+		newOnly: boolean;
+		priority: number;
+		retentionDays?: number | null;
+	}): Promise<SeriesRuleRecord> {
+		return this.add({
+			id: randomUUID(),
+			title: input.title,
+			channelId: input.channelId ?? null,
+			epgChannelId: input.epgChannelId ?? null,
+			keepCount: input.keepCount,
+			newOnly: input.newOnly,
+			priority: input.priority,
+			retentionDays: input.retentionDays ?? null
+		});
 	}
-	async update(): Promise<SeriesRuleRecord | null> {
-		return null;
+	async update(
+		id: string,
+		patch: Partial<
+			Pick<
+				SeriesRuleRecord,
+				| "title"
+				| "channelId"
+				| "epgChannelId"
+				| "keepCount"
+				| "newOnly"
+				| "priority"
+				| "retentionDays"
+			>
+		>
+	): Promise<SeriesRuleRecord | null> {
+		const current = this.rows.get(id);
+		if (!current) return null;
+		const updated = { ...current, ...patch, updatedAt: new Date() };
+		this.rows.set(id, updated);
+		return updated;
 	}
 	async delete(): Promise<boolean> {
 		return false;
@@ -299,6 +334,104 @@ function makeService(opts: {
 }
 
 // ---------- tests ----------
+
+test("create(): immediately evaluates the new rule", async () => {
+	const rules = new FakeRulesRepo();
+	const recordings = new FakeRecordingsRepo();
+	const epg = new FakeEpgProgramsRepo();
+	const channels = new FakeChannelsRepo();
+	const map = new FakeChannelEpgMap();
+	const channelId = randomUUID();
+	const epgChannelId = randomUUID();
+	const start = new Date(Date.now() + 60 * 60 * 1000);
+
+	channels.add({
+		id: channelId,
+		tunerId: randomUUID(),
+		number: "5.1",
+		name: "Five",
+		logoUrl: null,
+		tvgId: null,
+		enabled: true,
+		sortOrder: 0
+	} as ChannelRecord);
+	map.link(channelId, epgChannelId);
+	epg.add({
+		title: "News Hour",
+		epgChannelId,
+		start,
+		stop: new Date(start.getTime() + 30 * 60 * 1000)
+	});
+
+	const service = makeService({
+		rules,
+		recordings,
+		epgPrograms: epg,
+		channels,
+		channelEpgMap: map
+	});
+	const created = await service.create({
+		title: "News Hour",
+		channelId,
+		keepCount: 5,
+		newOnly: false,
+		priority: 0
+	});
+
+	assert.equal(recordings.rows.size, 1);
+	assert.equal([...recordings.rows.values()][0]?.seriesRuleId, created.id);
+});
+
+test("update(): immediately evaluates the changed rule", async () => {
+	const rules = new FakeRulesRepo();
+	const recordings = new FakeRecordingsRepo();
+	const epg = new FakeEpgProgramsRepo();
+	const channels = new FakeChannelsRepo();
+	const map = new FakeChannelEpgMap();
+	const channelId = randomUUID();
+	const epgChannelId = randomUUID();
+	const start = new Date(Date.now() + 60 * 60 * 1000);
+	const existing = rules.add({
+		id: randomUUID(),
+		title: "Old Title",
+		channelId,
+		epgChannelId: null,
+		keepCount: 5,
+		newOnly: false,
+		priority: 0
+	});
+
+	channels.add({
+		id: channelId,
+		tunerId: randomUUID(),
+		number: "5.1",
+		name: "Five",
+		logoUrl: null,
+		tvgId: null,
+		enabled: true,
+		sortOrder: 0
+	} as ChannelRecord);
+	map.link(channelId, epgChannelId);
+	epg.add({
+		title: "New Title",
+		epgChannelId,
+		start,
+		stop: new Date(start.getTime() + 30 * 60 * 1000)
+	});
+
+	const service = makeService({
+		rules,
+		recordings,
+		epgPrograms: epg,
+		channels,
+		channelEpgMap: map
+	});
+	const updated = await service.update(existing.id, { title: "New Title" });
+
+	assert.equal(updated?.title, "New Title");
+	assert.equal(recordings.rows.size, 1);
+	assert.equal([...recordings.rows.values()][0]?.seriesRuleId, existing.id);
+});
 
 test("evaluate(): schedules upcoming matching programs", async () => {
 	const rules = new FakeRulesRepo();
