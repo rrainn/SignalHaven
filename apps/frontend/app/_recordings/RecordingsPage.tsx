@@ -37,6 +37,7 @@ import { EmptyState } from "../_ui/EmptyState";
 import { IconButton } from "../_ui/IconButton";
 import { Input } from "../_ui/Input";
 import { PageHeader } from "../_ui/PageHeader";
+import { Spinner } from "../_ui/Spinner";
 import {
 	Modal,
 	ModalContent,
@@ -522,8 +523,15 @@ export function RecordingsPage(props: RecordingsPageProps) {
 		dispatch({ type: "clear-filters" });
 	};
 
+	// Pagination resolves one render before its rows reach the selection reducer.
+	// Keep that handoff in the loading phase so a populated response never looks empty.
+	const initialRowsPending =
+		pagination.status === "ready" &&
+		pagination.loadedCount > 0 &&
+		state.recordings.length === 0;
 	const initialLoading =
-		pagination.status === "loading" && pagination.loadedCount === 0;
+		(pagination.status === "loading" && pagination.loadedCount === 0) ||
+		initialRowsPending;
 
 	if (pagination.status === "error" && pagination.loadedCount === 0) {
 		return (
@@ -763,12 +771,12 @@ export function RecordingsPage(props: RecordingsPageProps) {
 			) : null}
 
 			{initialLoading ? (
-				<div data-testid="recordings-loading" aria-busy="true">
-					<EmptyRecordingsState
-						filtered={false}
-						onBrowseGuide={() => router.push("/guide")}
-						onClearFilters={clearFilters}
-					/>
+				<div
+					data-testid="recordings-loading"
+					aria-busy="true"
+					className="flex min-h-60 items-center justify-center"
+				>
+					<Spinner size="lg" label="Loading recordings" />
 				</div>
 			) : visible.length === 0 ? (
 				<EmptyRecordingsState

@@ -462,6 +462,49 @@ describe("RecordingsPage", () => {
 		expect(pushMock).toHaveBeenCalledWith("/guide");
 	});
 
+	it("keeps the empty-library prompt hidden until the initial request finishes", async () => {
+		const initialRequest = deferred<RecordingList>();
+		const loadRecordings = vi.fn(async () => initialRequest.promise);
+		render(
+			<RecordingsPage
+				loadRecordings={loadRecordings}
+				loadChannels={async () => []}
+				enableWebSocket={false}
+			/>
+		);
+
+		expect(screen.getByTestId("recordings-loading")).toBeInTheDocument();
+		expect(screen.queryByTestId("recordings-empty")).not.toBeInTheDocument();
+
+		const emptyStateAdditions: Element[] = [];
+		const collectEmptyStateAdditions = (records: MutationRecord[]) => {
+			for (const record of records) {
+				for (const node of record.addedNodes) {
+					if (!(node instanceof Element)) continue;
+					const emptyState = node.matches('[data-testid="recordings-empty"]')
+						? node
+						: node.querySelector('[data-testid="recordings-empty"]');
+					if (emptyState) emptyStateAdditions.push(emptyState);
+				}
+			}
+		};
+		// Observe every commit so a one-frame empty state cannot hide between awaits.
+		const observer = new MutationObserver(collectEmptyStateAdditions);
+		observer.observe(document.body, { childList: true, subtree: true });
+		try {
+			await act(async () => {
+				initialRequest.resolve(page([FIXTURE[0]!]));
+			});
+
+			expect(await screen.findByText("Sherlock S01E01")).toBeInTheDocument();
+		} finally {
+			collectEmptyStateAdditions(observer.takeRecords());
+			observer.disconnect();
+		}
+		expect(emptyStateAdditions).toHaveLength(0);
+		expect(screen.queryByTestId("recordings-loading")).not.toBeInTheDocument();
+	});
+
 	it("sends filters to the server instead of filtering the loaded page", async () => {
 		const user = userEvent.setup();
 		const rows = page([FIXTURE[0]!], {
