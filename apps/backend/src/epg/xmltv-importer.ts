@@ -280,6 +280,12 @@ export async function importXmltv(
         AND c.external_id = s.channel_external_id`,
 			[options.sourceId]
 		);
+		// Classification, upsert conflict handling, and snapshot pruning all use
+		// this identity. Index it once so large guide refreshes avoid repeated scans.
+		await client.query(
+			`CREATE UNIQUE INDEX epg_programs_import_identity_idx
+		   ON epg_programs_import (epg_channel_id, external_id, start)`
+		);
 
 		const classificationRes = await client.query<{
 			total: number;
@@ -334,15 +340,37 @@ export async function importXmltv(
 
 		const cutoff =
 			options.pruneOlderThan ?? new Date(Date.now() - 24 * 3600 * 1000);
-		const pruneRes = await client.query(
-			`DELETE FROM epg_programs
-         WHERE epg_channel_id IN (
-           SELECT id FROM epg_channels WHERE source_id = $1::uuid
-         )
-           AND stop < $2::timestamptz`,
+		const pruneRes = await client.query<{ start: Date; stop: Date }>(
+			`DELETE FROM epg_programs existing
+         USING epg_channels channel
+         WHERE existing.epg_channel_id = channel.id
+           AND channel.source_id = $1::uuid
+           AND (
+             existing.stop < $2::timestamptz
+             OR NOT EXISTS (
+               SELECT 1
+               FROM epg_programs_import imported
+               WHERE imported.epg_channel_id = existing.epg_channel_id
+                 AND imported.external_id = existing.external_id
+                 AND imported.start = existing.start
+             )
+           )
+         RETURNING existing.start, existing.stop`,
 			[options.sourceId, cutoff]
 		);
 		progress.programsPruned = pruneRes.rowCount ?? 0;
+		// Removed rows also change Guide partitions. Include their bounds so live
+		// clients invalidate a time slot that vanished from the refreshed feed.
+		for (const removed of pruneRes.rows) {
+			const removedStartMs = new Date(removed.start).getTime();
+			const removedStopMs = new Date(removed.stop).getTime();
+			if (affectedFromMs === null || removedStartMs < affectedFromMs) {
+				affectedFromMs = removedStartMs;
+			}
+			if (affectedToMs === null || removedStopMs > affectedToMs) {
+				affectedToMs = removedStopMs;
+			}
+		}
 
 		await client.query("COMMIT");
 		options.onProgress?.({ ...progress });

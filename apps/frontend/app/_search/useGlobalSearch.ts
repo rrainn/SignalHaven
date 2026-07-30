@@ -14,9 +14,8 @@ import { ApiError, searchAll as defaultSearchAll } from "../../lib/api-client";
  *   * In-flight cancellation — every new search aborts the previous
  *     request via `AbortController`, so stale responses never overwrite
  *     fresher ones.
- *   * Last-query cache — repeated queries (e.g. typing then deleting,
- *     then re-typing) return instantly from a Map keyed by `q`. The
- *     cache is also useful for the immediate re-show on re-open.
+ *   * Repeated queries are re-fetched because guide refreshes can remove
+ *     a program while the search modal remains open.
  *   * Empty / whitespace `q` — short-circuited locally; nothing is
  *     fetched.
  */
@@ -58,7 +57,6 @@ export function useGlobalSearch(
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const cacheRef = useRef<Map<string, SearchResponse>>(new Map());
 	const abortRef = useRef<AbortController | null>(null);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -83,15 +81,6 @@ export function useGlobalSearch(
 			return;
 		}
 
-		const cached = cacheRef.current.get(trimmed);
-		if (cached) {
-			cancel();
-			setData(cached);
-			setError(null);
-			setLoading(false);
-			return;
-		}
-
 		// Cancel any in-flight request *and* the pending debounce so the
 		// newest keystroke wins.
 		cancel();
@@ -106,7 +95,6 @@ export function useGlobalSearch(
 			searchFn(issued, fetchOptions, { signal: controller.signal })
 				.then((result) => {
 					if (controller.signal.aborted) return;
-					cacheRef.current.set(issued, result);
 					setData(result);
 					setLoading(false);
 				})

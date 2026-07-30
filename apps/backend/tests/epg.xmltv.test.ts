@@ -164,6 +164,39 @@ test("importXmltv prunes programs whose stop is older than the cutoff", async ()
 	assert.equal(programCount.rows[0]?.count, 0);
 });
 
+test("importXmltv removes programs missing from a refreshed guide window", async () => {
+	const source = await createSource();
+	const noAgePrune = new Date("2000-01-01T00:00:00Z");
+	await importXmltv({
+		sourceId: source.id,
+		pool,
+		input: Readable.from([Buffer.from(SMALL_XMLTV, "utf8")]),
+		pruneOlderThan: noAgePrune
+	});
+
+	// Simulate a provider withdrawing one future time slot while keeping the
+	// surrounding guide window intact.
+	const refreshedXmltv = SMALL_XMLTV.replace(
+		/ {2}<programme channel="c1" start="20260101130000 \+0000"[\s\S]*?<\/programme>\n/,
+		""
+	);
+	const result = await importXmltv({
+		sourceId: source.id,
+		pool,
+		input: Readable.from([Buffer.from(refreshedXmltv, "utf8")]),
+		pruneOlderThan: noAgePrune
+	});
+
+	const programs = await pool.query<{ title: string }>(
+		"SELECT title FROM epg_programs ORDER BY title"
+	);
+	assert.deepEqual(
+		programs.rows.map((row) => row.title),
+		["Program A", "Program C"]
+	);
+	assert.equal(result.programsPruned, 1);
+});
+
 test("EpgService.refresh publishes start/progress/completed events", async () => {
 	const source = await createSource();
 	const bus = new EventBus();

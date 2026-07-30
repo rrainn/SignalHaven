@@ -98,23 +98,31 @@ describe("useGlobalSearch", () => {
 		expect(result.current.data.channels).toEqual([]);
 	});
 
-	it("returns cached results synchronously for repeated queries", async () => {
-		const cached: SearchResponse = {
+	it("re-fetches repeated queries so removed guide programs do not stay cached", async () => {
+		const stale: SearchResponse = {
 			q: "abc",
-			channels: [
+			channels: [],
+			programs: [
 				{
-					kind: "channel",
+					kind: "program",
 					id: "00000000-0000-4000-8000-000000000001",
-					number: "1",
-					name: "Cached",
-					logoUrl: null,
+					title: "Removed Show",
+					subtitle: null,
+					start: "2099-01-01T01:00:00.000Z",
+					stop: "2099-01-01T02:00:00.000Z",
+					channelId: null,
+					channelName: null,
+					channelNumber: null,
 					score: 1
 				}
 			],
-			programs: [],
 			recordings: []
 		};
-		const searchFn = vi.fn(async () => cached);
+		const searchFn = vi
+			.fn()
+			.mockResolvedValueOnce(stale)
+			.mockResolvedValueOnce(emptyResult("xyz"))
+			.mockResolvedValueOnce(emptyResult("abc"));
 		const { result } = renderHook(() => useGlobalSearch({ searchFn }));
 
 		act(() => result.current.setQuery("abc"));
@@ -127,19 +135,21 @@ describe("useGlobalSearch", () => {
 			await Promise.resolve();
 		});
 		expect(searchFn).toHaveBeenCalledTimes(1);
-		expect(result.current.data.channels[0]?.name).toBe("Cached");
+		expect(result.current.data.programs[0]?.title).toBe("Removed Show");
 
-		// Different query, then back to "abc" — must NOT issue a second fetch.
+		// A guide refresh can remove the first hit while another query is active.
 		act(() => result.current.setQuery("xyz"));
-		act(() => result.current.setQuery("abc"));
 		await act(async () => {
-			vi.advanceTimersByTime(500);
-		});
-		await act(async () => {
+			vi.advanceTimersByTime(200);
 			await Promise.resolve();
 		});
-		expect(searchFn).toHaveBeenCalledTimes(1);
-		expect(result.current.data.channels[0]?.name).toBe("Cached");
+		act(() => result.current.setQuery("abc"));
+		await act(async () => {
+			vi.advanceTimersByTime(200);
+			await Promise.resolve();
+		});
+		expect(searchFn).toHaveBeenCalledTimes(3);
+		expect(result.current.data.programs).toEqual([]);
 	});
 
 	it("clears state and never issues a request for empty / whitespace input", async () => {
