@@ -1,17 +1,25 @@
 "use client";
 
 import type { EpgGridProgram } from "@signalhaven/shared";
-import { CircleDot, Repeat, XCircle } from "lucide-react";
+import { CircleDot, Repeat, Star, XCircle } from "lucide-react";
 
 import { RecordingStatusBadge } from "../_recordings/RecordingStatusBadge";
 import type { ProgramRecordingAction } from "../_recordings/useProgramRecordingActions";
 import { Button } from "../_ui/Button";
+import { cn } from "../_ui/cn";
+import { IconButton } from "../_ui/IconButton";
 import { Spinner } from "../_ui/Spinner";
 import { formatTimeLabel } from "../_guide/time";
 
 export interface NowNextPanelProps {
 	channelName: string;
 	channelNumber: string;
+	/** Whether the current channel is in the user's favorites. */
+	isFavorite: boolean;
+	/** Prevents duplicate writes while the favorite preference is saving. */
+	favoritePending?: boolean;
+	/** Toggles the current channel's persisted favorite state. */
+	onToggleFavorite: () => void;
 	/** Program currently airing, or `null` when no EPG data is available. */
 	now: EpgGridProgram | null;
 	/** Next program in the future, or `null` when none is known. */
@@ -35,6 +43,9 @@ export function NowNextPanel(props: NowNextPanelProps) {
 	const {
 		channelName,
 		channelNumber,
+		isFavorite,
+		favoritePending = false,
+		onToggleFavorite,
 		now,
 		next,
 		use24Hour = false,
@@ -54,11 +65,34 @@ export function NowNextPanel(props: NowNextPanelProps) {
 			className="rounded-lg border border-border bg-surface p-3"
 			aria-label="Now playing and up next"
 		>
-			<header className="flex items-baseline justify-between gap-2">
-				<h2 className="text-sm font-semibold text-primary">
-					<span className="text-secondary">{channelNumber}</span>{" "}
-					<span>{channelName}</span>
-				</h2>
+			<header className="flex items-center justify-between gap-2">
+				<div className="flex min-w-0 items-center gap-1">
+					<h2 className="truncate text-sm font-semibold text-primary">
+						<span className="text-secondary">{channelNumber}</span>{" "}
+						<span>{channelName}</span>
+					</h2>
+					<IconButton
+						aria-label={
+							isFavorite
+								? `Remove ${channelName} from favorites`
+								: `Add ${channelName} to favorites`
+						}
+						aria-pressed={isFavorite}
+						variant="ghost"
+						size="sm"
+						disabled={favoritePending}
+						onClick={onToggleFavorite}
+						data-testid="watch-favorite"
+					>
+						<Star
+							aria-hidden="true"
+							className={cn(
+								"h-4 w-4",
+								isFavorite ? "fill-amber-400 text-amber-500" : ""
+							)}
+						/>
+					</IconButton>
+				</div>
 				{now ? (
 					<span className="text-xs text-secondary">
 						{formatTimeLabel(new Date(now.start), use24Hour)} –{" "}

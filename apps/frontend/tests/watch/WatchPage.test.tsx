@@ -216,6 +216,69 @@ describe("WatchPage", () => {
 		expect(nowNext.getByText("Charlie")).toBeInTheDocument();
 	});
 
+	it("toggles the current channel favorite from the now-playing panel", async () => {
+		const user = userEvent.setup();
+		const persistChannelPreferences = vi.fn().mockResolvedValue(undefined);
+		renderPage({
+			initialFavorites: [],
+			persistChannelPreferences
+		});
+
+		const desktop = within(screen.getByTestId("watch-desktop"));
+		const favoriteButton = desktop.getByRole("button", {
+			name: "Add Alpha to favorites"
+		});
+		expect(favoriteButton).toHaveAttribute("aria-pressed", "false");
+
+		await user.click(favoriteButton);
+
+		const removeFavoriteButton = desktop.getByRole("button", {
+			name: "Remove Alpha from favorites"
+		});
+		expect(removeFavoriteButton).toHaveAttribute("aria-pressed", "true");
+		expect(persistChannelPreferences).toHaveBeenCalledWith({
+			favorites: [CHANNEL_A],
+			hidden: [],
+			order: []
+		});
+		await waitFor(() => expect(removeFavoriteButton).toBeEnabled());
+		expect(removeFavoriteButton).toHaveAttribute("aria-pressed", "true");
+
+		await user.click(removeFavoriteButton);
+
+		expect(
+			desktop.getByRole("button", { name: "Add Alpha to favorites" })
+		).toHaveAttribute("aria-pressed", "false");
+		expect(persistChannelPreferences).toHaveBeenLastCalledWith({
+			favorites: [],
+			hidden: [],
+			order: []
+		});
+	});
+
+	it("restores the favorite state when saving fails", async () => {
+		const user = userEvent.setup();
+		const persistChannelPreferences = vi
+			.fn()
+			.mockRejectedValue(new Error("Settings service unavailable"));
+		renderPage({
+			initialFavorites: [],
+			persistChannelPreferences
+		});
+
+		const desktop = within(screen.getByTestId("watch-desktop"));
+		await user.click(
+			desktop.getByRole("button", { name: "Add Alpha to favorites" })
+		);
+
+		expect(await screen.findByTestId("watch-favorite-error")).toHaveTextContent(
+			/check your connection and try again/i
+		);
+		expect(
+			desktop.getByRole("button", { name: "Add Alpha to favorites" })
+		).toHaveAttribute("aria-pressed", "false");
+	});
+
 	it("the on-screen channel-up button steps backward", async () => {
 		const user = userEvent.setup();
 		const onChannelChange = vi.fn();

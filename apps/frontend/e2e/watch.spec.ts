@@ -206,6 +206,35 @@ test.describe("Live watch page", () => {
 			.toBe(true);
 	});
 
+	test("favorites the current channel and persists the setting", async ({
+		page
+	}) => {
+		await mockBackend(page, []);
+		await page.goto(`/watch/${CHANNEL_A}`);
+
+		const favoriteButton = page
+			.getByTestId("watch-desktop")
+			.getByRole("button", { name: "Add Alpha to favorites" });
+		await expect(favoriteButton).toHaveAttribute("aria-pressed", "false");
+
+		const settingsRequest = page.waitForRequest(
+			(request) =>
+				request.url().endsWith("/api/v1/settings") &&
+				request.method() === "PATCH"
+		);
+		await favoriteButton.click();
+		const request = await settingsRequest;
+
+		expect(request.postDataJSON()).toMatchObject({
+			channels: { favorites: [CHANNEL_B, CHANNEL_A] }
+		});
+		await expect(
+			page
+				.getByTestId("watch-desktop")
+				.getByRole("button", { name: "Remove Alpha from favorites" })
+		).toHaveAttribute("aria-pressed", "true");
+	});
+
 	test("PageUp wraps backward to the previous channel in the switcher order", async ({
 		page
 	}) => {
