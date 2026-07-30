@@ -5,10 +5,9 @@
 #   docker compose up -d
 #
 # The `signalhaven` service waits for `postgres` to become healthy before starting
-# and then connects to it via SIGNALHAVEN_DATABASE_URL. To point SignalHaven at an
-# external Postgres instead, remove the `postgres` service and `depends_on`
-# block below and set SIGNALHAVEN_DATABASE_URL in your `.env` to the external
-# connection string.
+# and then connects with the same PG* variables the backend supports directly. To
+# use external Postgres, remove the `postgres` service and `depends_on` block and
+# update the signalhaven service's PG* values for that database.
 
 services:
   signalhaven:
@@ -22,7 +21,11 @@ services:
     # gpus: all
     restart: unless-stopped
     environment:
-      SIGNALHAVEN_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${PGDATABASE}
+      PGUSER: ${PGUSER}
+      PGPASSWORD: ${PGPASSWORD}
       SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED: ${SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED:-false}
       # NVIDIA_VISIBLE_DEVICES: all
       # NVIDIA_DRIVER_CAPABILITIES: video,compute,utility
@@ -51,15 +54,16 @@ services:
     container_name: signalhaven-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # The image requires POSTGRES_* even though the shared .env uses libpq names.
+      POSTGRES_DB: ${PGDATABASE}
+      POSTGRES_USER: ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
     ports:
-      - "5432:5432"
+      - "${PGPORT:-5432}:5432"
     volumes:
       - signalhaven-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER} -d ${PGDATABASE}"]
       interval: 5s
       timeout: 5s
       retries: 10

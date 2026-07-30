@@ -75,7 +75,7 @@ cd SignalHaven
 cp .env.example .env
 ```
 
-Open `.env` and replace the default `POSTGRES_PASSWORD` with a strong, unique password. Then start SignalHaven:
+Open `.env` and replace the default `PGPASSWORD` with a strong, unique password. Then start SignalHaven:
 
 ```bash
 docker compose up -d

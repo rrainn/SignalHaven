@@ -51,13 +51,19 @@ and local XMLTV files remain available under **Settings → EPG Sources**.
 
 ## Environment variables
 
-### Docker Compose `.env`
+### Shared `.env`
+
+Root application scripts and Docker Compose read the same `.env` file. Compose
+maps the backend-compatible `PG*` names to the `POSTGRES_*` names required by
+the official Postgres image.
 
 | Variable                                 | Default                             | Description                                                  |
 | ---------------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `POSTGRES_DB`                            | `signalhaven`                       | Database name for the bundled Postgres service.              |
-| `POSTGRES_USER`                          | `signalhaven`                       | Database user for the bundled Postgres service.              |
-| `POSTGRES_PASSWORD`                      | `change-me`                         | Database password for the bundled Postgres service.          |
+| `PGHOST`                                 | `localhost`                         | Database host used by local backend scripts.                 |
+| `PGPORT`                                 | `5432`                              | Database port used locally and published by Compose.         |
+| `PGDATABASE`                             | `signalhaven`                       | Database name for the backend and bundled Postgres service.  |
+| `PGUSER`                                 | `signalhaven`                       | Database user for the backend and bundled Postgres service.  |
+| `PGPASSWORD`                             | `change-me`                         | Database password for the backend and bundled Postgres.      |
 | `SIGNALHAVEN_IMAGE`                      | `ghcr.io/rrainn/signalhaven:latest` | Container image reference used by the `signalhaven` service. |
 | `SIGNALHAVEN_HTTP_PORT`                  | `3000`                              | Host port mapped to container port `3000`.                   |
 | `SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED` | `false`                             | Opt in to the Advanced-page external IP lookup.              |
