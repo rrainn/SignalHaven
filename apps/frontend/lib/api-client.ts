@@ -541,6 +541,16 @@ export function updateSettings(
 
 /* ── Recordings (rrainn/SignalHaven#U8-recordings) ─────────────────────────────── */
 
+/** Build the same-origin endpoint that proxies provider recording artwork. */
+export function buildRecordingArtworkUrl(recordingId: string): string {
+	return `/api/v1/recordings/${encodeURIComponent(recordingId)}/artwork`;
+}
+
+/** Build the same-origin endpoint that proxies a logical channel's logo. */
+export function buildChannelLogoUrl(channelId: string): string {
+	return `/api/v1/channels/${encodeURIComponent(channelId)}/logo`;
+}
+
 /**
  * Build the playback URL for a recording. The frontend treats the
  * recordings library as an HLS source so the same {@link Player}

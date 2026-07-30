@@ -17,6 +17,7 @@ import { Button } from "../_ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../_ui/Card";
 import { IconButton } from "../_ui/IconButton";
 import { cn } from "../_ui/cn";
+import { buildRecordingArtworkUrl } from "../../lib/api-client";
 
 import { RecordingArtwork } from "./RecordingArtwork";
 import { RecordingStatusBadge } from "./RecordingStatusBadge";
@@ -214,7 +215,11 @@ function RecordingCard(props: RecordingLibraryItemProps) {
 			)}
 		>
 			<RecordingArtwork
-				src={recording.metadata?.artworkUrl}
+				src={
+					recording.metadata?.artworkUrl
+						? buildRecordingArtworkUrl(recording.id)
+						: null
+				}
 				title={recording.title}
 				className="aspect-video w-full"
 			/>
@@ -304,10 +309,13 @@ function RecordingRow(props: RecordingLibraryItemProps) {
 				</button>
 			) : null}
 			<RecordingArtwork
-				src={recording.metadata?.artworkUrl}
+				src={
+					recording.metadata?.artworkUrl
+						? buildRecordingArtworkUrl(recording.id)
+						: null
+				}
 				title={recording.title}
 				className="h-14 w-24 shrink-0 rounded"
-				sizes="96px"
 			/>
 			<div className="min-w-0 flex-1">
 				<button

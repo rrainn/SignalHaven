@@ -26,6 +26,7 @@ export type CreateEpgProgramInput = {
 	episode?: number;
 	season?: number;
 	categories?: string[];
+	artworkUrl?: string;
 	providerEpisodeId?: string;
 	episodeIdentityKey?: string;
 	originalAirDate?: string;
@@ -70,6 +71,7 @@ export class EpgProgramsRepository {
 					episode: input.episode,
 					season: input.season,
 					categories: input.categories,
+					artworkUrl: input.artworkUrl,
 					providerEpisodeId: input.providerEpisodeId,
 					episodeIdentityKey: input.episodeIdentityKey,
 					originalAirDate: input.originalAirDate,

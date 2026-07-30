@@ -149,6 +149,29 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		}
 	});
 
+	/** Keep provider artwork URLs and fetches behind the backend boundary. */
+	router.get(
+		"/recordings/:id/artwork",
+		validate({ params: recordingIdParamSchema }),
+		async (req, res, next) => {
+			try {
+				const artwork = await service.getArtwork(req.params["id"] as string);
+				if (!artwork) {
+					throw new HttpError(404, "not_found", "Artwork not available");
+				}
+				res.setHeader("Content-Type", artwork.contentType);
+				res.setHeader(
+					"Cache-Control",
+					`public, max-age=${artwork.cacheMaxAgeSeconds}`
+				);
+				res.setHeader("X-Content-Type-Options", "nosniff");
+				res.status(200).send(artwork.body);
+			} catch (error) {
+				next(translate(error));
+			}
+		}
+	);
+
 	router.get(
 		"/recordings/:id/stream.m3u8",
 		validate({

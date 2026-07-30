@@ -32,23 +32,6 @@ const nextConfig: NextConfig = {
 	// Ensures that shared packages outside this workspace (packages/shared)
 	// are included in the traced standalone bundle.
 	outputFileTracingRoot: path.join(__dirname, "../../"),
-	images: {
-		// AVIF first, then WebP — Next.js will negotiate based on the client's
-		// Accept header and fall back to the original format for older browsers.
-		// See docs/perf-baseline.md for the rationale + measured savings.
-		formats: ["image/avif", "image/webp"],
-		// Channel logos come from arbitrary external IPTV / EPG providers
-		// (M3U/XMLTV sources the user configures), so we cannot enumerate
-		// hostnames ahead of time. We restrict to https and let the Next.js
-		// image optimizer sandbox the fetch (5 MB default body cap, SVG
-		// disabled, no SSRF to the local network).
-		remotePatterns: [{ protocol: "https", hostname: "**" }],
-		// 1x / 1.5x / 2x at the typical logo render size (~32px) plus a few
-		// small thumbnails for poster art. Keeps the optimizer cache small
-		// and avoids generating dozens of unused variants.
-		deviceSizes: [320, 420, 640, 768, 1024, 1280, 1536],
-		imageSizes: [16, 24, 32, 48, 64, 96, 128, 256]
-	},
 	// Proxy `/api/*` to the backend in development so the browser sees a
 	// single origin and we never need CORS in dev. In production both apps
 	// are expected to be served behind the same reverse proxy, so this rule

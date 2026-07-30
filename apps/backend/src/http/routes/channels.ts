@@ -10,6 +10,7 @@ import {
 } from "@signalhaven/shared";
 import { Router } from "express";
 
+import { RemoteImageProxy } from "../../media/remote-image-proxy";
 import { HttpError } from "../middleware/errors";
 import { validate } from "../middleware/validate";
 import {
@@ -33,7 +34,8 @@ export function createChannelsRouter(
 	matcher: EpgMatcherService,
 	tunersService: TunersService,
 	channelsRepository: ChannelsRepository,
-	onChannelsChanged?: () => void
+	onChannelsChanged?: () => void,
+	channelLogoProxy: RemoteImageProxy = new RemoteImageProxy()
 ): Router {
 	const router = Router();
 
@@ -51,6 +53,36 @@ export function createChannelsRouter(
 			next(error);
 		}
 	});
+
+	/** Resolve a logical channel and proxy its provider-owned logo bytes. */
+	router.get(
+		"/channels/:id/logo",
+		validate({ params: channelIdParamSchema }),
+		async (req, res, next) => {
+			try {
+				const channelId = req.params["id"] as string;
+				const sourceId = await resolveSourceId(channelsRepository, channelId);
+				const channel = await channelsRepository.getById(sourceId);
+				if (!channel) throw new ChannelNotFoundError(channelId);
+				if (!channel.logoUrl) {
+					throw new HttpError(404, "not_found", "Logo not available");
+				}
+				const logo = await channelLogoProxy.get(channelId, channel.logoUrl);
+				if (!logo) {
+					throw new HttpError(404, "not_found", "Logo not available");
+				}
+				res.setHeader("Content-Type", logo.contentType);
+				res.setHeader(
+					"Cache-Control",
+					`public, max-age=${logo.cacheMaxAgeSeconds}`
+				);
+				res.setHeader("X-Content-Type-Options", "nosniff");
+				res.status(200).send(logo.body);
+			} catch (error) {
+				next(translate(error));
+			}
+		}
+	);
 
 	router.get(
 		"/channels/:id/quality",

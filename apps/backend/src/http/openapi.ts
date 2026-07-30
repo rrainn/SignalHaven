@@ -637,6 +637,26 @@ registry.registerPath({
 });
 
 registry.registerPath({
+	method: "get",
+	path: "/api/v1/channels/{id}/logo",
+	summary: "Proxy a logical channel logo through the API origin",
+	description:
+		"Resolves the preferred physical source, validates the provider image, and returns bounded cached bytes without exposing the provider URL to the browser.",
+	tags: ["channels"],
+	request: { params: z.object({ id: z.string().uuid() }) },
+	responses: {
+		200: {
+			description: "Channel logo bytes.",
+			content: { "image/*": { schema: { type: "string", format: "binary" } } }
+		},
+		404: {
+			description: "Channel or logo not found.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
 	method: "post",
 	path: "/api/v1/channels/merge",
 	summary: "Merge channels into one multi-source identity",
@@ -964,6 +984,26 @@ registry.registerPath({
 		},
 		404: {
 			description: "Recording not found.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/recordings/{id}/artwork",
+	summary: "Proxy recording artwork through the API origin",
+	description:
+		"Fetches the recording's EPG artwork server-side with host, content-type, response-size, timeout, and cache limits.",
+	tags: ["recordings"],
+	request: { params: z.object({ id: z.string().uuid() }) },
+	responses: {
+		200: {
+			description: "Recording artwork bytes.",
+			content: { "image/*": { schema: { type: "string", format: "binary" } } }
+		},
+		404: {
+			description: "Recording or artwork not found.",
 			content: { "application/json": { schema: ErrorResponse } }
 		}
 	}

@@ -74,17 +74,12 @@ Route (app)
 
 ## Image optimization
 
-- All channel logos are rendered via the new `ChannelLogo` component
-  (`app/_ui/ChannelLogo.tsx`), which delegates to `next/image` for
-  `https://` sources (the common case) with explicit `width`/`height`
-  to prevent CLS.
-- `next.config.ts` enables `formats: ['image/avif', 'image/webp']` so
-  the optimizer negotiates AVIF (≈30–50 % smaller than WebP, ≈50–80 %
-  smaller than JPEG) when supported, falling back to WebP, then to
-  the original.
-- `imageSizes` is constrained to small thumbnails (16–256 px) so we
-  do not generate dozens of unused variants for the small (≤ 96 px)
-  channel logos that dominate our usage.
+- Channel logos and recording artwork use same-origin `/api/v1/*` image
+  endpoints. The backend validates, size-limits, and caches provider bytes;
+  the browser never requests a provider image URL directly.
+- Image components keep explicit dimensions to prevent layout shift and use
+  native lazy loading for off-screen media. They reject non-API sources and
+  render the existing fallback if an image is unavailable.
 
 ## Route prefetching
 

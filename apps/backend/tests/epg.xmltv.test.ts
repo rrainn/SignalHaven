@@ -61,6 +61,7 @@ const SMALL_XMLTV = `<?xml version="1.0" encoding="UTF-8"?>
   <channel id="c2"><display-name>Channel Two</display-name></channel>
   <programme channel="c1" start="20260101120000 +0000" stop="20260101130000 +0000">
 	<title>Program A</title><desc>First</desc><category>News</category>
+	<icon src="https://example.com/program-a.jpg" />
 	<date>20260101</date>
 	<episode-num system="dd_progid">EP00000001.0001</episode-num>
 	<episode-num system="xmltv_ns">0.0.</episode-num><new />
@@ -126,6 +127,13 @@ test("importXmltv populates channels and programs idempotently", async () => {
 		broadcast_newness: "new",
 		newness_source: "xmltv_new"
 	});
+	const importedArtwork = await pool.query<{ artwork_url: string | null }>(
+		"SELECT artwork_url FROM epg_programs WHERE title = 'Program A'"
+	);
+	assert.equal(
+		importedArtwork.rows[0]?.artwork_url,
+		"https://example.com/program-a.jpg"
+	);
 	const tuplesBeforeRefresh = await pool.query<{
 		id: string;
 		xmin: string;
@@ -165,6 +173,25 @@ test("importXmltv populates channels and programs idempotently", async () => {
 	assert.equal(result3.programsInserted, 0);
 	assert.equal(result3.programsChanged, 1);
 	assert.equal(result3.programsUnchanged, 2);
+
+	const artworkChangedFeed = changedFeed.replace(
+		"program-a.jpg",
+		"program-a-updated.jpg"
+	);
+	const result4 = await importXmltv({
+		sourceId: source.id,
+		pool,
+		input: Readable.from([Buffer.from(artworkChangedFeed, "utf8")]),
+		pruneOlderThan: noPrune
+	});
+	assert.equal(result4.programsChanged, 1);
+	const updatedArtwork = await pool.query<{ artwork_url: string | null }>(
+		"SELECT artwork_url FROM epg_programs WHERE title = 'Program A'"
+	);
+	assert.equal(
+		updatedArtwork.rows[0]?.artwork_url,
+		"https://example.com/program-a-updated.jpg"
+	);
 });
 
 test("importXmltv prunes programs whose stop is older than the cutoff", async () => {

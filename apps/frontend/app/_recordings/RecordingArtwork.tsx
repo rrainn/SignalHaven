@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { Film } from "lucide-react";
 import { useState } from "react";
 
@@ -10,13 +9,11 @@ export interface RecordingArtworkProps {
 	src: string | null | undefined;
 	title: string;
 	className?: string | undefined;
-	sizes?: string | undefined;
 	priority?: boolean | undefined;
 }
 
 /**
- * Render EPG artwork with stable dimensions and a polished fallback. External
- * provider URLs mirror the channel-logo policy used elsewhere in the app.
+ * Render backend-proxied EPG artwork with stable dimensions and a fallback.
  */
 export function RecordingArtwork(props: RecordingArtworkProps) {
 	const [failedSource, setFailedSource] = useState<string | null>(null);
@@ -39,39 +36,24 @@ export function RecordingArtwork(props: RecordingArtworkProps) {
 	}
 
 	const imageClassName = "h-full w-full object-cover";
-	const isLocal = source.startsWith("/");
-	const isHttps = source.startsWith("https://");
-	const isHttp = source.startsWith("http://");
-	if (!isLocal && !isHttps && !isHttp) {
+	const isBackendApi = source.startsWith("/api/") && !source.startsWith("//");
+	if (!isBackendApi) {
 		return (
 			<div className={cn("overflow-hidden", props.className)}>{fallback}</div>
 		);
 	}
-	const optimisable = isHttps || isLocal;
 	return (
 		<div className={cn("relative overflow-hidden", props.className)}>
-			{optimisable ? (
-				<Image
-					src={source}
-					alt=""
-					fill
-					sizes={props.sizes ?? "(max-width: 640px) 100vw, 33vw"}
-					className={imageClassName}
-					onError={() => setFailedSource(source)}
-					{...(props.priority ? { priority: true } : {})}
-				/>
-			) : (
-				<img
-					src={source}
-					alt=""
-					width={640}
-					height={360}
-					loading={props.priority ? "eager" : "lazy"}
-					decoding="async"
-					className={imageClassName}
-					onError={() => setFailedSource(source)}
-				/>
-			)}
+			<img
+				src={source}
+				alt=""
+				width={640}
+				height={360}
+				loading={props.priority ? "eager" : "lazy"}
+				decoding="async"
+				className={imageClassName}
+				onError={() => setFailedSource(source)}
+			/>
 		</div>
 	);
 }
