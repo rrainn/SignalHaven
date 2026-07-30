@@ -150,6 +150,13 @@ export function buildFfmpegArgs(options: BuildFfmpegArgsOptions): string[] {
 		"-loglevel",
 		"warning",
 		"-nostdin",
+		// Machine-readable progress exposes sustained under-speed output without
+		// enabling FFmpeg's noisy terminal statistics.
+		"-nostats",
+		"-stats_period",
+		"1",
+		"-progress",
+		"pipe:2",
 		"-fflags",
 		outputMode === "live" ? "+genpts+nobuffer" : "+genpts"
 	];
@@ -452,7 +459,9 @@ function hlsOutputArgs(
 					"-hls_list_size",
 					String(
 						timeShiftWindowSeconds === undefined
-							? 6
+							? // Keep enough history for the player's six-segment live
+								// cushion even when full time shifting is disabled.
+								12
 							: Math.max(1, Math.ceil(timeShiftWindowSeconds))
 					),
 					...(timeShiftWindowSeconds === undefined

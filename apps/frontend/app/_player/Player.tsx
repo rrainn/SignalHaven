@@ -1,6 +1,10 @@
 "use client";
 
-import type { CommercialMarker, TranscodeProfile } from "@signalhaven/shared";
+import type {
+	ChannelQuality,
+	CommercialMarker,
+	TranscodeProfile
+} from "@signalhaven/shared";
 import {
 	Captions,
 	CaptionsOff,
@@ -39,7 +43,7 @@ import { Slider } from "../_ui/Slider";
 import { Spinner } from "../_ui/Spinner";
 import { cn } from "../_ui/cn";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
-import { getStreamStatus } from "../../lib/api-client";
+import { getChannelQuality, getStreamStatus } from "../../lib/api-client";
 import { useHls, type HlsModule } from "./useHls";
 
 /**
@@ -77,7 +81,8 @@ interface HlsInstance {
 }
 
 interface PlaybackStats {
-	bitrateMbps: number | null;
+	streamBitrateMbps: number | null;
+	connectionMbps: number | null;
 	resolution: string;
 	fps: number | null;
 	bufferedSeconds: number;
@@ -87,6 +92,14 @@ interface PlaybackStats {
 	profile: string | null;
 	hwaccel: string | null;
 	serverState: string | null;
+	pipeline: {
+		mode: "remux" | "transcode";
+		health: "starting" | "healthy" | "slow" | "stalled";
+		speed: number | null;
+		fps: number | null;
+		progressAgeSeconds: number | null;
+	} | null;
+	sourceQuality: ChannelQuality | null;
 	timeShift: {
 		enabled: boolean;
 		windowSeconds: number;
@@ -134,6 +147,9 @@ const GO_LIVE_RECOVERY_BACKOFF_SECONDS = 2;
 const GO_LIVE_STALL_TIMEOUT_MS = 4_000;
 /** Smooth short decoder scheduling spikes without hiding sustained FPS changes. */
 const FRAME_RATE_SMOOTHING_WEIGHT = 0.25;
+/** Extra live-edge depth absorbs short tuner, network, and scheduler jitter. */
+const LIVE_SYNC_SEGMENT_COUNT = 6;
+const LIVE_MAX_LATENCY_SEGMENT_COUNT = 12;
 
 export interface PlayerPersistence {
 	/** Latest known volume in [0..1]; player initialises from this. */
@@ -220,8 +236,7 @@ interface SubtitleTrackInfo {
 /**
  * Build the master playlist URL for a channel; respects the optional
  * `quality` pin by appending `?profile=<profile>`. `auto` (or absent) uses
- * `original-quality`, which preserves resolution while converting source
- * codecs that browsers cannot decode.
+ * no profile override so the backend can honor its configured default.
  */
 function buildSrc(
 	channelId: string,
@@ -229,14 +244,15 @@ function buildSrc(
 	viewerId?: string
 ): string {
 	const base = `/api/v1/stream/${encodeURIComponent(channelId)}/master.m3u8`;
-	// Auto must prioritize playback compatibility over the server's legacy
-	// direct-stream default, which may expose MPEG-2/AC-3 broadcast feeds.
-	const profile = !quality || quality === "auto" ? "original-quality" : quality;
-	const search = new URLSearchParams({ profile });
+	const search = new URLSearchParams();
+	if (quality && quality !== "auto") {
+		search.set("profile", quality);
+	}
 	if (viewerId) {
 		search.set("viewerId", viewerId);
 	}
-	return `${base}?${search.toString()}`;
+	const query = search.toString();
+	return query ? `${base}?${query}` : base;
 }
 
 /** Create the stable id that joins one player's short HLS requests together. */
@@ -250,9 +266,12 @@ function buildViewerReleaseUrl(
 	quality: PlayerQuality,
 	viewerId: string
 ): string {
-	const profile = quality === "auto" ? "original-quality" : quality;
-	const query = new URLSearchParams({ profile });
-	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release?${query.toString()}`;
+	const query = new URLSearchParams();
+	if (quality !== "auto") {
+		query.set("profile", quality);
+	}
+	const suffix = query.size > 0 ? `?${query.toString()}` : "";
+	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release${suffix}`;
 }
 
 /**
@@ -491,7 +510,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			// playlist URL needs to change.
 			let hls = hlsInstanceRef.current;
 			if (!hls) {
-				const real = new HlsCtor();
+				const real = new HlsCtor({
+					liveSyncDurationCount: LIVE_SYNC_SEGMENT_COUNT,
+					liveMaxLatencyDurationCount: LIVE_MAX_LATENCY_SEGMENT_COUNT
+				});
 				const createdHls = real as unknown as HlsInstance;
 				hls = createdHls;
 				hlsInstanceRef.current = createdHls;
@@ -632,9 +654,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					? video.seekable.end(video.seekable.length - 1)
 					: null;
 				const level = hls?.levels?.[hls.currentLevel ?? -1];
-				const bitrate = hls?.bandwidthEstimate ?? level?.bitrate;
 				setPlaybackStats({
-					bitrateMbps: bitrate ? bitrate / 1_000_000 : null,
+					streamBitrateMbps: level?.bitrate ? level.bitrate / 1_000_000 : null,
+					connectionMbps: hls?.bandwidthEstimate
+						? hls.bandwidthEstimate / 1_000_000
+						: null,
 					resolution:
 						video.videoWidth && video.videoHeight
 							? `${video.videoWidth}×${video.videoHeight}`
@@ -655,30 +679,46 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					profile: isRecording ? "recording playback" : null,
 					hwaccel: null,
 					serverState: null,
+					pipeline: null,
+					sourceQuality: null,
 					timeShift: null
 				});
 				if (!isRecording && !statusRequestInFlightRef.current) {
 					statusRequestInFlightRef.current = true;
-					void getStreamStatus(channelId, quality)
-						.then((server) => {
+					void Promise.allSettled([
+						getStreamStatus(channelId, quality),
+						getChannelQuality(channelId)
+					])
+						.then(([serverResult, qualityResult]) => {
 							if (disposed) return;
 							setPlaybackStats((current) =>
 								current
 									? {
 											...current,
-											profile: server.profile,
-											hwaccel: server.hwaccel,
-											serverState: server.state,
-											timeShift: {
-												enabled: server.timeShift.enabled,
-												windowSeconds: server.timeShift.windowSeconds,
-												bufferBytes: server.timeShift.bufferBytes
-											}
+											...(serverResult.status === "fulfilled"
+												? {
+														profile: serverResult.value.profile,
+														hwaccel: serverResult.value.hwaccel,
+														serverState: serverResult.value.state,
+														pipeline: serverResult.value.pipeline,
+														timeShift: {
+															enabled: serverResult.value.timeShift.enabled,
+															windowSeconds:
+																serverResult.value.timeShift.windowSeconds,
+															bufferBytes:
+																serverResult.value.timeShift.bufferBytes
+														}
+													}
+												: {}),
+											sourceQuality:
+												qualityResult.status === "fulfilled" &&
+												qualityResult.value.active
+													? qualityResult.value
+													: null
 										}
 									: current
 							);
 						})
-						.catch(() => undefined)
 						.finally(() => {
 							statusRequestInFlightRef.current = false;
 						});
@@ -1309,11 +1349,17 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						data-testid="player-extra-stats"
 						className="pointer-events-none absolute left-2 top-2 z-20 grid max-w-[calc(100%-1rem)] grid-cols-[auto_1fr] gap-x-2 rounded bg-black/80 p-2 font-mono text-[10px] leading-4 sm:left-3 sm:top-3 sm:max-w-[calc(100%-1.5rem)] sm:gap-x-3 sm:p-3 sm:text-[11px] sm:leading-5"
 					>
-						<dt>Bitrate</dt>
+						<dt>Stream bitrate</dt>
 						<dd>
-							{playbackStats.bitrateMbps === null
+							{playbackStats.streamBitrateMbps === null
 								? "Unknown"
-								: `${playbackStats.bitrateMbps.toFixed(2)} Mbps`}
+								: `${playbackStats.streamBitrateMbps.toFixed(2)} Mbps`}
+						</dd>
+						<dt>Connection estimate</dt>
+						<dd>
+							{playbackStats.connectionMbps === null
+								? "Unknown"
+								: `${playbackStats.connectionMbps.toFixed(2)} Mbps`}
 						</dd>
 						<dt>Resolution</dt>
 						<dd>{playbackStats.resolution}</dd>
@@ -1344,6 +1390,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						<dd>{playbackStats.hwaccel ?? "Software/direct"}</dd>
 						<dt>Server status</dt>
 						<dd>{formatServerState(playbackStats.serverState)}</dd>
+						<dt>Pipeline health</dt>
+						<dd>{formatPipelineHealth(playbackStats.pipeline)}</dd>
+						<dt>Tuner/source</dt>
+						<dd>{formatSourceQuality(playbackStats.sourceQuality)}</dd>
 						<dt>Live rewind</dt>
 						<dd>
 							{playbackStats.timeShift === null
@@ -1713,6 +1763,43 @@ function formatServerState(state: string | null): string {
 		stopped: "Stopped"
 	};
 	return labels[state] ?? state;
+}
+
+/** Pair pipeline health with the rate fields needed to locate starvation. */
+function formatPipelineHealth(pipeline: PlaybackStats["pipeline"]): string {
+	if (!pipeline) return "N/A";
+	const labels = {
+		starting: "Starting",
+		healthy: "Healthy",
+		slow: "Slow",
+		stalled: "Stalled"
+	} as const;
+	const details = [
+		pipeline.speed === null ? null : `${pipeline.speed.toFixed(2)}×`,
+		pipeline.fps === null ? null : `${pipeline.fps.toFixed(1)} FPS`,
+		pipeline.mode === "remux" ? "Direct/remux" : "Transcoding"
+	].filter(Boolean);
+	return [labels[pipeline.health], ...details].join(" · ");
+}
+
+/** Summarize provider-side RF and transport measurements when available. */
+function formatSourceQuality(quality: PlaybackStats["sourceQuality"]): string {
+	if (!quality) return "Unavailable";
+	const details = [
+		quality.signalStrengthPercent === undefined
+			? null
+			: `Strength ${quality.signalStrengthPercent.toFixed(0)}%`,
+		quality.signalQualityPercent === undefined
+			? null
+			: `Quality ${quality.signalQualityPercent.toFixed(0)}%`,
+		quality.symbolQualityPercent === undefined
+			? null
+			: `Symbol ${quality.symbolQualityPercent.toFixed(0)}%`,
+		quality.networkRateMbps === undefined
+			? null
+			: `${quality.networkRateMbps.toFixed(1)} Mbps from tuner`
+	].filter(Boolean);
+	return details.length > 0 ? details.join(" · ") : "Active";
 }
 
 /** Describe the configured live-rewind limit as time instead of storage alone. */

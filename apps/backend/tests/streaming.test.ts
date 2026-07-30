@@ -381,7 +381,7 @@ test("viewer release stops the stream immediately after the last viewer leaves",
 		);
 
 		const firstRelease = await request(app).post(
-			`/api/v1/stream/${channelId}/viewers/${firstViewerId}/release?profile=direct`
+			`/api/v1/stream/${channelId}/viewers/${firstViewerId}/release`
 		);
 		assert.equal(firstRelease.status, 204);
 		assert.equal(session.getState(), "ready");
@@ -860,6 +860,67 @@ test("failed startup writes one sanitized structured log without subscribers", a
 		});
 		const serialized = JSON.stringify(logs);
 		assert.doesNotMatch(serialized, /192\.168\.1\.20|viewer|secret|private/);
+	} finally {
+		await rm(tmpRoot, { recursive: true, force: true });
+	}
+});
+
+test("StreamSession reports whether live output is keeping up in real time", async () => {
+	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-progress-"));
+	try {
+		const providerId = randomUUID();
+		const allocator = new TunerAllocator({ capacity: async () => 1 });
+		const lease = await allocator.acquire({
+			providerId,
+			channelId: "progress",
+			purpose: "live",
+			priority: 0
+		});
+		let process: FakeProcess | undefined;
+		const session = new StreamSession({
+			sessionId: "progress\u001f720p",
+			channelId: "progress",
+			upstreamUrl: "fake://input",
+			lease,
+			releaseLease: () => allocator.release(lease.leaseId),
+			lingerMs: 0,
+			profile: "720p",
+			runner: {
+				spawn: (args) => {
+					const pattern = args[
+						args.indexOf("-hls_segment_filename") + 1
+					] as string;
+					process = makeFakeProcess(
+						pattern.substring(0, pattern.lastIndexOf("/"))
+					) as unknown as FakeProcess;
+					return process as unknown as ChildProcess;
+				}
+			},
+			tmpRoot
+		});
+
+		await session.start();
+		process?.stderr.emit(
+			"data",
+			Buffer.from(
+				"frame=120\nfps=21.6\nout_time_us=86400000\nspeed=0.72x\nprogress=continue\n"
+			)
+		);
+
+		const status = session.getPipelineStatus();
+		assert.equal(status.mode, "transcode");
+		assert.equal(status.health, "slow");
+		assert.equal(status.speed, 0.72);
+		assert.equal(status.fps, 21.6);
+		assert.equal(status.outputTimeSeconds, 86.4);
+		assert.ok(status.lastProgressAt);
+		assert.ok((status.progressAgeSeconds ?? Infinity) < 1);
+
+		const stopped = new Promise<void>((resolve) =>
+			session.onStopped(() => resolve())
+		);
+		session.stop();
+		await stopped;
 	} finally {
 		await rm(tmpRoot, { recursive: true, force: true });
 	}

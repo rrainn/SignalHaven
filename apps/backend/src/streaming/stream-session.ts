@@ -149,6 +149,17 @@ export interface StreamSessionOptions {
 }
 
 export type StreamSessionState = "starting" | "ready" | "lingering" | "stopped";
+export type StreamPipelineHealth = "starting" | "healthy" | "slow" | "stalled";
+
+export interface StreamPipelineStatus {
+	mode: "remux" | "transcode";
+	health: StreamPipelineHealth;
+	speed: number | null;
+	fps: number | null;
+	outputTimeSeconds: number | null;
+	lastProgressAt: string | null;
+	progressAgeSeconds: number | null;
+}
 
 /**
  * Per-channel streaming session. Owns one ffmpeg process and a temp dir,
@@ -227,6 +238,17 @@ export class StreamSession {
 	private checkingBuffer = false;
 	/** Finalized HLS segments are immutable, so their sizes only need one stat. */
 	private readonly bufferFileSizes = new Map<string, number>();
+	/** FFmpeg progress fields accumulated until its next `progress=` marker. */
+	private readonly pendingProgress = new Map<string, string>();
+	private processingMode: StreamPipelineStatus["mode"] = "remux";
+	private latestProgress:
+		| {
+				speed: number | null;
+				fps: number | null;
+				outputTimeSeconds: number | null;
+				updatedAtMs: number;
+		  }
+		| undefined;
 
 	constructor(options: StreamSessionOptions) {
 		this.sessionId = options.sessionId;
@@ -279,6 +301,7 @@ export class StreamSession {
 				: {}),
 			...(this.inputCodecs ? { inputCodecs: this.inputCodecs } : {})
 		});
+		this.processingMode = ffmpegProcessingMode(args);
 
 		this.readyPromise = new Promise<void>((resolve, reject) => {
 			this.resolveReady = resolve;
@@ -313,6 +336,9 @@ export class StreamSession {
 		const consume = (raw: string): void => {
 			const line = redactUpstreamDiagnostic(raw.trimEnd(), this.upstreamUrl);
 			if (line.length === 0) {
+				return;
+			}
+			if (this.consumeProgressLine(line)) {
 				return;
 			}
 			const parsed = parseFfmpegLine(line);
@@ -604,6 +630,61 @@ export class StreamSession {
 		| { category?: string | undefined; message: string; ts: string }
 		| undefined {
 		return this.lastError;
+	}
+
+	/** Snapshot of whether FFmpeg is producing playable output in real time. */
+	getPipelineStatus(nowMs = Date.now()): StreamPipelineStatus {
+		const progress = this.latestProgress;
+		const ageSeconds = progress
+			? Math.max(0, (nowMs - progress.updatedAtMs) / 1_000)
+			: null;
+		let health: StreamPipelineHealth;
+		if (!progress) {
+			health =
+				nowMs - this.startedAt.getTime() < 5_000 ? "starting" : "stalled";
+		} else if ((ageSeconds ?? 0) > 5) {
+			health = "stalled";
+		} else if (progress.speed !== null && progress.speed < 0.9) {
+			health = "slow";
+		} else {
+			health = "healthy";
+		}
+
+		return {
+			mode: this.processingMode,
+			health,
+			speed: progress?.speed ?? null,
+			fps: progress?.fps ?? null,
+			outputTimeSeconds: progress?.outputTimeSeconds ?? null,
+			lastProgressAt: progress
+				? new Date(progress.updatedAtMs).toISOString()
+				: null,
+			progressAgeSeconds: ageSeconds
+		};
+	}
+
+	/** Consume one `-progress` key/value line and commit complete samples. */
+	private consumeProgressLine(line: string): boolean {
+		const match = /^([a-z_]+)=(.*)$/i.exec(line);
+		if (!match?.[1]) {
+			return false;
+		}
+		const key = match[1];
+		const value = match[2] ?? "";
+		this.pendingProgress.set(key, value);
+		if (key !== "progress") {
+			return true;
+		}
+		this.latestProgress = {
+			speed: parseProgressNumber(this.pendingProgress.get("speed"), /x$/i),
+			fps: parseProgressNumber(this.pendingProgress.get("fps")),
+			outputTimeSeconds: parseProgressMicroseconds(
+				this.pendingProgress.get("out_time_us")
+			),
+			updatedAtMs: Date.now()
+		};
+		this.pendingProgress.clear();
+		return true;
 	}
 
 	/** Subscribe to "session has fully torn down" notifications. */
@@ -1073,6 +1154,33 @@ function redactUpstreamDiagnostic(line: string, upstreamUrl: string): string {
 			(diagnostic, candidate) => diagnostic.split(candidate).join(redaction),
 			line
 		);
+}
+
+/** Detect whether any selected codec requires real-time encoding. */
+function ffmpegProcessingMode(args: readonly string[]): "remux" | "transcode" {
+	for (let index = 0; index < args.length - 1; index += 1) {
+		if (["-c", "-c:v", "-c:a"].includes(args[index] ?? "")) {
+			if (args[index + 1] !== "copy") return "transcode";
+		}
+	}
+	return "remux";
+}
+
+/** Parse finite progress values while accepting FFmpeg's unit suffixes. */
+function parseProgressNumber(
+	value: string | undefined,
+	suffix?: RegExp
+): number | null {
+	if (!value || value === "N/A") return null;
+	const normalized = suffix ? value.replace(suffix, "") : value;
+	const parsed = Number(normalized);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Convert FFmpeg's microsecond progress clock to seconds. */
+function parseProgressMicroseconds(value: string | undefined): number | null {
+	const parsed = parseProgressNumber(value);
+	return parsed === null ? null : parsed / 1_000_000;
 }
 
 /** Remove URLs and common secret-bearing parameters from retained messages. */

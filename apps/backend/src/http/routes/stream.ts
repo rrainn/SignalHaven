@@ -223,6 +223,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				startedAt: session.startedAt.toISOString(),
 				refCount: session.getRefCount(),
 				timeShift: session.getTimeShiftStatus(),
+				pipeline: session.getPipelineStatus(),
 				lastError: session.getLastError() ?? null
 			});
 		}

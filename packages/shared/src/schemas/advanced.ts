@@ -59,6 +59,15 @@ export const streamStatusSchema = z.object({
 		bufferBytes: z.number(),
 		maxBufferBytes: z.number().nullable()
 	}),
+	pipeline: z.object({
+		mode: z.enum(["remux", "transcode"]),
+		health: z.enum(["starting", "healthy", "slow", "stalled"]),
+		speed: z.number().nonnegative().nullable(),
+		fps: z.number().nonnegative().nullable(),
+		outputTimeSeconds: z.number().nonnegative().nullable(),
+		lastProgressAt: z.string().nullable(),
+		progressAgeSeconds: z.number().nonnegative().nullable()
+	}),
 	lastError: z
 		.object({
 			category: z.string().optional(),
