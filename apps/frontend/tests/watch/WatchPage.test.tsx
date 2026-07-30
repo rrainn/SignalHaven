@@ -18,7 +18,10 @@ import type {
 // jsdom — the U7 tests exercise channel switching, not the real player.
 vi.mock("../../app/_player/useHls", () => ({
 	useHls: () => ({
-		Hls: null,
+		Hls: class UnsupportedHls {
+			/** Keep watch-page tests on the native compatibility path. */
+			static isSupported = () => false;
+		},
 		nativeHls: true,
 		loadError: null,
 		attempt: 0,

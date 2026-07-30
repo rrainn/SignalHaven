@@ -122,8 +122,6 @@ const DOUBLE_TAP_WINDOW_MS = 300;
 const SEEK_STEP_SECONDS = 10;
 /** Volume delta applied by ↑/↓ arrows. */
 const VOLUME_STEP = 0.05;
-/** MediaError codes that indicate another playback engine may recover. */
-const NATIVE_HLS_FALLBACK_ERROR_CODES = new Set([3, 4]);
 /** Give MediaSource a moment to settle before the second recovery attempt. */
 const HLS_MEDIA_RECOVERY_DELAY_MS = 1_000;
 /** Keep automatic recovery useful without allowing an infinite loop. */
@@ -200,11 +198,6 @@ export interface PlayerProps {
 	 * the real (jsdom-incompatible) hls.js bundle.
 	 */
 	hlsCtorOverride?: HlsModule | undefined;
-	/**
-	 * Test seam: skip native-HLS detection and force the use of hls.js.
-	 * Native Safari path is otherwise picked when supported.
-	 */
-	forceHlsJs?: boolean | undefined;
 	className?: string | undefined;
 	style?: CSSProperties | undefined;
 }
@@ -284,7 +277,6 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			onPersist,
 			onDismiss,
 			hlsCtorOverride,
-			forceHlsJs = false,
 			className,
 			style
 		} = props;
@@ -357,9 +349,6 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const [controlsVisible, setControlsVisible] = useState(true);
 		const [loading, setLoading] = useState(true);
 		const [error, setError] = useState<string | null>(null);
-		// Safari's native HLS decoder can reject streams that hls.js can
-		// transmux successfully, so remember the fallback for this player.
-		const [nativeHlsFailed, setNativeHlsFailed] = useState(false);
 		const [extraStats, setExtraStats] = useState(false);
 		const [contextMenu, setContextMenu] = useState<{
 			x: number;
@@ -455,10 +444,21 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			nativeHls: detectedNative,
 			loadError,
 			reload
-		} = useHls(!hlsCtorOverride, nativeHlsFailed);
+		} = useHls(!hlsCtorOverride);
 		const HlsCtor = hlsCtorOverride ?? hlsLoaded ?? null;
+		const hlsJsSupported =
+			hlsCtorOverride !== undefined || Boolean(hlsLoaded?.isSupported());
+		// HLS.js handles source transport streams more consistently than Safari's
+		// native decoder. Native HLS remains available for platforms without MSE.
 		const useNativeHls =
-			!forceHlsJs && !hlsCtorOverride && detectedNative && !nativeHlsFailed;
+			hlsCtorOverride === undefined &&
+			detectedNative &&
+			(loadError !== null || (hlsLoaded !== null && !hlsJsSupported));
+		const playbackUnsupported =
+			hlsCtorOverride === undefined &&
+			hlsLoaded !== null &&
+			!hlsJsSupported &&
+			!detectedNative;
 
 		// Source attachment effect — re-runs on src changes (quality switches).
 		// We *intentionally* do not key the <video> element to the src so the
@@ -485,7 +485,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				};
 			}
 
-			if (!HlsCtor) return; // still loading the chunk
+			if (!HlsCtor || !hlsJsSupported) return; // still loading or unsupported
 
 			// Reuse existing hls instance across quality changes — only the
 			// playlist URL needs to change.
@@ -588,7 +588,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				// retaining the MediaSource instance across source swaps.
 				hls.stopLoad();
 			};
-		}, [effectiveSrc, HlsCtor, useNativeHls]);
+		}, [effectiveSrc, HlsCtor, hlsJsSupported, useNativeHls]);
 
 		// Sample browser and server playback state only while the operator overlay is visible.
 		useEffect(() => {
@@ -1038,18 +1038,6 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			};
 			const onError = () => {
 				const mediaError = v.error;
-				if (
-					useNativeHls &&
-					mediaError &&
-					NATIVE_HLS_FALLBACK_ERROR_CODES.has(mediaError.code)
-				) {
-					// Keep the failure recoverable: switching paths triggers the lazy
-					// hls.js import and reattaches this same video element.
-					setError(null);
-					setLoading(true);
-					setNativeHlsFailed(true);
-					return;
-				}
 				setError(
 					advancedEnabledRef.current
 						? formatMediaError(mediaError)
@@ -1263,6 +1251,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		};
 
 		const surfaceLoadError = loadError && !useNativeHls;
+		const initializationError = playbackUnsupported
+			? "This browser doesn't support HLS playback."
+			: surfaceLoadError
+				? "Couldn't load the video player."
+				: null;
 		const liveDelaySeconds =
 			adaptiveLivePosition === null
 				? Math.max(0, seekRange.end - currentTime)
@@ -1392,48 +1385,50 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					</div>
 				) : null}
 
-				{error || surfaceLoadError ? (
+				{error || initializationError ? (
 					<div
 						data-testid="player-error"
 						className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 p-4 text-center text-sm"
 					>
-						<p className="max-w-prose">
-							{error ?? "Couldn't load the video player."}
-						</p>
-						<Button
-							variant="outline"
-							onClick={() => {
-								setError(null);
-								if (surfaceLoadError) {
-									reload();
-								} else {
-									const v = videoRef.current;
-									if (v) {
-										setLoading(true);
-										// Force a re-attach by re-setting the source.
-										if (useNativeHls) {
-											v.src = effectiveSrc;
-										} else if (hlsInstanceRef.current) {
-											if (lastFatalHlsErrorWasMediaRef.current) {
-												// A playlist reload cannot clear a failed MediaSource.
-												if (hlsMediaRecoveryTimerRef.current !== null) {
-													window.clearTimeout(hlsMediaRecoveryTimerRef.current);
-													hlsMediaRecoveryTimerRef.current = null;
+						<p className="max-w-prose">{error ?? initializationError}</p>
+						{!playbackUnsupported ? (
+							<Button
+								variant="outline"
+								onClick={() => {
+									setError(null);
+									if (surfaceLoadError) {
+										reload();
+									} else {
+										const v = videoRef.current;
+										if (v) {
+											setLoading(true);
+											// Force a re-attach by re-setting the source.
+											if (useNativeHls) {
+												v.src = effectiveSrc;
+											} else if (hlsInstanceRef.current) {
+												if (lastFatalHlsErrorWasMediaRef.current) {
+													// A playlist reload cannot clear a failed MediaSource.
+													if (hlsMediaRecoveryTimerRef.current !== null) {
+														window.clearTimeout(
+															hlsMediaRecoveryTimerRef.current
+														);
+														hlsMediaRecoveryTimerRef.current = null;
+													}
+													// Manual retry starts a fresh bounded recovery cycle.
+													hlsMediaRecoveryAttemptsRef.current = 1;
+													hlsInstanceRef.current.recoverMediaError();
+												} else {
+													hlsInstanceRef.current.loadSource(effectiveSrc);
 												}
-												// Manual retry starts a fresh bounded recovery cycle.
-												hlsMediaRecoveryAttemptsRef.current = 1;
-												hlsInstanceRef.current.recoverMediaError();
-											} else {
-												hlsInstanceRef.current.loadSource(effectiveSrc);
 											}
 										}
 									}
-								}
-							}}
-						>
-							<RotateCcw aria-hidden="true" className="h-4 w-4" />
-							Retry
-						</Button>
+								}}
+							>
+								<RotateCcw aria-hidden="true" className="h-4 w-4" />
+								Retry
+							</Button>
+						) : null}
 					</div>
 				) : null}
 

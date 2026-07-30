@@ -46,6 +46,7 @@ const fakeInstances: FakeHlsInstance[] = [];
 class FakeHls implements FakeHlsInstance {
 	static Events = { ERROR: "hlsError", MANIFEST_PARSED: "hlsManifestParsed" };
 	static ErrorTypes = { MEDIA_ERROR: "mediaError" };
+	static isSupported = vi.fn(() => true);
 	attachMedia = vi.fn();
 	loadSource = vi.fn();
 	stopLoad = vi.fn();
@@ -61,8 +62,8 @@ class FakeHls implements FakeHlsInstance {
 
 const FakeHlsCtor = FakeHls as unknown as HlsModule;
 
-// Let native-HLS recovery tests load the same controllable player double that
-// the explicit constructor seam uses in the rest of this suite.
+// Let engine-selection tests load the same controllable player double that the
+// explicit constructor seam uses in the rest of this suite.
 vi.mock("hls.js", () => ({ default: FakeHlsCtor }));
 
 const CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
@@ -74,7 +75,6 @@ function renderPlayer(
 		<Player
 			channelId={CHANNEL_ID}
 			hlsCtorOverride={FakeHlsCtor}
-			forceHlsJs
 			{...overrides}
 		/>
 	);
@@ -97,6 +97,7 @@ function expectLiveSource(
 beforeEach(() => {
 	vi.restoreAllMocks();
 	fakeInstances.length = 0;
+	FakeHls.isSupported.mockReturnValue(true);
 });
 
 describe("Player", () => {
@@ -119,7 +120,7 @@ describe("Player", () => {
 		);
 	});
 
-	it("falls back to hls.js when Safari reports a native decode error", async () => {
+	it("prefers hls.js when Safari supports both playback engines", async () => {
 		vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue(
 			"probably"
 		);
@@ -127,14 +128,9 @@ describe("Player", () => {
 		vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
 		render(<Player channelId={CHANNEL_ID} />);
 		const video = screen.getByTestId("player-video") as HTMLVideoElement;
-		Object.defineProperty(video, "error", {
-			configurable: true,
-			get: () => ({ code: 3, message: "Media failed to decode" })
-		});
-
-		fireEvent.error(video);
 
 		await waitFor(() => expect(fakeInstances).toHaveLength(1));
+		expect(FakeHls.isSupported).toHaveBeenCalled();
 		expect(fakeInstances[0]?.attachMedia).toHaveBeenCalledWith(video);
 		expectLiveSource(
 			fakeInstances[0]?.loadSource.mock.calls[0]?.[0] as string,
@@ -142,6 +138,33 @@ describe("Player", () => {
 			"original-quality"
 		);
 		expect(screen.queryByTestId("player-error")).not.toBeInTheDocument();
+	});
+
+	it("falls back to native HLS when hls.js is unsupported", async () => {
+		FakeHls.isSupported.mockReturnValue(false);
+		vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue(
+			"probably"
+		);
+		vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+		vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+		render(<Player channelId={CHANNEL_ID} />);
+		const video = screen.getByTestId("player-video") as HTMLVideoElement;
+
+		await waitFor(() => expect(FakeHls.isSupported).toHaveBeenCalled());
+		expect(fakeInstances).toHaveLength(0);
+		expectLiveSource(video.src, CHANNEL_ID, "original-quality");
+	});
+
+	it("explains when neither HLS playback engine is supported", async () => {
+		FakeHls.isSupported.mockReturnValue(false);
+		vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("");
+		render(<Player channelId={CHANNEL_ID} />);
+
+		expect(
+			await screen.findByText("This browser doesn't support HLS playback.")
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+		expect(fakeInstances).toHaveLength(0);
 	});
 
 	it("exhausts bounded automatic media recovery before showing Retry", () => {
@@ -227,11 +250,7 @@ describe("Player", () => {
 		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
 		render(
 			<AdvancedModeProvider>
-				<Player
-					channelId={CHANNEL_ID}
-					hlsCtorOverride={FakeHlsCtor}
-					forceHlsJs
-				/>
+				<Player channelId={CHANNEL_ID} hlsCtorOverride={FakeHlsCtor} />
 			</AdvancedModeProvider>
 		);
 		const player = screen.getByTestId("player");
@@ -273,11 +292,7 @@ describe("Player", () => {
 		try {
 			render(
 				<AdvancedModeProvider>
-					<Player
-						channelId={CHANNEL_ID}
-						hlsCtorOverride={FakeHlsCtor}
-						forceHlsJs
-					/>
+					<Player channelId={CHANNEL_ID} hlsCtorOverride={FakeHlsCtor} />
 				</AdvancedModeProvider>
 			);
 			const video = screen.getByTestId("player-video") as HTMLVideoElement;
@@ -375,7 +390,6 @@ describe("Player", () => {
 			<Player
 				channelId="00000000-0000-4000-8000-000000000002"
 				hlsCtorOverride={FakeHlsCtor}
-				forceHlsJs
 			/>
 		);
 
