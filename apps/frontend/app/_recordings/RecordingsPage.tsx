@@ -36,6 +36,7 @@ import { Button } from "../_ui/Button";
 import { EmptyState } from "../_ui/EmptyState";
 import { IconButton } from "../_ui/IconButton";
 import { Input } from "../_ui/Input";
+import { PageHeader } from "../_ui/PageHeader";
 import {
 	Modal,
 	ModalContent,
@@ -170,18 +171,12 @@ function RecordingsHeader({
 	totalSize
 }: RecordingsHeaderProps) {
 	return (
-		<header className="space-y-4 pb-1 pt-1 md:space-y-5 md:pt-3">
-			<div className="space-y-2">
-				<h1
-					id="recordings-heading"
-					className="text-3xl font-semibold tracking-[-0.035em] text-primary md:text-4xl"
-				>
-					Your recordings
-				</h1>
-				<p className="text-base text-secondary md:text-lg">
-					Everything you’ve saved, ready when you are.
-				</p>
-			</div>
+		<div className="space-y-4 pb-1 pt-1 md:space-y-5 md:pt-3">
+			<PageHeader
+				headingId="recordings-heading"
+				title="Your recordings"
+				description="Everything you’ve saved, ready when you are."
+			/>
 			{loading ? (
 				<p className="text-sm text-secondary" role="status">
 					Loading your library…
@@ -201,7 +196,7 @@ function RecordingsHeader({
 					</span>
 				</p>
 			)}
-		</header>
+		</div>
 	);
 }
 
