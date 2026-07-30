@@ -99,6 +99,14 @@ docker compose up -d
 
 For reproducible deployments, set `SIGNALHAVEN_IMAGE` in `.env` to a numbered release instead of `latest`.
 
+Prerelease images are published under both their exact version and a moving
+channel tag. For example, `v0.2.0-beta.2` publishes
+`ghcr.io/rrainn/signalhaven:0.2.0-beta.2` and
+`ghcr.io/rrainn/signalhaven:beta`; alpha versions similarly update `:alpha`.
+These images do not update `:latest` or stable major/minor tags. Mark the GitHub
+Release as a prerelease when publishing it, then set `SIGNALHAVEN_IMAGE` to the
+exact version or channel tag to test it.
+
 ## Supported TV sources
 
 | Source          | What SignalHaven supports                                             | Guide data                                                                                      |

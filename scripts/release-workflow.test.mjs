@@ -13,6 +13,28 @@ test("Docker publishing runs only when a GitHub release is published", async () 
 	assert.match(workflow, /value=\$\{\{ github\.event\.release\.tag_name \}\}/);
 });
 
+test("prereleases publish to their moving channel without advancing latest", async () => {
+	const workflow = await readFile(workflowUrl, "utf8");
+
+	// Both platform labels and the final manifest must derive identical tags.
+	assert.equal(workflow.match(/flavor:\s*\|\s*\n\s+latest=false/g)?.length, 2);
+	assert.equal(
+		workflow.match(
+			/type=match,pattern=\^v\?\\d\+\\\.\\d\+\\\.\\d\+-\(alpha\|beta\)\(\?:\\\.\|\$\),group=1,value=\$\{\{ github\.event\.release\.tag_name \}\}/g
+		)?.length,
+		2
+	);
+	assert.equal(
+		workflow.match(
+			/type=raw,value=latest,enable=\$\{\{ !github\.event\.release\.prerelease \}\}/g
+		)?.length,
+		2
+	);
+	assert.match(workflow, /version_without_build="\$\{RELEASE_TAG%%\+\*\}"/);
+	assert.match(workflow, /"\$IS_PRERELEASE" != "true"/);
+	assert.match(workflow, /"\$IS_PRERELEASE" == "true"/);
+});
+
 test("release metadata reaches the image without changing stable cache scopes", async () => {
 	const [workflow, dockerfile] = await Promise.all([
 		readFile(workflowUrl, "utf8"),
