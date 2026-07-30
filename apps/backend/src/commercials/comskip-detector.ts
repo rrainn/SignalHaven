@@ -5,6 +5,19 @@ import { basename, extname, join } from "node:path";
 
 import type { CommercialMarker } from "@signalhaven/shared";
 
+/** Comskip location installed by the published SignalHaven container image. */
+export const DEFAULT_COMSKIP_PATH = "/usr/bin/comskip";
+
+/** SignalHaven's bundled configuration always produces the consumed EDL output. */
+export const DEFAULT_COMSKIP_CONFIG_PATH = "/etc/signalhaven/comskip.ini";
+
+/** Resolve an optional deployment override without accepting an empty command. */
+export function resolveComskipPath(
+	env: NodeJS.ProcessEnv = process.env
+): string {
+	return env.SIGNALHAVEN_COMSKIP_PATH?.trim() || DEFAULT_COMSKIP_PATH;
+}
+
 /** Pluggable detector input kept independent from persistence and the player. */
 export interface CommercialDetectorInput {
 	recordingPath: string;
@@ -39,6 +52,7 @@ export class ComskipDetector implements CommercialDetector {
 		await this.runner(
 			this.executable,
 			[
+				`--ini=${DEFAULT_COMSKIP_CONFIG_PATH}`,
 				`--output=${input.workingDirectory}`,
 				`--output-filename=${outputName}`,
 				input.recordingPath

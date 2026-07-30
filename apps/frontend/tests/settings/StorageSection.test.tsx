@@ -67,6 +67,9 @@ describe("StorageSection", () => {
 
 		expect(screen.getByLabelText(/pre-record padding/i)).toHaveValue(15);
 		expect(screen.getByLabelText(/post-record padding/i)).toHaveValue(30);
+		expect(
+			screen.queryByLabelText(/comskip executable path/i)
+		).not.toBeInTheDocument();
 	});
 
 	it("rejects an empty path with an inline error", async () => {
@@ -133,6 +136,41 @@ describe("StorageSection", () => {
 			recordings: { paddingBeforeSec: 45, paddingAfterSec: 60 }
 		});
 		expect(await screen.findByText(/saved\./i)).toBeInTheDocument();
+	});
+
+	it("enables bundled commercial detection without an executable path", async () => {
+		const user = userEvent.setup();
+		const nextSettings: Settings = {
+			...baseSettings,
+			recordings: {
+				...baseSettings.recordings,
+				commercialDetection: {
+					enabled: true,
+					detectorVersion: "comskip-edl-v1"
+				}
+			}
+		};
+		updateSettingsMock.mockResolvedValue(nextSettings);
+		render(<StorageSection settings={baseSettings} onChanged={() => {}} />);
+
+		await user.click(
+			screen.getByRole("switch", { name: /enable commercial detection/i })
+		);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => {
+			expect(updateSettingsMock).toHaveBeenCalledWith({
+				storage: baseSettings.storage,
+				recordings: {
+					paddingBeforeSec: 15,
+					paddingAfterSec: 30,
+					commercialDetection: {
+						enabled: true,
+						detectorVersion: "comskip-edl-v1"
+					}
+				}
+			});
+		});
 	});
 
 	it.each([

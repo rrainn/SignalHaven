@@ -47,9 +47,6 @@ export function StorageSection(props: StorageSectionProps) {
 	const [commercialDetectionEnabled, setCommercialDetectionEnabled] = useState(
 		settings.recordings.commercialDetection?.enabled ?? false
 	);
-	const [detectorPath, setDetectorPath] = useState(
-		settings.recordings.commercialDetection?.detectorPath ?? ""
-	);
 	const [detectorVersion, setDetectorVersion] = useState(
 		settings.recordings.commercialDetection?.detectorVersion ?? "comskip-edl-v1"
 	);
@@ -92,22 +89,15 @@ export function StorageSection(props: StorageSectionProps) {
 					trimmedAfter.length > 0 ? Number(trimmedAfter) : Number.NaN,
 				...(settings.recordings.commercialDetection ||
 				commercialDetectionEnabled ||
-				detectorPath.trim()
+				detectorVersion.trim() !== "comskip-edl-v1"
 					? {
 							commercialDetection: {
 								enabled: commercialDetectionEnabled,
-								detectorPath: detectorPath.trim() || null,
 								detectorVersion: detectorVersion.trim() || "comskip-edl-v1"
 							}
 						}
 					: {})
 			};
-			if (commercialDetectionEnabled && !detectorPath.trim()) {
-				setError(
-					"Comskip executable path is required when detection is enabled"
-				);
-				return;
-			}
 			const parsedPadding =
 				recordingsSettingsSchema.safeParse(paddingCandidate);
 			if (!parsedPadding.success) {
@@ -132,9 +122,6 @@ export function StorageSection(props: StorageSectionProps) {
 				setCommercialDetectionEnabled(
 					next.recordings.commercialDetection?.enabled ?? false
 				);
-				setDetectorPath(
-					next.recordings.commercialDetection?.detectorPath ?? ""
-				);
 				setDetectorVersion(
 					next.recordings.commercialDetection?.detectorVersion ??
 						"comskip-edl-v1"
@@ -149,7 +136,6 @@ export function StorageSection(props: StorageSectionProps) {
 		},
 		[
 			commercialDetectionEnabled,
-			detectorPath,
 			detectorVersion,
 			onChanged,
 			path,
@@ -249,14 +235,6 @@ export function StorageSection(props: StorageSectionProps) {
 						checked={commercialDetectionEnabled}
 						onCheckedChange={setCommercialDetectionEnabled}
 						aria-label="Enable commercial detection"
-					/>
-				</label>
-				<label className="block space-y-1 text-sm">
-					<span className="text-primary">Comskip executable path</span>
-					<Input
-						value={detectorPath}
-						onChange={(event) => setDetectorPath(event.target.value)}
-						placeholder="/usr/local/bin/comskip"
 					/>
 				</label>
 				<label className="block space-y-1 text-sm">

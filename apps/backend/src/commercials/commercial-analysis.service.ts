@@ -27,7 +27,7 @@ export const COMMERCIAL_ANALYSIS_JOB_KIND = "commercial-analysis";
 
 export interface CommercialAnalysisConfig {
 	enabled: boolean;
-	detectorPath: string | null;
+	executablePath: string;
 	detectorVersion: string;
 }
 
@@ -94,10 +94,10 @@ export class CommercialAnalysisService {
 	): Promise<boolean> {
 		if (recording.status !== "completed") return false;
 		const config = await this.resolveConfig();
-		if (!config.enabled || !config.detectorPath) {
+		if (!config.enabled) {
 			if (force) {
 				throw new CommercialAnalysisNotAvailableError(
-					"Commercial detection is disabled or its executable path is not configured"
+					"Commercial detection is disabled"
 				);
 			}
 			return false;
@@ -136,7 +136,7 @@ export class CommercialAnalysisService {
 	/** Reconsider completed rows after restart or a detector configuration change. */
 	async reconcileCompleted(): Promise<void> {
 		const config = await this.resolveConfig();
-		if (!config.enabled || !config.detectorPath) return;
+		if (!config.enabled) return;
 		for (const recordingId of await this.repository.listCompletedRecordingIds()) {
 			const recording = await this.recordings.getById(recordingId);
 			if (recording) await this.enqueueCompleted(recording);
@@ -172,7 +172,7 @@ export class CommercialAnalysisService {
 			return;
 		}
 		const config = await this.resolveConfig();
-		if (!config.enabled || !config.detectorPath) {
+		if (!config.enabled) {
 			await this.fail(
 				recordingId,
 				"Commercial detection was disabled before analysis began"
@@ -184,7 +184,7 @@ export class CommercialAnalysisService {
 			join(tmpdir(), "signalhaven-commercials-")
 		);
 		try {
-			const detector = this.createDetector(config.detectorPath);
+			const detector = this.createDetector(config.executablePath);
 			const detectorMarkers = await detector.detect({
 				recordingPath: recording.filePath,
 				durationSeconds: recording.durationSeconds,
@@ -200,7 +200,7 @@ export class CommercialAnalysisService {
 		} catch (error) {
 			await this.fail(
 				recordingId,
-				publicDiagnostic(error, recording.filePath, config.detectorPath)
+				publicDiagnostic(error, recording.filePath, config.executablePath)
 			);
 		} finally {
 			// Raw Comskip files are disposable; normalized DB markers are authoritative.
@@ -223,7 +223,7 @@ export class CommercialAnalysisService {
 /** Include the configured version and executable so either change regenerates markers. */
 function configurationVersion(config: CommercialAnalysisConfig): string {
 	const executableHash = createHash("sha256")
-		.update(config.detectorPath ?? "")
+		.update(config.executablePath)
 		.digest("hex")
 		.slice(0, 12);
 	return `${config.detectorVersion}:${executableHash}`;
@@ -233,13 +233,13 @@ function configurationVersion(config: CommercialAnalysisConfig): string {
 function publicDiagnostic(
 	error: unknown,
 	recordingPath: string,
-	detectorPath: string
+	executablePath: string
 ): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return message
 		.split(recordingPath)
 		.join("the recording file")
-		.split(detectorPath)
+		.split(executablePath)
 		.join("the detector executable")
 		.slice(0, 500);
 }

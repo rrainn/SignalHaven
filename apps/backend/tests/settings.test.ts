@@ -122,6 +122,27 @@ test("PATCH /api/v1/settings round-trip persists and returns merged document", a
 	assert.deepEqual(getResponse.body, patchResponse.body);
 });
 
+test("GET removes the legacy persisted Comskip executable path", async () => {
+	const { app, settingsRepo } = buildHarness();
+	await settingsRepo.upsert("recordings", {
+		paddingBeforeSec: 0,
+		paddingAfterSec: 0,
+		commercialDetection: {
+			enabled: true,
+			detectorPath: "/legacy/comskip",
+			detectorVersion: "legacy-v1"
+		}
+	});
+
+	const response = await request(app).get("/api/v1/settings");
+
+	assert.equal(response.status, 200);
+	assert.deepEqual(response.body.recordings.commercialDetection, {
+		enabled: true,
+		detectorVersion: "legacy-v1"
+	});
+});
+
 test("PATCH /api/v1/settings rejects invalid values", async () => {
 	const { app } = buildHarness();
 

@@ -58,3 +58,21 @@ test("FFmpeg uses immutable checksum-verified artifacts with licensing material"
 		/COPY docs\/third-party\/ffmpeg\.md \/usr\/share\/doc\/signalhaven\/ffmpeg\/README\.md/
 	);
 });
+
+test("the runtime image bundles Comskip with SignalHaven's EDL configuration", async () => {
+	const [workflow, dockerfile] = await Promise.all([
+		readFile(workflowUrl, "utf8"),
+		readFile(dockerfileUrl, "utf8")
+	]);
+
+	assert.match(
+		dockerfile,
+		/apt-get install -y --no-install-recommends[\s\S]*comskip/
+	);
+	assert.match(
+		dockerfile,
+		/COPY config\/comskip\.ini \/etc\/signalhaven\/comskip\.ini/
+	);
+	assert.match(dockerfile, /comskip --help/);
+	assert.match(workflow, /docker run --rm signalhaven:ci comskip --help/);
+});

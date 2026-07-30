@@ -139,10 +139,12 @@ FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     PORT=3000 \
+    SIGNALHAVEN_COMSKIP_PATH=/usr/bin/comskip \
     SIGNALHAVEN_RECORDINGS_DIR=/var/lib/signalhaven/recordings
 
 # Runtime libraries dlopen'd by the static FFmpeg for VAAPI hardware
-# acceleration, plus tini/setpriv for signal handling and privilege dropping.
+# acceleration, Comskip, plus tini/setpriv for signal handling and privilege
+# dropping.
 # NVIDIA's container runtime injects the matching CUDA/NVENC driver libraries
 # when a deployment grants the container GPU access.
 # On amd64 we install
@@ -152,7 +154,8 @@ ENV NODE_ENV=production \
 # available on arm64, so it is skipped there.
 ARG TARGETARCH
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+	&& apt-get install -y --no-install-recommends \
+		comskip \
         libva2 \
         libva-drm2 \
         libva-x11-2 \
@@ -168,12 +171,14 @@ COPY --from=ffmpeg /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 COPY --from=ffmpeg /opt/ffmpeg/LICENSE.txt /usr/share/doc/signalhaven/ffmpeg/LICENSE.txt
 COPY docs/third-party/ffmpeg.md /usr/share/doc/signalhaven/ffmpeg/README.md
+COPY config/comskip.ini /etc/signalhaven/comskip.ini
 COPY LICENSE /usr/share/doc/signalhaven/LICENSE.txt
 
 # Sanity-check: the binary runs and reports the expected codecs. The amd64
 # image supports both VAAPI and NVIDIA hosts; BtbN's arm64 GPL builds disable
 # some of these backends, so the hardware capability checks remain amd64-only.
-RUN ffmpeg -version \
+RUN comskip --help >/dev/null \
+	&& ffmpeg -version \
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -E '(libx264|libx265| aac )' >/dev/null \
     && if [ "$TARGETARCH" = "amd64" ]; then \
            ffmpeg -hide_banner -hwaccels 2>/dev/null | grep -q vaapi; \

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { parseComskipEdl } from "../src/commercials/comskip-detector";
+import {
+	ComskipDetector,
+	DEFAULT_COMSKIP_CONFIG_PATH,
+	DEFAULT_COMSKIP_PATH,
+	parseComskipEdl,
+	resolveComskipPath
+} from "../src/commercials/comskip-detector";
 import {
 	CommercialAnalysisService,
 	COMMERCIAL_ANALYSIS_JOB_KIND
@@ -50,6 +59,45 @@ test("parseComskipEdl treats adjacent intervals as one commercial", () => {
 	]);
 });
 
+test("resolveComskipPath uses the bundled executable unless the environment overrides it", () => {
+	assert.equal(resolveComskipPath({}), DEFAULT_COMSKIP_PATH);
+	assert.equal(
+		resolveComskipPath({
+			SIGNALHAVEN_COMSKIP_PATH: "/opt/comskip/bin/comskip"
+		}),
+		"/opt/comskip/bin/comskip"
+	);
+	assert.equal(
+		resolveComskipPath({ SIGNALHAVEN_COMSKIP_PATH: "   " }),
+		DEFAULT_COMSKIP_PATH
+	);
+});
+
+test("ComskipDetector explicitly uses the bundled EDL configuration", async () => {
+	const workingDirectory = await mkdtemp(join(tmpdir(), "signalhaven-test-"));
+	try {
+		const detector = new ComskipDetector(
+			"/custom/comskip",
+			async (executable, args) => {
+				assert.equal(executable, "/custom/comskip");
+				assert.equal(args[0], `--ini=${DEFAULT_COMSKIP_CONFIG_PATH}`);
+				await writeFile(join(workingDirectory, "show.edl"), "1 2 0", "utf8");
+			}
+		);
+
+		const markers = await detector.detect({
+			recordingPath: "/recordings/show.ts",
+			durationSeconds: 60,
+			workingDirectory,
+			signal: new AbortController().signal
+		});
+
+		assert.deepEqual(markers, [{ startMs: 1_000, endMs: 2_000 }]);
+	} finally {
+		await rm(workingDirectory, { recursive: true, force: true });
+	}
+});
+
 test("detector failure is persisted without changing a completed recording", async () => {
 	const recording = completedRecording();
 	const repository = new FakeCommercialsRepository();
@@ -60,7 +108,7 @@ test("detector failure is persisted without changing a completed recording", asy
 		scheduler,
 		resolveConfig: async () => ({
 			enabled: true,
-			detectorPath: "/usr/bin/comskip",
+			executablePath: "/usr/bin/comskip",
 			detectorVersion: "test-v1"
 		}),
 		createDetector: () => ({
@@ -92,7 +140,7 @@ test("concurrent manual retries create only one active detector job", async () =
 		scheduler,
 		resolveConfig: async () => ({
 			enabled: true,
-			detectorPath: "/usr/bin/comskip",
+			executablePath: "/usr/bin/comskip",
 			detectorVersion: "test-v1"
 		})
 	});
