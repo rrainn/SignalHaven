@@ -138,11 +138,14 @@ export const uiSettingsSchema = z.object({
 export const recordingsSettingsSchema = z.object({
 	paddingBeforeSec: z.number().int().min(0).max(3600),
 	paddingAfterSec: z.number().int().min(0).max(3600),
-	/** Optional post-processing stays inert until both fields are configured. */
+	/**
+	 * Optional post-processing stays inert until explicitly enabled. Zod strips
+	 * the former detectorPath property from persisted rows during upgrades because
+	 * executable selection now belongs to deployment configuration.
+	 */
 	commercialDetection: z
 		.object({
 			enabled: z.boolean(),
-			detectorPath: z.string().min(1).nullable(),
 			detectorVersion: z.string().min(1).max(100)
 		})
 		.optional()
@@ -304,7 +307,6 @@ export const settingsDefaults: Settings = {
 		paddingAfterSec: 0,
 		commercialDetection: {
 			enabled: false,
-			detectorPath: null,
 			detectorVersion: "comskip-edl-v1"
 		}
 	},

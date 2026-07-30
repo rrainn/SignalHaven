@@ -5,6 +5,7 @@ import express, { json, urlencoded, type Express } from "express";
 import { db, pool } from "./db/client";
 import { EpgService } from "./epg/epg.service";
 import { CommercialAnalysisService } from "./commercials/commercial-analysis.service";
+import { resolveComskipPath } from "./commercials/comskip-detector";
 import { EpgGridService } from "./epg/epg-grid.service";
 import { EpgMatcherService } from "./epg/epg-matcher.service";
 import { getEventBus } from "./events";
@@ -214,13 +215,12 @@ export function createAppWithServices(
 				resolveConfig: async () => {
 					const { commercialDetection } = (await settingsService.getAll())
 						.recordings;
-					return (
-						commercialDetection ?? {
-							enabled: false,
-							detectorPath: null,
-							detectorVersion: "comskip-edl-v1"
-						}
-					);
+					return {
+						enabled: commercialDetection?.enabled ?? false,
+						detectorVersion:
+							commercialDetection?.detectorVersion ?? "comskip-edl-v1",
+						executablePath: resolveComskipPath(env)
+					};
 				}
 			});
 	const recordingsService =

@@ -66,6 +66,7 @@ the official Postgres image.
 | `PGPASSWORD`                             | `change-me`                         | Database password for the backend and bundled Postgres.      |
 | `SIGNALHAVEN_IMAGE`                      | `ghcr.io/rrainn/signalhaven:latest` | Container image reference used by the `signalhaven` service. |
 | `SIGNALHAVEN_HTTP_PORT`                  | `3000`                              | Host port mapped to container port `3000`.                   |
+| `SIGNALHAVEN_COMSKIP_PATH`               | `/usr/bin/comskip`                  | Comskip executable path inside the backend container.        |
 | `SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED` | `false`                             | Opt in to the Advanced-page external IP lookup.              |
 
 ### Backend runtime
@@ -84,6 +85,7 @@ the official Postgres image.
 | `SIGNALHAVEN_DB_STATEMENT_TIMEOUT_MS`                        | `30000`                                                         | PostgreSQL statement timeout in ms.                                              |
 | `SIGNALHAVEN_DB_IDLE_IN_TX_TIMEOUT_MS`                       | `30000`                                                         | Idle-in-transaction timeout in ms.                                               |
 | `SIGNALHAVEN_DB_AUTO_MIGRATE`                                | `true`                                                          | Run DB migrations at startup.                                                    |
+| `SIGNALHAVEN_COMSKIP_PATH`                                   | `/usr/bin/comskip`                                              | Override the bundled Comskip executable path.                                    |
 | `SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED`                     | `false`                                                         | Contacts `ip.rrainn.space` to show the server public IP when explicitly enabled. |
 
 Live-stream startup failures emit one structured `error` record containing
@@ -175,8 +177,7 @@ H.264/AAC and uses the selected hardware backend only when conversion is needed.
 | ------------------------------------- | ------------------- | ---------------- | ----------------------------------------------------------------- |
 | `paddingBeforeSec`                    | integer (`0..3600`) | `0`              | Start-recording padding before scheduled start.                   |
 | `paddingAfterSec`                     | integer (`0..3600`) | `0`              | End-recording padding after scheduled stop.                       |
-| `commercialDetection.enabled`         | boolean             | `false`          | Queues analysis after successful recordings when a path is set.   |
-| `commercialDetection.detectorPath`    | string or `null`    | `null`           | Absolute path to the Comskip executable visible to SignalHaven.   |
+| `commercialDetection.enabled`         | boolean             | `false`          | Queues analysis after successful recordings.                      |
 | `commercialDetection.detectorVersion` | string              | `comskip-edl-v1` | Configuration revision; changing it regenerates existing markers. |
 
 Pre-padding is stored in the scheduler job when a recording is created or
@@ -188,24 +189,24 @@ it already calculated.
 
 #### Commercial detection
 
-Commercial detection is optional and off until it is enabled and an executable
-path is saved under **Settings → Storage & DVR → Commercial detection**. SignalHaven
-supports Comskip 0.82.x output in EDL format. The Comskip configuration must set
-`output_edl=1`; SignalHaven discards Comskip's raw files after each run and stores only
+Commercial detection is optional and off until it is enabled under
+**Settings → Storage & DVR → Commercial detection**. The Docker image includes
+Comskip 0.82.x at `/usr/bin/comskip` and a SignalHaven configuration that enables
+EDL output. SignalHaven discards Comskip's raw files after each run and stores only
 validated millisecond marker intervals in PostgreSQL.
 
-Install Comskip on the backend host (or add it to a derived SignalHaven container
-image), then enter the executable's in-container absolute path. SignalHaven runs at
-most one commercial detector at a time. Recording and playback success do not
-depend on detector success, and a failed analysis can be retried from the
-recording detail page. Completed same-version analysis is not duplicated across
-requests or restarts. Change `detectorVersion` when updating Comskip settings or
-the detector binary to queue safe regeneration for completed recordings.
+Set `SIGNALHAVEN_COMSKIP_PATH` only when a custom Comskip binary is mounted at a
+different in-container path. SignalHaven runs at most one commercial detector at
+a time. Recording and playback success do not depend on detector success, and a
+failed analysis can be retried from the recording detail page. Completed
+same-version analysis is not duplicated across requests or restarts. Change
+`detectorVersion` when updating Comskip or its configuration to queue safe
+regeneration for completed recordings.
 
-If analysis reports that no EDL was produced, verify `output_edl=1` and that the
-SignalHaven process can execute the configured binary. For an exit-code failure, run
-the same binary as the SignalHaven service user and confirm it can read the recordings
-directory. Temporary detector output uses the operating-system temporary
+If analysis reports that no EDL was produced, verify that the bundled configuration
+is present and that the SignalHaven process can execute Comskip. For an exit-code
+failure, run the same binary as the SignalHaven service user and confirm it can read
+the recordings directory. Temporary detector output uses the operating-system temporary
 directory and is removed after completion, failure, cancellation, and recording
 deletion.
 
