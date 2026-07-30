@@ -1,9 +1,14 @@
 "use client";
 
 import type { EpgSource, Settings, Tuner } from "@signalhaven/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { listEpgSources } from "../../lib/api-client";
+import {
+	listEpgSources,
+	refreshEpgSource,
+	syncTunerChannels
+} from "../../lib/api-client";
+import { GUIDE_INVALIDATE_EVENT } from "../../lib/app-events";
 import {
 	Modal,
 	ModalContent,
@@ -58,6 +63,9 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 	const [storagePath, setStoragePath] = useState<string | null>(
 		initialSettings.storage.path
 	);
+	const [guidePreparationComplete, setGuidePreparationComplete] =
+		useState(false);
+	const epgRefreshStartedRef = useRef(false);
 
 	// Persist the current step on every change so the wizard is resumable.
 	useEffect(() => {
@@ -76,10 +84,62 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 			.catch(() => undefined);
 	}, [open, step]);
 
+	useEffect(() => {
+		if (!open || step !== "done" || epgRefreshStartedRef.current) return;
+
+		if (tuners.length === 0) {
+			const enabledSources = epgSources.filter((source) => source.enabled);
+			// Sources can finish loading after the user reaches Done, so leave the
+			// effect armed until there is actual refresh work to start.
+			if (enabledSources.length === 0) return;
+			epgRefreshStartedRef.current = true;
+			void Promise.allSettled(
+				enabledSources.map((source) => refreshEpgSource(source.id))
+			).then(() => setGuidePreparationComplete(true));
+			return;
+		}
+
+		epgRefreshStartedRef.current = true;
+		void (async () => {
+			// Matching needs tuner channels to exist before a guide refresh imports
+			// and auto-maps its listings, especially for already-configured tuners.
+			await Promise.allSettled(
+				tuners.map((tuner) => syncTunerChannels(tuner.id))
+			);
+
+			let sources = epgSources;
+			try {
+				const result = await listEpgSources();
+				sources = result.items;
+				setEpgSources(result.items);
+			} catch {
+				// The sources already loaded into the wizard remain a safe fallback.
+			}
+
+			// A failed source must not prevent other configured guides from importing.
+			await Promise.allSettled(
+				sources
+					.filter((source) => source.enabled)
+					.map((source) => refreshEpgSource(source.id))
+			);
+			setGuidePreparationComplete(true);
+		})();
+	}, [epgSources, open, step, tuners]);
+
+	const hasGuidePreparationWork =
+		tuners.length > 0 || epgSources.some((source) => source.enabled);
+	const guideIsPreparing =
+		step === "done" && hasGuidePreparationWork && !guidePreparationComplete;
+
 	const goNext = useCallback(() => setStep((s) => nextStep(s)), []);
 	const goBack = useCallback(() => setStep((s) => prevStep(s)), []);
 	const skip = useCallback(() => setStep((s) => nextStep(s)), []);
-	const finish = useCallback(() => onClose("completed"), [onClose]);
+	const finish = useCallback(() => {
+		// The Guide is mounted behind onboarding and may have cached its initial
+		// empty response before setup imported channels and schedule data.
+		window.dispatchEvent(new Event(GUIDE_INVALIDATE_EVENT));
+		onClose("completed");
+	}, [onClose]);
 
 	const currentIndex = ONBOARDING_STEPS.indexOf(step);
 	const totalSteps = ONBOARDING_STEPS.length;
@@ -202,7 +262,9 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 						<MappingStep onNext={goNext} onBack={goBack} onSkip={skip} />
 					) : null}
 
-					{step === "done" ? <DoneStep onFinish={finish} /> : null}
+					{step === "done" ? (
+						<DoneStep preparing={guideIsPreparing} onFinish={finish} />
+					) : null}
 				</div>
 			</ModalContent>
 		</Modal>

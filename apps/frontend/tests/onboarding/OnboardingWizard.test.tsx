@@ -1,8 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { OnboardingWizard } from "../../app/_onboarding/OnboardingWizard";
+import {
+	listEpgSources,
+	refreshEpgSource,
+	syncTunerChannels
+} from "../../lib/api-client";
 
 vi.mock("../../lib/ws-client", () => ({
 	useWebSocketEvents: () => "open"
@@ -18,9 +23,47 @@ vi.mock("../../lib/api-client", async () => {
 		createTuner: vi.fn(),
 		syncTunerChannels: vi.fn(),
 		createEpgSource: vi.fn(),
+		listEpgSources: vi.fn().mockResolvedValue({ items: [] }),
+		refreshEpgSource: vi.fn().mockResolvedValue({
+			channelsSeen: 0,
+			programsSeen: 0,
+			channelsUpserted: 0,
+			programsUpserted: 0,
+			programsInserted: 0,
+			programsChanged: 0,
+			programsUnchanged: 0,
+			programsPruned: 0,
+			durationMs: 0
+		}),
 		updateSettings: vi.fn()
 	};
 });
+
+const enabledEpgSource = {
+	id: "11111111-1111-4111-8111-111111111111",
+	kind: "xmltv" as const,
+	name: "Primary guide",
+	url: "https://example.com/guide.xml",
+	filePath: null,
+	tunerId: null,
+	refreshIntervalMinutes: 720,
+	timezone: null,
+	enabled: true,
+	lastRefreshAt: null,
+	lastRefreshStatus: null,
+	lastRefreshError: null,
+	createdAt: "2026-01-01T00:00:00.000Z",
+	updatedAt: "2026-01-01T00:00:00.000Z"
+};
+
+const configuredTuner = {
+	id: "22222222-2222-4222-8222-222222222222",
+	kind: "hdhomerun" as const,
+	name: "Living room tuner",
+	config: { host: "http://192.168.1.50" },
+	createdAt: "2026-01-01T00:00:00.000Z",
+	updatedAt: "2026-01-01T00:00:00.000Z"
+};
 
 const baseSettings = {
 	storage: { path: null, quotaGb: null },
@@ -61,6 +104,9 @@ const baseSettings = {
 
 beforeEach(() => {
 	window.localStorage.clear();
+	vi.mocked(listEpgSources).mockReset().mockResolvedValue({ items: [] });
+	vi.mocked(refreshEpgSource).mockClear();
+	vi.mocked(syncTunerChannels).mockReset();
 });
 
 describe("OnboardingWizard", () => {
@@ -100,6 +146,8 @@ describe("OnboardingWizard", () => {
 	it("navigates forward through every step using the next/skip controls", async () => {
 		const user = userEvent.setup();
 		const onClose = vi.fn();
+		const guideInvalidated = vi.fn();
+		window.addEventListener("signalhaven:guide-invalidate", guideInvalidated);
 		render(
 			<OnboardingWizard
 				open
@@ -133,6 +181,96 @@ describe("OnboardingWizard", () => {
 		// done -> close as completed
 		await user.click(screen.getByRole("button", { name: /open signalhaven/i }));
 		expect(onClose).toHaveBeenCalledWith("completed");
+		expect(guideInvalidated).toHaveBeenCalledOnce();
+		window.removeEventListener(
+			"signalhaven:guide-invalidate",
+			guideInvalidated
+		);
+	});
+
+	it("refreshes sources that finish loading after setup reaches Done", async () => {
+		const user = userEvent.setup();
+		const onClose = vi.fn();
+		let resolveSources!: (value: { items: [typeof enabledEpgSource] }) => void;
+		vi.mocked(listEpgSources).mockReturnValue(
+			new Promise((resolve) => {
+				resolveSources = resolve;
+			})
+		);
+		render(
+			<OnboardingWizard
+				open
+				initialStep="epg"
+				initialTuners={[]}
+				initialEpgSources={[]}
+				initialSettings={baseSettings}
+				onClose={onClose}
+			/>
+		);
+
+		// Complete setup before the server-provisioned HDHomeRun source is returned.
+		await user.click(screen.getByRole("button", { name: /^continue$/i }));
+		await user.click(screen.getByRole("button", { name: /set up later/i }));
+		await user.click(screen.getByRole("button", { name: /looks good/i }));
+		expect(screen.getByTestId("onboarding-step-done")).toBeInTheDocument();
+		expect(refreshEpgSource).not.toHaveBeenCalled();
+
+		await act(async () => {
+			resolveSources({ items: [enabledEpgSource] });
+		});
+
+		await waitFor(() => {
+			expect(refreshEpgSource).toHaveBeenCalledOnce();
+			expect(refreshEpgSource).toHaveBeenCalledWith(enabledEpgSource.id);
+		});
+		expect(onClose).not.toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: /open signalhaven/i }));
+		expect(onClose).toHaveBeenCalledWith("completed");
+	});
+
+	it("syncs configured tuner channels before refreshing guide sources", async () => {
+		let resolveSync!: () => void;
+		vi.mocked(syncTunerChannels).mockReturnValue(
+			new Promise((resolve) => {
+				resolveSync = () =>
+					resolve({
+						added: 102,
+						updated: 0,
+						removed: 0,
+						missing: 0,
+						total: 102
+					});
+			})
+		);
+		vi.mocked(listEpgSources).mockResolvedValue({ items: [enabledEpgSource] });
+
+		render(
+			<OnboardingWizard
+				open
+				initialStep="done"
+				initialTuners={[configuredTuner]}
+				initialEpgSources={[enabledEpgSource]}
+				initialSettings={baseSettings}
+				onClose={() => {}}
+			/>
+		);
+
+		await waitFor(() => expect(syncTunerChannels).toHaveBeenCalledOnce());
+		expect(syncTunerChannels).toHaveBeenCalledWith(configuredTuner.id);
+		expect(refreshEpgSource).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("button", { name: /preparing guide/i })
+		).toBeDisabled();
+
+		await act(async () => resolveSync());
+
+		await waitFor(() => {
+			expect(refreshEpgSource).toHaveBeenCalledWith(enabledEpgSource.id);
+			expect(
+				screen.getByRole("button", { name: /open signalhaven/i })
+			).toBeEnabled();
+		});
 	});
 
 	it("persists the current step to localStorage so closing mid-flow resumes there", async () => {
