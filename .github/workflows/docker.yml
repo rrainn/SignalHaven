@@ -33,11 +33,22 @@ jobs:
 
       - name: Validate release version
         env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           # Fail before the expensive build if the GitHub release cannot map to SemVer tags.
           if [[ ! "$RELEASE_TAG" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must be semantic, for example v1.2.3: $RELEASE_TAG" >&2
+            echo "Release tag must be semantic, for example v1.2.3 or v1.2.3-beta.1: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          # Keep GitHub's release channel consistent with the container channel.
+          version_without_build="${RELEASE_TAG%%+*}"
+          if [[ "$version_without_build" == *-* && "$IS_PRERELEASE" != "true" ]]; then
+            echo "A prerelease version must be published as a GitHub prerelease: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ "$version_without_build" != *-* && "$IS_PRERELEASE" == "true" ]]; then
+            echo "A GitHub prerelease must use a semantic prerelease version: $RELEASE_TAG" >&2
             exit 1
           fi
 
@@ -152,10 +163,15 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
+          # Define moving channels explicitly so alpha/beta never advance latest.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ github.event.release.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name }}
             type=semver,pattern={{major}},value=${{ github.event.release.tag_name }}
+            type=match,pattern=^v?\d+\.\d+\.\d+-(alpha|beta)(?:\.|$),group=1,value=${{ github.event.release.tag_name }}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
             type=sha
 
       - name: Build and push platform image by digest
@@ -234,10 +250,15 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
+          # Match the platform metadata exactly when assigning manifest tags.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ github.event.release.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name }}
             type=semver,pattern={{major}},value=${{ github.event.release.tag_name }}
+            type=match,pattern=^v?\d+\.\d+\.\d+-(alpha|beta)(?:\.|$),group=1,value=${{ github.event.release.tag_name }}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
             type=sha
 
       - name: Create and verify multi-arch manifest
