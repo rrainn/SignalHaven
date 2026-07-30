@@ -37,6 +37,8 @@ export interface XmltvProgram {
 	episode: number | null;
 	season: number | null;
 	categories: string[];
+	/** Provider artwork URL from the programme's first non-empty icon. */
+	artworkUrl: string | null;
 	/** Stable episode identifier supplied by the guide provider when available. */
 	providerEpisodeId: string | null;
 	/** Durable identity used after the transient guide row is pruned. */
@@ -208,6 +210,7 @@ interface ProgramAccumulator {
 	episode: number | null;
 	season: number | null;
 	categories: string[];
+	artworkUrl: string | null;
 	providerEpisodeId: string | null;
 	originalAirDate: string | null;
 	broadcastNewness: BroadcastNewness;
@@ -348,6 +351,7 @@ export async function parseXmltvStream(
 						episode: null,
 						season: null,
 						categories: [],
+						artworkUrl: null,
 						providerEpisodeId: null,
 						originalAirDate: null,
 						broadcastNewness: "unknown",
@@ -382,6 +386,9 @@ export async function parseXmltvStream(
 							currentProgram.categories.push(trimmed);
 						}
 					};
+				} else if (name === "icon" && currentProgram.artworkUrl === null) {
+					// Providers may emit several sizes; feed order is the only portable preference.
+					currentProgram.artworkUrl = String(attrs["src"] ?? "").trim() || null;
 				} else if (name === "episode-num") {
 					const system = (attrs["system"] ?? "").toLowerCase();
 					textTarget = (value) => {
@@ -457,6 +464,7 @@ export async function parseXmltvStream(
 					episode: currentProgram.episode,
 					season: currentProgram.season,
 					categories: currentProgram.categories,
+					artworkUrl: currentProgram.artworkUrl,
 					providerEpisodeId: currentProgram.providerEpisodeId,
 					episodeIdentityKey: buildEpisodeIdentityKey(currentProgram),
 					originalAirDate: currentProgram.originalAirDate,

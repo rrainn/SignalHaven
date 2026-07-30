@@ -11,6 +11,7 @@ import { ArrowLeft, Film } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+	buildRecordingArtworkUrl,
 	deleteRecording,
 	listChannels,
 	listRecordings
@@ -284,10 +285,13 @@ export function SeriesDetailPage(props: SeriesDetailPageProps) {
 
 			<header className="flex flex-col gap-4 sm:flex-row">
 				<RecordingArtwork
-					src={pagination.recordings[0]?.metadata?.artworkUrl}
+					src={
+						pagination.recordings[0]?.metadata?.artworkUrl
+							? buildRecordingArtworkUrl(pagination.recordings[0].id)
+							: null
+					}
 					title={seriesTitle}
 					className="aspect-video w-full rounded-lg sm:w-56"
-					sizes="(max-width: 640px) 100vw, 224px"
 					priority
 				/>
 				<div className="flex min-w-0 flex-col justify-end gap-1">

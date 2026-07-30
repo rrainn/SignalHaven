@@ -169,6 +169,7 @@ export function createTunersRouter(
 					"Cache-Control",
 					`public, max-age=${logo.cacheMaxAgeSeconds}`
 				);
+				res.setHeader("X-Content-Type-Options", "nosniff");
 				res.status(200).send(logo.body);
 			} catch (error) {
 				next(translate(error));

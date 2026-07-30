@@ -129,7 +129,8 @@ export async function importXmltv(
 		 original_air_date date,
 		 broadcast_newness text NOT NULL,
 		 newness_source text NOT NULL,
-         categories text[] NOT NULL
+		 categories text[] NOT NULL,
+		 artwork_url text
        ) ON COMMIT DROP`
 		);
 
@@ -265,7 +266,8 @@ export async function importXmltv(
 		 s.original_air_date,
 		 s.broadcast_newness,
 		 s.newness_source,
-         s.categories
+         s.categories,
+		 s.artwork_url
        FROM (
          SELECT DISTINCT ON (channel_external_id, external_id, start)
                 external_id,
@@ -282,7 +284,8 @@ export async function importXmltv(
 				original_air_date,
 				broadcast_newness,
 				newness_source,
-                categories
+                categories,
+				artwork_url
            FROM epg_programs_staging
           ORDER BY
                 channel_external_id,
@@ -354,12 +357,12 @@ export async function importXmltv(
 			`INSERT INTO epg_programs (
          id, epg_channel_id, external_id, start, stop, title, subtitle,
 		 description, episode, season, provider_episode_id, episode_identity_key,
-		 original_air_date, broadcast_newness, newness_source, categories
+		 original_air_date, broadcast_newness, newness_source, categories, artwork_url
        )
        SELECT
          id, epg_channel_id, external_id, start, stop, title, subtitle,
 		 description, episode, season, provider_episode_id, episode_identity_key,
-		 original_air_date, broadcast_newness, newness_source, categories
+		 original_air_date, broadcast_newness, newness_source, categories, artwork_url
        FROM epg_programs_import
        ON CONFLICT (epg_channel_id, external_id, start)
          WHERE external_id IS NOT NULL
@@ -375,20 +378,21 @@ export async function importXmltv(
 		   original_air_date = EXCLUDED.original_air_date,
 		   broadcast_newness = EXCLUDED.broadcast_newness,
 		   newness_source = EXCLUDED.newness_source,
-           categories = EXCLUDED.categories
+           categories = EXCLUDED.categories,
+		   artwork_url = EXCLUDED.artwork_url
 		 WHERE (epg_programs.stop, epg_programs.title, epg_programs.subtitle,
 		        epg_programs.description, epg_programs.episode,
 		        epg_programs.season, epg_programs.provider_episode_id,
 		        epg_programs.episode_identity_key, epg_programs.original_air_date,
 		        epg_programs.broadcast_newness, epg_programs.newness_source,
-		        epg_programs.categories)
+		        epg_programs.categories, epg_programs.artwork_url)
 		       IS DISTINCT FROM
 		       (EXCLUDED.stop, EXCLUDED.title, EXCLUDED.subtitle,
 		        EXCLUDED.description, EXCLUDED.episode,
 		        EXCLUDED.season, EXCLUDED.provider_episode_id,
 		        EXCLUDED.episode_identity_key, EXCLUDED.original_air_date,
 		        EXCLUDED.broadcast_newness, EXCLUDED.newness_source,
-		        EXCLUDED.categories)`
+		        EXCLUDED.categories, EXCLUDED.artwork_url)`
 		);
 		const affectedPrograms = programsRes.rowCount ?? 0;
 		progress.programsUpserted = affectedPrograms;
@@ -477,7 +481,7 @@ async function copyPrograms(
 			`COPY epg_programs_staging (
          external_id, channel_external_id, start, stop, title, subtitle,
 		 description, episode, season, provider_episode_id, episode_identity_key,
-		 original_air_date, broadcast_newness, newness_source, categories
+		 original_air_date, broadcast_newness, newness_source, categories, artwork_url
        ) FROM STDIN WITH (FORMAT text)`
 		)
 	);
@@ -540,7 +544,8 @@ function* serializePrograms(rows: XmltvProgram[]): Generator<string> {
 			row.originalAirDate === null ? "\\N" : row.originalAirDate,
 			row.broadcastNewness,
 			row.newnessSource,
-			escapeCopyText(serializeTextArray(row.categories))
+			escapeCopyText(serializeTextArray(row.categories)),
+			row.artworkUrl === null ? "\\N" : escapeCopyText(row.artworkUrl)
 		];
 		yield `${cols.join("\t")}\n`;
 	}

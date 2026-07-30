@@ -5,6 +5,7 @@ import type { EpgGridChannel } from "@signalhaven/shared";
 import { Play, Tv } from "lucide-react";
 import Link from "next/link";
 
+import { buildChannelLogoUrl } from "../../lib/api-client";
 import { ChannelLogo } from "../_ui/ChannelLogo";
 
 export interface ChannelRowProps {
@@ -35,7 +36,7 @@ function ChannelRowInner(props: ChannelRowProps) {
 		>
 			<div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-muted text-secondary max-[420px]:h-8 max-[420px]:w-8">
 				<ChannelLogo
-					src={channel.logoUrl}
+					src={channel.logoUrl ? buildChannelLogoUrl(channel.id) : null}
 					size={30}
 					className="h-[1.875rem] w-[1.875rem] object-contain max-[420px]:h-6 max-[420px]:w-6"
 					fallback={<Tv aria-hidden="true" className="h-4 w-4" />}

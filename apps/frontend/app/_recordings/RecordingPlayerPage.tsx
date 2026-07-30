@@ -28,6 +28,7 @@ import {
 
 import {
 	ApiError,
+	buildRecordingArtworkUrl,
 	buildRecordingPlaybackUrl,
 	getRecording,
 	listChannels,
@@ -709,10 +710,13 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 
 			<section className="grid gap-5 md:grid-cols-[minmax(0,20rem)_1fr]">
 				<RecordingArtwork
-					src={recording.metadata?.artworkUrl}
+					src={
+						recording.metadata?.artworkUrl
+							? buildRecordingArtworkUrl(recording.id)
+							: null
+					}
 					title={recording.title}
 					className="aspect-video w-full rounded-lg md:aspect-[2/3]"
-					sizes="(max-width: 768px) 100vw, 320px"
 					priority
 				/>
 

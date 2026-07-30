@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EventBus, type PublishedEvent } from "../src/events/event-bus";
+import type { RemoteImageProxy } from "../src/media/remote-image-proxy";
 import {
 	RecordingProtectedError,
 	RecordingsService,
@@ -274,6 +275,7 @@ function buildService(opts: {
 	quotaBytes?: number | null;
 	seriesRules?: { list(): Promise<unknown[]> };
 	playbackService?: RecordingPlaybackService;
+	artworkProxy?: RemoteImageProxy;
 	epgPrograms?: {
 		listByIds(ids: string[]): Promise<
 			Array<{
@@ -302,10 +304,45 @@ function buildService(opts: {
 		config: staticConfig(opts.tmp, opts.quotaBytes ?? null),
 		bus,
 		...(opts.playbackService ? { playbackService: opts.playbackService } : {}),
+		...(opts.artworkProxy ? { artworkProxy: opts.artworkProxy } : {}),
 		...(opts.seriesRules ? { seriesRules: opts.seriesRules as never } : {}),
 		...(opts.epgPrograms ? { epgPrograms: opts.epgPrograms as never } : {})
 	});
 }
+
+test("getArtwork(): keeps the provider URL inside the backend proxy", async () => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-artwork-proxy-"));
+	const repo = new FakeRecordingsRepo();
+	const row = repo.add(
+		makeRow({ episodeArtworkUrl: "https://images.example/show.jpg" })
+	);
+	const requests: Array<{ ownerKey: string; source: string }> = [];
+	const artworkProxy = {
+		get: async (ownerKey: string, source: string) => {
+			requests.push({ ownerKey, source });
+			return {
+				body: Buffer.from([1, 2, 3]),
+				contentType: "image/jpeg",
+				cacheMaxAgeSeconds: 60
+			};
+		}
+	} as RemoteImageProxy;
+
+	try {
+		const artwork = await buildService({
+			repo,
+			tmp,
+			artworkProxy
+		}).getArtwork(row.id);
+
+		assert.deepEqual(requests, [
+			{ ownerKey: row.id, source: "https://images.example/show.jpg" }
+		]);
+		assert.deepEqual(artwork?.body, Buffer.from([1, 2, 3]));
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+	}
+});
 
 function makeRow(input: Partial<RecordingRecord> = {}): RecordingRecord {
 	const now = new Date();
@@ -435,6 +472,51 @@ test("listPage(): batch-loads rich metadata for the bounded page", async () => {
 		originalAirDate: null
 	});
 
+	await rm(tmp, { recursive: true, force: true });
+});
+
+test("listPage(): fills missing snapshot artwork from the current guide row", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-artwork-refresh-"));
+	const programId = randomUUID();
+	repo.add(
+		makeRow({
+			programId,
+			episodeIdentityKey: "dd_progid:EP00000001.0001",
+			episodeSubtitle: "Durable pilot",
+			episodeArtworkUrl: null
+		})
+	);
+	const svc = buildService({
+		repo,
+		tmp,
+		epgPrograms: {
+			listByIds: async () => [
+				{
+					id: programId,
+					subtitle: "Current pilot",
+					description: null,
+					episode: 1,
+					season: 1,
+					categories: [],
+					artworkUrl: "https://example.com/refreshed.jpg"
+				}
+			]
+		}
+	});
+
+	const page = await svc.listPage({
+		limit: 24,
+		offset: 0,
+		sort: "scheduledStart",
+		direction: "desc"
+	});
+
+	assert.equal(page.items[0]?.metadata?.subtitle, "Durable pilot");
+	assert.equal(
+		page.items[0]?.metadata?.artworkUrl,
+		"https://example.com/refreshed.jpg"
+	);
 	await rm(tmp, { recursive: true, force: true });
 });
 

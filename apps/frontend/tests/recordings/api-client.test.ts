@@ -2,11 +2,24 @@ import type { Recording } from "@signalhaven/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+	buildChannelLogoUrl,
+	buildRecordingArtworkUrl,
 	buildRecordingPlaybackUrl,
 	deleteRecording,
 	listAllRecordings,
 	scheduleRecordingByProgram
 } from "../../lib/api-client";
+
+describe("backend media URLs", () => {
+	it("keeps provider-backed images on same-origin API routes", () => {
+		expect(buildRecordingArtworkUrl("recording/id")).toBe(
+			"/api/v1/recordings/recording%2Fid/artwork"
+		);
+		expect(buildChannelLogoUrl("channel/id")).toBe(
+			"/api/v1/channels/channel%2Fid/logo"
+		);
+	});
+});
 
 /** Build a recording accepted by the shared runtime response schema. */
 function recording(id: string): Recording {

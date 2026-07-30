@@ -22,6 +22,10 @@ import {
 export { RECORDING_EVENT } from "@signalhaven/shared";
 
 import type { EventBus } from "../events/event-bus";
+import {
+	RemoteImageProxy,
+	type ProxiedImage
+} from "../media/remote-image-proxy";
 import type { CommercialAnalysisService } from "../commercials/commercial-analysis.service";
 import {
 	NonRetryableJobError,
@@ -198,6 +202,8 @@ export interface RecordingsServiceOptions {
 	>;
 	/** Optional post-processing coordinator; recording success never depends on it. */
 	commercialAnalysis?: CommercialAnalysisService;
+	/** Test seam for provider artwork fetching and caching. */
+	artworkProxy?: RemoteImageProxy;
 }
 
 export interface ScheduleRecordingInput {
@@ -251,6 +257,7 @@ export class RecordingsService {
 	private readonly logger: RecordingsLogger;
 	private readonly playback: RecordingPlaybackService;
 	private readonly commercialAnalysis: CommercialAnalysisService | undefined;
+	private readonly artworkProxy: RemoteImageProxy;
 
 	/** Recording id -> live in-flight session. */
 	private readonly inFlight = new Map<
@@ -281,6 +288,8 @@ export class RecordingsService {
 		this.now = options.now ?? (() => new Date());
 		this.logger = options.logger ?? noopLogger;
 		this.commercialAnalysis = options.commercialAnalysis;
+		this.artworkProxy =
+			options.artworkProxy ?? new RemoteImageProxy({ logger: this.logger });
 		this.playback =
 			options.playbackService ??
 			new RecordingPlaybackService({
@@ -473,14 +482,18 @@ export class RecordingsService {
 		const { hasMore: _hasMore, items, ...result } = page;
 		return {
 			...result,
-			items: items.map((record) => ({
-				...record,
-				metadata:
-					toSnapshotMetadata(record) ??
-					(record.programId
-						? (metadataByProgramId.get(record.programId) ?? null)
-						: null)
-			})),
+			items: items.map((record) => {
+				const currentMetadata = record.programId
+					? (metadataByProgramId.get(record.programId) ?? null)
+					: null;
+				return {
+					...record,
+					metadata: mergeRecordingMetadata(
+						toSnapshotMetadata(record),
+						currentMetadata
+					)
+				};
+			}),
 			nextCursor
 		};
 	}
@@ -491,6 +504,14 @@ export class RecordingsService {
 			throw new RecordingNotFoundError(id);
 		}
 		return row;
+	}
+
+	/** Fetch recording artwork through the backend-owned bounded image cache. */
+	async getArtwork(id: string): Promise<ProxiedImage | null> {
+		const record = await this.getById(id);
+		const metadata = await this.loadMetadata(record);
+		if (!metadata?.artworkUrl) return null;
+		return this.artworkProxy.get(id, metadata.artworkUrl);
 	}
 
 	/** Prepare or reuse a VOD session and return its HLS media playlist. */
@@ -556,15 +577,15 @@ export class RecordingsService {
 		record: RecordingRecord
 	): Promise<RecordingMetadata | null> {
 		const snapshot = toSnapshotMetadata(record);
-		if (snapshot) return snapshot;
+		if (snapshot?.artworkUrl) return snapshot;
 		if (!record.programId || !this.epgPrograms) {
-			return null;
+			return snapshot;
 		}
 		const program = await this.epgPrograms.getById(record.programId);
 		if (!program) {
-			return null;
+			return snapshot;
 		}
-		return toRecordingMetadata(program);
+		return mergeRecordingMetadata(snapshot, toRecordingMetadata(program));
 	}
 
 	/** Copy guide metadata before the broadcast row can be pruned. */
@@ -1686,6 +1707,16 @@ function toSnapshotMetadata(record: RecordingRecord): RecordingMetadata | null {
 		artworkUrl: record.episodeArtworkUrl ?? null,
 		originalAirDate: record.episodeOriginalAirDate ?? null
 	};
+}
+
+/** Preserve durable episode metadata while allowing a guide refresh to add artwork. */
+function mergeRecordingMetadata(
+	snapshot: RecordingMetadata | null,
+	current: RecordingMetadata | null
+): RecordingMetadata | null {
+	if (!snapshot) return current;
+	if (!current || snapshot.artworkUrl) return snapshot;
+	return { ...snapshot, artworkUrl: current.artworkUrl };
 }
 
 /**

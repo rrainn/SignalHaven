@@ -92,6 +92,7 @@ test("parseXmltvStream emits channels and programs", async () => {
         <title>Hello</title>
         <sub-title>Pilot</sub-title>
         <desc>An episode</desc>
+        <icon src="https://example.com/hello.jpg" />
         <category>News</category>
         <category>Talk</category>
         <episode-num system="onscreen">S02E03</episode-num>
@@ -112,6 +113,7 @@ test("parseXmltvStream emits channels and programs", async () => {
 	assert.equal(first.title, "Hello");
 	assert.equal(first.subtitle, "Pilot");
 	assert.equal(first.description, "An episode");
+	assert.equal(first.artworkUrl, "https://example.com/hello.jpg");
 	assert.deepEqual(first.categories, ["News", "Talk"]);
 	assert.equal(first.season, 2);
 	assert.equal(first.episode, 3);

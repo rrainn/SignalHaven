@@ -30,6 +30,7 @@ import {
 } from "react";
 
 import {
+	buildChannelLogoUrl,
 	formatClientError,
 	getChannelQuality,
 	listChannels,
@@ -1020,7 +1021,7 @@ function ChannelRow(props: ChannelRowProps) {
 				{/* Keep playback navigation separate from the row's management controls. */}
 				<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-surface-muted text-secondary transition-colors group-hover:bg-accent/15 group-hover:text-accent">
 					<ChannelLogo
-						src={channel.logoUrl}
+						src={channel.logoUrl ? buildChannelLogoUrl(channel.id) : null}
 						size={28}
 						className="h-7 w-7 object-contain"
 						fallback={<Tv aria-hidden="true" className="h-4 w-4" />}
