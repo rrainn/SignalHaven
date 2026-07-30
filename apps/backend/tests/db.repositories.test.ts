@@ -76,14 +76,16 @@ beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
 	  series_rule_episodes,
-      channel_epg_map,
+	  logical_channel_epg_map,
+	  channel_epg_map,
       recordings,
       series_rules,
       epg_programs,
 	  episodes,
       epg_channels,
       epg_sources,
-      channels,
+	  channels,
+	  logical_channels,
       settings,
       scheduled_jobs,
       tuners
@@ -718,6 +720,10 @@ test("migration up and down round-trip", async () => {
 		path.join(migrationsFolder, "0018_durable_episode_identity.down.sql"),
 		"utf8"
 	);
+	const logicalChannelsDownSql = await fs.readFile(
+		path.join(migrationsFolder, "0019_logical_channels.down.sql"),
+		"utf8"
+	);
 	const upSql = await fs.readFile(
 		path.join(migrationsFolder, "0000_initial_schema.sql"),
 		"utf8"
@@ -744,11 +750,13 @@ test("migration up and down round-trip", async () => {
 			"0015_tuner_lineup_sync.sql",
 			"0016_channel_provider_identity.sql",
 			"0017_recordings_program_updated_index.sql",
-			"0018_durable_episode_identity.sql"
+			"0018_durable_episode_identity.sql",
+			"0019_logical_channels.sql"
 		].map((file) => fs.readFile(path.join(migrationsFolder, file), "utf8"))
 	);
 	// Drop the later tables first so the 0000 down migration can run
 	// cleanly without lingering FK references.
+	await pool.query(logicalChannelsDownSql);
 	await pool.query(durableEpisodeDownSql);
 	await pool.query("DROP TABLE IF EXISTS scheduled_jobs CASCADE");
 	await pool.query("DROP TABLE IF EXISTS epg_sources CASCADE");

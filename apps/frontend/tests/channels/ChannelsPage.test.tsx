@@ -81,6 +81,111 @@ describe("ChannelsPage", () => {
 		expect(lastCall?.[0]?.hidden.length).toBe(2);
 	});
 
+	it("merges selected channels into one expandable source group", async () => {
+		const user = userEvent.setup();
+		const fixture = buildChannelsFixture();
+		const [primary, backup] = fixture;
+		const merged = {
+			...primary!,
+			sources: [
+				...(primary!.sources ?? []),
+				...(backup!.sources ?? []).map((source) => ({
+					...source,
+					preferred: false,
+					priority: 1
+				}))
+			],
+			availableSourceCount: 2
+		};
+		const mergeGroups = vi
+			.fn()
+			.mockResolvedValue([merged, ...fixture.slice(2)]);
+		render(
+			<ChannelsPage initialChannels={fixture} mergeGroups={mergeGroups} />
+		);
+
+		for (const row of screen.getAllByTestId("channel-row").slice(0, 2)) {
+			await user.click(within(row).getByRole("checkbox"));
+		}
+		await user.click(screen.getByRole("button", { name: "Merge sources" }));
+		const dialog = screen.getByRole("dialog", {
+			name: "Merge channel sources"
+		});
+		expect(within(dialog).getAllByRole("radio")).toHaveLength(2);
+		await user.click(
+			within(dialog).getByRole("button", { name: "Merge 2 channels" })
+		);
+
+		expect(mergeGroups).toHaveBeenCalledWith(
+			[primary!.id, backup!.id],
+			primary!.id
+		);
+		expect(screen.getAllByTestId("channel-row")).toHaveLength(
+			fixture.length - 1
+		);
+		expect(screen.getByRole("button", { name: "2 sources" })).toBeVisible();
+	});
+
+	it("lets users promote a healthy fallback source", async () => {
+		const user = userEvent.setup();
+		const [primary, backup] = buildChannelsFixture();
+		const grouped = {
+			...primary!,
+			sources: [
+				primary!.sources![0]!,
+				{
+					...backup!.sources![0]!,
+					preferred: false,
+					priority: 1
+				}
+			],
+			availableSourceCount: 2
+		};
+		const preferSource = vi.fn().mockResolvedValue([grouped]);
+		render(
+			<ChannelsPage initialChannels={[grouped]} preferSource={preferSource} />
+		);
+
+		await user.click(screen.getByRole("button", { name: "2 sources" }));
+		await user.click(screen.getByRole("button", { name: "Make preferred" }));
+
+		expect(preferSource).toHaveBeenCalledWith(
+			primary!.id,
+			backup!.sources![0]!.id
+		);
+	});
+
+	it("lets users separate a source without deleting it", async () => {
+		const user = userEvent.setup();
+		const [primary, backup] = buildChannelsFixture();
+		const grouped = {
+			...primary!,
+			sources: [
+				primary!.sources![0]!,
+				{
+					...backup!.sources![0]!,
+					preferred: false,
+					priority: 1
+				}
+			],
+			availableSourceCount: 2
+		};
+		const splitSource = vi.fn().mockResolvedValue([primary!, backup!]);
+		render(
+			<ChannelsPage initialChannels={[grouped]} splitSource={splitSource} />
+		);
+
+		await user.click(screen.getByRole("button", { name: "2 sources" }));
+		const separateButtons = screen.getAllByRole("button", { name: "Separate" });
+		await user.click(separateButtons[1]!);
+
+		expect(splitSource).toHaveBeenCalledWith(
+			primary!.id,
+			backup!.sources![0]!.id
+		);
+		expect(await screen.findAllByTestId("channel-row")).toHaveLength(2);
+	});
+
 	it("warns when a channel preference change cannot be persisted", async () => {
 		const user = userEvent.setup();
 		const fixture = buildChannelsFixture();

@@ -233,18 +233,22 @@ short six-segment low-latency playlist.
 
 ### `lineupSync`
 
-| Key                | Type               | Default | Description                                                    |
-| ------------------ | ------------------ | ------- | -------------------------------------------------------------- |
-| `enabled`          | `boolean`          | `true`  | Enables recurring imports of every configured tuner lineup.    |
-| `intervalHours`    | integer (`1..168`) | `24`    | Minimum time between successful imports for the same tuner.    |
-| `removalThreshold` | integer (`2..10`)  | `3`     | Successful consecutive misses required before channel removal. |
+| Key                | Type               | Default | Description                                                     |
+| ------------------ | ------------------ | ------- | --------------------------------------------------------------- |
+| `enabled`          | `boolean`          | `true`  | Enables recurring imports of every configured tuner lineup.     |
+| `intervalHours`    | integer (`1..168`) | `24`    | Minimum time between successful imports for the same tuner.     |
+| `removalThreshold` | integer (`2..10`)  | `3`     | Successful misses before a retained source becomes unavailable. |
 
 The scheduler checks hourly and imports each tuner when its configured cadence
 is due. Both automatic imports and the manual **Sync channels** action invalidate
 the provider's lineup cache first. Failed fetches do not change channels or
 advance missing-channel counters, and they retry on the next hourly check.
-Existing channel IDs, preferences, and EPG mappings survive updates. A channel
-that returns before reaching `removalThreshold` has its miss count reset.
+Existing channel IDs, preferences, group membership, and EPG mappings survive
+updates. A source that returns before reaching `removalThreshold` has its miss
+count reset. At the threshold it is excluded from Guide and automatic source
+selection, but remains attached to its logical channel so a later return can
+recover without rebuilding preferences. Explicitly separating the source or
+deleting its tuner is what removes it from the group.
 
 ## Series recording retention
 

@@ -34,7 +34,7 @@ SignalHaven brings live television, guide data, scheduling, and playback togethe
 - **Pause and rewind live streams** with a configurable rolling time-shift buffer.
 - **Record once or automatically** with one-off schedules, series rules, retention controls, and conflict visibility.
 - **Browse one unified guide** backed by HDHomeRun guide data or XMLTV sources.
-- **Manage your lineup** by searching, sorting, favoriting, hiding, and reordering channels.
+- **Manage your lineup** by searching, sorting, favoriting, hiding, reordering, and merging duplicate channels across tuners with automatic source fallback.
 - **Play recordings in the browser** with resume progress, captions, and optional Comskip commercial markers.
 - **Adapt playback to your hardware** with direct streaming, quality profiles, and optional VideoToolbox, VA-API, Quick Sync, or NVENC acceleration.
 - **Use it anywhere on your network** through a responsive light- and dark-mode interface.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { EpgGridService } from "../src/epg/epg-grid.service";
-import type { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.repository";
+import type { LogicalChannelEpgMapRepository } from "../src/repositories/logical-channel-epg-map.repository";
 import type { ChannelsRepository } from "../src/repositories/channels.repository";
 import type { EpgProgramsRepository } from "../src/repositories/epg-programs.repository";
 
@@ -37,7 +37,7 @@ test("getGrid loads channel and mapping snapshots concurrently", async () => {
 	};
 	const service = new EpgGridService({
 		channels: channels as unknown as ChannelsRepository,
-		channelEpgMap: mappings as unknown as ChannelEpgMapRepository,
+		channelEpgMap: mappings as unknown as LogicalChannelEpgMapRepository,
 		epgPrograms: programs as unknown as EpgProgramsRepository
 	});
 
@@ -76,7 +76,7 @@ test("getGrid reuses snapshots until they are explicitly invalidated", async () 
 	};
 	const service = new EpgGridService({
 		channels: channels as unknown as ChannelsRepository,
-		channelEpgMap: mappings as unknown as ChannelEpgMapRepository,
+		channelEpgMap: mappings as unknown as LogicalChannelEpgMapRepository,
 		epgPrograms: programs as unknown as EpgProgramsRepository
 	});
 	const from = new Date("2026-01-01T00:00:00.000Z");

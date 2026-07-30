@@ -32,7 +32,8 @@ const tunerChannelLogoParamSchema = z.object({
 export function createTunersRouter(
 	service: TunersService,
 	epgService: EpgService,
-	lineupSyncService: TunerLineupSyncService
+	lineupSyncService: TunerLineupSyncService,
+	onChannelsChanged?: () => void
 ): Router {
 	const router = Router();
 
@@ -205,6 +206,7 @@ export function createTunersRouter(
 		async (req, res, next) => {
 			try {
 				await service.delete(req.params["id"] as string);
+				onChannelsChanged?.();
 				res.status(204).end();
 			} catch (error) {
 				next(translate(error));
@@ -217,7 +219,7 @@ export function createTunersRouter(
 	 * the provider, then upserts channels by `(tunerId, number)`:
 	 *   - Inserts channels present in the lineup but not yet persisted.
 	 *   - Updates name / logo for channels whose details have changed.
-	 *   - Counts missing channels and deletes them only after repeated misses.
+	 *   - Retains missing sources and marks them unavailable after repeated misses.
 	 *
 	 * Existing channel UUIDs and EPG mappings are preserved so callers are
 	 * not disrupted by re-syncing. The manual action always bypasses the

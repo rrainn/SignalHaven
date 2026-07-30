@@ -48,9 +48,9 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-      channel_epg_map, recordings, series_rules,
+	  logical_channel_epg_map, channel_epg_map, recordings, series_rules,
       epg_programs, epg_channels, epg_sources,
-      channels, settings, scheduled_jobs, tuners
+	  channels, logical_channels, settings, scheduled_jobs, tuners
     RESTART IDENTITY CASCADE
   `);
 });

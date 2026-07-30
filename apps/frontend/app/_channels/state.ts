@@ -225,7 +225,11 @@ export function filterChannels(
 	const search = filters.search.trim().toLowerCase();
 
 	return channels.filter((channel) => {
-		if (filters.tunerId !== null && channel.tunerId !== filters.tunerId) {
+		if (
+			filters.tunerId !== null &&
+			channel.tunerId !== filters.tunerId &&
+			!channel.sources?.some((source) => source.tunerId === filters.tunerId)
+		) {
 			return false;
 		}
 		if (filters.visibility === "favorites" && !favSet.has(channel.id)) {
@@ -272,10 +276,17 @@ export function groupChannels(
 	}
 	const groups = new Map<string, ChannelsGroup>();
 	for (const channel of channels) {
-		const key = channel.tunerId;
+		const primarySource = channel.sources?.[0];
+		// Empty logical channels share one recovery bucket instead of posing as tuners.
+		const key =
+			primarySource?.tunerId ??
+			(channel.sources !== undefined ? "__no_source__" : channel.tunerId);
+		const label =
+			primarySource?.tunerName ??
+			(channel.sources !== undefined ? "No source" : channel.tunerName);
 		let g = groups.get(key);
 		if (!g) {
-			g = { key, label: channel.tunerName, channels: [] };
+			g = { key, label, channels: [] };
 			groups.set(key, g);
 		}
 		g.channels.push(channel);

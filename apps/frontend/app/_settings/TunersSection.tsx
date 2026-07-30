@@ -97,6 +97,7 @@ export function TunersSection(props: TunersSectionProps) {
 				added: number;
 				updated: number;
 				removed: number;
+				unavailable: number;
 				missing: number;
 				total: number;
 			}
@@ -410,7 +411,8 @@ export function TunersSection(props: TunersSectionProps) {
 													{syncResults[tuner.id]!.total !== 1 ? "s" : ""} (
 													{syncResults[tuner.id]!.added} added,{" "}
 													{syncResults[tuner.id]!.updated} updated,{" "}
-													{syncResults[tuner.id]!.removed} removed)
+													{syncResults[tuner.id]!.unavailable} newly
+													unavailable)
 													{syncResults[tuner.id]!.missing > 0
 														? `, ${syncResults[tuner.id]!.missing} awaiting confirmation`
 														: ""}
@@ -572,7 +574,7 @@ function AutomaticLineupSyncSettings(props: {
 							/>
 						</label>
 						<label className="space-y-1 text-sm">
-							<span>Remove after consecutive misses</span>
+							<span>Mark unavailable after consecutive misses</span>
 							<Input
 								type="number"
 								min={2}
@@ -583,8 +585,9 @@ function AutomaticLineupSyncSettings(props: {
 						</label>
 					</div>
 					<p className="text-xs text-secondary">
-						Failed refreshes never remove channels. A missing channel is deleted
-						only after this many successful imports omit it.
+						Failed refreshes never change source membership. After this many
+						successful omissions, a source is marked unavailable but remains
+						linked to its channel for recovery.
 					</p>
 					<div className="flex items-center gap-3">
 						<Button type="submit" size="sm" disabled={submitting}>

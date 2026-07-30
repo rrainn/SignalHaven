@@ -264,15 +264,17 @@ export const TUNER_UNAVAILABLE_ERROR_CODE = "TUNER_UNAVAILABLE";
 
 /**
  * Response body for `POST /api/v1/tuners/:id/sync`. Reports how many
- * channels were added, updated, retained as missing, or removed during sync.
+ * sources were added, updated, retained as missing, or marked unavailable.
  */
 export const tunerSyncResponseSchema = z.object({
 	/** Channels inserted from the tuner lineup that were not yet in the DB. */
 	added: z.number().int().nonnegative(),
 	/** Channels already in the DB whose name or logo changed in the lineup. */
 	updated: z.number().int().nonnegative(),
-	/** Channels that were in the DB but are no longer in the tuner lineup. */
+	/** Deprecated compatibility counter; lineup sync never deletes source rows. */
 	removed: z.number().int().nonnegative(),
+	/** Sources retained in their group after reaching the missing threshold. */
+	unavailable: z.number().int().nonnegative(),
 	/** Channels retained while waiting for the consecutive-miss threshold. */
 	missing: z.number().int().nonnegative(),
 	/** Total persisted channels for this tuner after the sync. */

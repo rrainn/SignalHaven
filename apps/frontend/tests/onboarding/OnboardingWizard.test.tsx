@@ -238,6 +238,7 @@ describe("OnboardingWizard", () => {
 						added: 102,
 						updated: 0,
 						removed: 0,
+						unavailable: 0,
 						missing: 0,
 						total: 102
 					});

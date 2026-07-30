@@ -18,12 +18,16 @@ class InMemoryChannelsRepository {
 	readonly rows = new Map<string, ChannelRecord>();
 
 	async create(input: CreateChannelInput): Promise<ChannelRecord> {
+		const id = randomUUID();
 		const row = {
-			id: randomUUID(),
+			id,
+			logicalChannelId: id,
 			...input,
 			providerChannelId: input.providerChannelId ?? null,
 			logoUrl: input.logoUrl ?? null,
 			tvgId: input.tvgId ?? null,
+			sourceStatus: "active",
+			sourcePriority: 0,
 			lineupMissingCount: 0
 		} as ChannelRecord;
 		this.rows.set(row.id, row);
@@ -43,6 +47,7 @@ class InMemoryChannelsRepository {
 			logoUrl?: string | null;
 			tvgId?: string | null;
 			sortOrder?: number;
+			sourceStatus?: "active" | "missing" | "unavailable";
 			lineupMissingCount?: number;
 		}
 	): Promise<ChannelRecord | null> {
@@ -159,6 +164,35 @@ test("lineup sync preserves channel UUIDs when provider positions change", async
 	);
 });
 
+test("lineup sync preserves source identity when a provider rotates its id", async () => {
+	const lineup: TunerLineupChannel[] = [
+		{
+			channelId: "news-old",
+			number: "5.1",
+			name: "News",
+			tvgId: "news.example"
+		}
+	];
+	const { channels, service } = buildHarness(lineup);
+
+	await service.syncTuner("tuner-1");
+	const [existing] = [...channels.rows.values()];
+	assert.ok(existing);
+
+	// A unique guide identity is strong enough to recognize a provider-side move.
+	lineup[0] = {
+		channelId: "news-new",
+		number: "12.4",
+		name: "News",
+		tvgId: "news.example"
+	};
+	await service.syncTuner("tuner-1");
+
+	assert.equal(channels.rows.size, 1);
+	assert.equal(channels.rows.get(existing.id)?.providerChannelId, "news-new");
+	assert.equal(channels.rows.get(existing.id)?.number, "12.4");
+});
+
 test("lineup sync safely backfills provider identities for legacy channels", async () => {
 	const lineup: TunerLineupChannel[] = [
 		{ channelId: "local", number: "1", name: "Local" },
@@ -237,7 +271,7 @@ test("lineup sync re-evaluates guide mappings after metadata is stored", async (
 	assert.equal(mappedTvgId, "news.example");
 });
 
-test("missing channels survive transient lineups and are removed at the threshold", async () => {
+test("missing sources retain their grouping and become unavailable at the threshold", async () => {
 	const { channels, service } = buildHarness([], 3);
 	const existing = await channels.create({
 		tunerId: "tuner-1",
@@ -248,14 +282,17 @@ test("missing channels survive transient lineups and are removed at the threshol
 	});
 
 	const first = await service.syncTuner("tuner-1", { forceRefresh: true });
+	assert.equal(channels.rows.get(existing.id)?.sourceStatus, "missing");
 	const second = await service.syncTuner("tuner-1", { forceRefresh: true });
 	const third = await service.syncTuner("tuner-1", { forceRefresh: true });
 
 	assert.equal(first.removed, 0);
 	assert.equal(first.missing, 1);
 	assert.equal(second.removed, 0);
-	assert.equal(third.removed, 1);
-	assert.equal(channels.rows.has(existing.id), false);
+	assert.equal(third.removed, 0);
+	assert.equal(third.unavailable, 1);
+	assert.equal(channels.rows.has(existing.id), true);
+	assert.equal(channels.rows.get(existing.id)?.sourceStatus, "unavailable");
 });
 
 test("a channel returning to the lineup resets its consecutive miss count", async () => {
@@ -274,6 +311,7 @@ test("a channel returning to the lineup resets its consecutive miss count", asyn
 	await service.syncTuner("tuner-1", { forceRefresh: true });
 
 	assert.equal(channels.rows.get(existing.id)?.lineupMissingCount, 0);
+	assert.equal(channels.rows.get(existing.id)?.sourceStatus, "active");
 });
 
 test("overlapping sync requests share one reconciliation", async () => {

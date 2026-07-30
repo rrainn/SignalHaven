@@ -1,5 +1,6 @@
 import {
 	channelListSchema,
+	channelMergeSchema,
 	channelQualitySchema,
 	epgGridSchema,
 	epgProgramDetailsSchema,
@@ -38,6 +39,7 @@ import {
 	tunerStatusSchema,
 	tunerSyncResponseSchema,
 	type ChannelList,
+	type ChannelMerge,
 	type ChannelQuality,
 	type EpgGrid,
 	type EpgProgramDetails,
@@ -482,6 +484,44 @@ export function getEpgProgram(
  */
 export function listChannels(init?: ApiRequestInit): Promise<ChannelList> {
 	return apiRequest("/api/v1/channels", channelListSchema, init);
+}
+
+/** Group logical channels while keeping the selected primary id stable. */
+export function mergeChannels(
+	body: ChannelMerge,
+	init?: ApiRequestInit
+): Promise<ChannelList> {
+	return apiRequest("/api/v1/channels/merge", channelListSchema, {
+		...init,
+		method: "POST",
+		json: channelMergeSchema.parse(body)
+	});
+}
+
+/** Separate one physical source into its own user-facing channel. */
+export function splitChannelSource(
+	channelId: string,
+	sourceId: string,
+	init?: ApiRequestInit
+): Promise<ChannelList> {
+	return apiRequest(
+		`/api/v1/channels/${encodeURIComponent(channelId)}/sources/${encodeURIComponent(sourceId)}/split`,
+		channelListSchema,
+		{ ...init, method: "POST" }
+	);
+}
+
+/** Promote one healthy source to the front of automatic selection. */
+export function preferChannelSource(
+	channelId: string,
+	sourceId: string,
+	init?: ApiRequestInit
+): Promise<ChannelList> {
+	return apiRequest(
+		`/api/v1/channels/${encodeURIComponent(channelId)}/sources/${encodeURIComponent(sourceId)}/preferred`,
+		channelListSchema,
+		{ ...init, method: "POST" }
+	);
 }
 
 export function getSettings(init?: ApiRequestInit): Promise<Settings> {

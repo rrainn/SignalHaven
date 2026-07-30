@@ -36,10 +36,33 @@ export const tuners = pgTable("tuners", {
 	lastLineupSyncError: text("last_lineup_sync_error")
 });
 
+/** Stable channel identity shared by every tuner-specific source variant. */
+export const logicalChannels = pgTable(
+	"logical_channels",
+	{
+		id: uuid("id").primaryKey(),
+		number: text("number").notNull(),
+		name: text("name").notNull(),
+		logoUrl: text("logo_url"),
+		enabled: boolean("enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [index("logical_channels_sort_idx").on(table.sortOrder)]
+);
+
 export const channels = pgTable(
 	"channels",
 	{
 		id: uuid("id").primaryKey(),
+		logicalChannelId: uuid("logical_channel_id")
+			.notNull()
+			.references(() => logicalChannels.id, { onDelete: "cascade" }),
 		tunerId: uuid("tuner_id")
 			.notNull()
 			.references(() => tuners.id, { onDelete: "cascade" }),
@@ -51,11 +74,19 @@ export const channels = pgTable(
 		tvgId: text("tvg_id"),
 		enabled: boolean("enabled").notNull().default(true),
 		sortOrder: integer("sort_order").notNull(),
-		// Require repeated successful misses before removing a stored channel.
+		// Missing sources stay attached so a transient lineup change cannot erase grouping.
+		sourceStatus: text("source_status").notNull().default("active"),
+		sourcePriority: integer("source_priority").notNull().default(0),
+		// Require repeated successful misses before excluding a stored source as unavailable.
 		lineupMissingCount: integer("lineup_missing_count").notNull().default(0)
 	},
 	(table) => [
 		index("channels_tuner_sort_idx").on(table.tunerId, table.sortOrder),
+		index("channels_logical_priority_idx").on(
+			table.logicalChannelId,
+			table.sourcePriority,
+			table.id
+		),
 		uniqueIndex("channels_tuner_provider_channel_id_unique")
 			.on(table.tunerId, table.providerChannelId)
 			.where(sql`${table.providerChannelId} IS NOT NULL`),
@@ -184,13 +215,28 @@ export const channelEpgMap = pgTable("channel_epg_map", {
 	manual: boolean("manual").notNull().default(false)
 });
 
+/** Guide feed selected once for a logical channel, independent of live source. */
+export const logicalChannelEpgMap = pgTable("logical_channel_epg_map", {
+	logicalChannelId: uuid("logical_channel_id")
+		.primaryKey()
+		.references(() => logicalChannels.id, { onDelete: "cascade" }),
+	epgChannelId: uuid("epg_channel_id")
+		.notNull()
+		.references(() => epgChannels.id, { onDelete: "cascade" }),
+	manual: boolean("manual").notNull().default(false)
+});
+
 export const recordings = pgTable(
 	"recordings",
 	{
 		id: uuid("id").primaryKey(),
 		channelId: uuid("channel_id")
 			.notNull()
-			.references(() => channels.id, { onDelete: "cascade" }),
+			.references(() => logicalChannels.id, { onDelete: "restrict" }),
+		// Filled when capture starts so historical diagnostics retain the chosen source.
+		sourceChannelId: uuid("source_channel_id").references(() => channels.id, {
+			onDelete: "set null"
+		}),
 		programId: uuid("program_id").references(() => epgPrograms.id, {
 			onDelete: "set null"
 		}),
@@ -268,7 +314,7 @@ export const recordings = pgTable(
 export const seriesRules = pgTable("series_rules", {
 	id: uuid("id").primaryKey(),
 	title: text("title").notNull(),
-	channelId: uuid("channel_id").references(() => channels.id, {
+	channelId: uuid("channel_id").references(() => logicalChannels.id, {
 		onDelete: "set null"
 	}),
 	epgChannelId: uuid("epg_channel_id").references(() => epgChannels.id, {
@@ -390,11 +436,13 @@ export const commercialMarkers = pgTable(
 
 export const schema = {
 	tuners,
+	logicalChannels,
 	channels,
 	epgSources,
 	epgChannels,
 	epgPrograms,
 	channelEpgMap,
+	logicalChannelEpgMap,
 	recordings,
 	seriesRules,
 	settings,

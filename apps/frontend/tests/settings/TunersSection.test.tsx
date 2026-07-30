@@ -87,7 +87,7 @@ describe("TunersSection", () => {
 			name: /automatic channel imports/i
 		});
 		const interval = within(form).getByLabelText(/refresh every/i);
-		const threshold = within(form).getByLabelText(/remove after/i);
+		const threshold = within(form).getByLabelText(/mark unavailable after/i);
 		await user.clear(interval);
 		await user.type(interval, "12");
 		await user.clear(threshold);

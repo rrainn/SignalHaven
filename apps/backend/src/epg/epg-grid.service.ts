@@ -16,7 +16,7 @@ import type {
 	EpgProgramDetails
 } from "@signalhaven/shared";
 
-import type { ChannelEpgMapRepository } from "../repositories/channel-epg-map.repository";
+import type { LogicalChannelEpgMapRepository } from "../repositories/logical-channel-epg-map.repository";
 import type {
 	ChannelsRepository,
 	GuideChannelRecord
@@ -38,7 +38,7 @@ const STATUS_PRIORITY: Record<string, number> = {
 
 export interface EpgGridServiceOptions {
 	channels: ChannelsRepository;
-	channelEpgMap: ChannelEpgMapRepository;
+	channelEpgMap: LogicalChannelEpgMapRepository;
 	epgPrograms: EpgProgramsRepository;
 	/** Optional — when omitted, recording annotations are always `null`. */
 	recordings?: RecordingsRepository | undefined;
@@ -52,7 +52,7 @@ interface GuideSnapshot {
 
 export class EpgGridService {
 	private readonly channels: ChannelsRepository;
-	private readonly channelEpgMap: ChannelEpgMapRepository;
+	private readonly channelEpgMap: LogicalChannelEpgMapRepository;
 	private readonly epgPrograms: EpgProgramsRepository;
 	private readonly recordings: RecordingsRepository | undefined;
 	private snapshotPromise: Promise<GuideSnapshot> | undefined;
@@ -156,19 +156,24 @@ export class EpgGridService {
 			// Multiple tuner variants may share one EPG channel, so the reverse
 			// lookup retains every enabled channel mapped to that guide source.
 			const epgIdByChannelId = new Map(
-				mappings.map((mapping) => [mapping.channelId, mapping.epgChannelId])
+				mappings.map((mapping) => [
+					mapping.logicalChannelId,
+					mapping.epgChannelId
+				])
 			);
 			const enabledChannelIds = new Set(
 				enabledChannels.map((channel) => channel.id)
 			);
 			const channelIdsByEpgId = new Map<string, string[]>();
 			for (const mapping of mappings) {
-				if (!enabledChannelIds.has(mapping.channelId)) continue;
+				if (!enabledChannelIds.has(mapping.logicalChannelId)) continue;
 				const channelIds = channelIdsByEpgId.get(mapping.epgChannelId);
 				if (channelIds) {
-					channelIds.push(mapping.channelId);
+					channelIds.push(mapping.logicalChannelId);
 				} else {
-					channelIdsByEpgId.set(mapping.epgChannelId, [mapping.channelId]);
+					channelIdsByEpgId.set(mapping.epgChannelId, [
+						mapping.logicalChannelId
+					]);
 				}
 			}
 			return { enabledChannels, epgIdByChannelId, channelIdsByEpgId };
@@ -197,7 +202,9 @@ export class EpgGridService {
 		);
 		if (!mapping) return null;
 
-		const channel = await this.channels.getById(mapping.channelId);
+		const channel = await this.channels.getLogicalChannelById(
+			mapping.logicalChannelId
+		);
 		if (!channel || !channel.enabled) return null;
 
 		const recordings = this.recordings

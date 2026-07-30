@@ -94,20 +94,42 @@ const SEEDS: Seed[] = [
 ];
 
 export function buildChannelsFixture(): ChannelListItem[] {
-	return SEEDS.map((seed, index) => ({
-		id: fakeUuid(index),
-		number: seed.number,
-		name: seed.name,
-		logoUrl: null,
-		tvgId: seed.tvgId,
-		tunerId: seed.tunerId,
-		tunerName:
-			seed.tunerId === TUNER_ANTENNA ? "Antenna (HDHomeRun)" : "IPTV Provider",
-		tunerKind: seed.tunerId === TUNER_ANTENNA ? "hdhomerun" : "iptv",
-		enabled: true,
-		sortOrder: index,
-		hasMapping: seed.hasMapping
-	}));
+	return SEEDS.map((seed, index) => {
+		const id = fakeUuid(index);
+		const tunerName =
+			seed.tunerId === TUNER_ANTENNA ? "Antenna (HDHomeRun)" : "IPTV Provider";
+		const tunerKind =
+			seed.tunerId === TUNER_ANTENNA
+				? ("hdhomerun" as const)
+				: ("iptv" as const);
+		return {
+			id,
+			number: seed.number,
+			name: seed.name,
+			logoUrl: null,
+			tvgId: seed.tvgId,
+			tunerId: seed.tunerId,
+			tunerName,
+			tunerKind,
+			enabled: true,
+			sortOrder: index,
+			hasMapping: seed.hasMapping,
+			sources: [
+				{
+					id,
+					tunerId: seed.tunerId,
+					tunerName,
+					tunerKind,
+					number: seed.number,
+					name: seed.name,
+					status: "active",
+					priority: 0,
+					preferred: true
+				}
+			],
+			availableSourceCount: 1
+		};
+	});
 }
 
 /**

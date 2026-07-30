@@ -69,7 +69,8 @@ export function createApiV1Router(deps: ApiV1Dependencies): Router {
 		createTunersRouter(
 			deps.tunersService,
 			deps.epgService,
-			deps.lineupSyncService
+			deps.lineupSyncService,
+			() => deps.epgGridService.invalidateSnapshot()
 		)
 	);
 	router.use(createEpgRouter(deps.epgService));
@@ -78,7 +79,8 @@ export function createApiV1Router(deps: ApiV1Dependencies): Router {
 		createChannelsRouter(
 			deps.epgMatcherService,
 			deps.tunersService,
-			deps.channelsRepository
+			deps.channelsRepository,
+			() => deps.epgGridService.invalidateSnapshot()
 		)
 	);
 	if (deps.streamingService) {
