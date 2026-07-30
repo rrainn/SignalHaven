@@ -411,8 +411,20 @@ export class StreamingService {
 		viewerId: string,
 		profile?: TranscodeProfile
 	): boolean {
-		const session = this.getSession(channelId, profile);
-		return session?.detachViewer(viewerId) ?? false;
+		if (profile) {
+			return (
+				this.getSession(channelId, profile)?.detachViewer(viewerId) ?? false
+			);
+		}
+		// Auto-profile viewers do not know which backend default was resolved.
+		// The UUID is viewer-unique, so search this channel's profile siblings.
+		const prefix = `${channelId}\u001f`;
+		for (const [key, entry] of this.sessions) {
+			if (key.startsWith(prefix) && entry.session.detachViewer(viewerId)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Tear down every active session. Used during shutdown. */

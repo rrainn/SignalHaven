@@ -33,8 +33,9 @@ test("direct profile produces a pure stream-copy pipeline", () => {
 	const args = buildFfmpegArgs({ input: INPUT, outDir: OUT_DIR });
 	assert.equal(
 		snapshot(args),
-		"-hide_banner -loglevel warning -nostdin -fflags +genpts+nobuffer -i " +
-			"udp://example/in -c copy -f hls -hls_time 1 -hls_list_size 6 " +
+		"-hide_banner -loglevel warning -nostdin -nostats -stats_period 1 " +
+			"-progress pipe:2 -fflags +genpts+nobuffer -i " +
+			"udp://example/in -c copy -f hls -hls_time 1 -hls_list_size 12 " +
 			"-hls_flags delete_segments+independent_segments+omit_endlist " +
 			"-hls_segment_filename <OUT>/seg-%05d.ts <OUT>/playlist.m3u8"
 	);

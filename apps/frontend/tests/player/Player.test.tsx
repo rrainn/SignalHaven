@@ -39,9 +39,13 @@ interface FakeHlsInstance {
 	on: ReturnType<typeof vi.fn>;
 	latency?: number;
 	liveSyncPosition?: number | null;
+	bandwidthEstimate?: number;
+	currentLevel?: number;
+	levels?: Array<{ bitrate?: number; width?: number; height?: number }>;
 }
 
 const fakeInstances: FakeHlsInstance[] = [];
+const fakeConfigs: unknown[] = [];
 
 class FakeHls implements FakeHlsInstance {
 	static Events = { ERROR: "hlsError", MANIFEST_PARSED: "hlsManifestParsed" };
@@ -55,7 +59,11 @@ class FakeHls implements FakeHlsInstance {
 	on = vi.fn();
 	latency = 4.25;
 	liveSyncPosition: number | null = 119.5;
-	constructor() {
+	bandwidthEstimate = 12_000_000;
+	currentLevel = 0;
+	levels = [{ bitrate: 8_000_000, width: 1920, height: 1080 }];
+	constructor(config?: unknown) {
+		fakeConfigs.push(config);
 		fakeInstances.push(this);
 	}
 }
@@ -84,7 +92,7 @@ function renderPlayer(
 function expectLiveSource(
 	source: string,
 	channelId: string,
-	profile: string
+	profile: string | null
 ): string {
 	const sourceUrl = new URL(source, "http://localhost");
 	expect(sourceUrl.pathname).toBe(`/api/v1/stream/${channelId}/master.m3u8`);
@@ -97,11 +105,12 @@ function expectLiveSource(
 beforeEach(() => {
 	vi.restoreAllMocks();
 	fakeInstances.length = 0;
+	fakeConfigs.length = 0;
 	FakeHls.isSupported.mockReturnValue(true);
 });
 
 describe("Player", () => {
-	it("uses a viewer-scoped browser-safe profile and releases it on unmount", () => {
+	it("uses the server-selected profile in Auto mode and releases it on unmount", () => {
 		const sendBeacon = vi.fn(() => true);
 		Object.defineProperty(navigator, "sendBeacon", {
 			configurable: true,
@@ -112,12 +121,25 @@ describe("Player", () => {
 		const instance = fakeInstances[0]!;
 		expect(instance.attachMedia).toHaveBeenCalled();
 		const source = instance.loadSource.mock.calls[0]?.[0] as string;
-		const viewerId = expectLiveSource(source, CHANNEL_ID, "original-quality");
+		const sourceUrl = new URL(source, "http://localhost");
+		expect(sourceUrl.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
+		expect(sourceUrl.searchParams.has("profile")).toBe(false);
+		const viewerId = sourceUrl.searchParams.get("viewerId");
+		expect(viewerId).toMatch(/^[0-9a-f-]{36}$/i);
 
 		unmount();
 		expect(sendBeacon).toHaveBeenCalledWith(
-			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release?profile=original-quality`
+			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release`
 		);
+	});
+
+	it("keeps a larger live-edge cushion for transient delivery jitter", () => {
+		renderPlayer();
+
+		expect(fakeConfigs[0]).toEqual({
+			liveSyncDurationCount: 6,
+			liveMaxLatencyDurationCount: 12
+		});
 	});
 
 	it("prefers hls.js when Safari supports both playback engines", async () => {
@@ -132,11 +154,12 @@ describe("Player", () => {
 		await waitFor(() => expect(fakeInstances).toHaveLength(1));
 		expect(FakeHls.isSupported).toHaveBeenCalled();
 		expect(fakeInstances[0]?.attachMedia).toHaveBeenCalledWith(video);
-		expectLiveSource(
+		const source = new URL(
 			fakeInstances[0]?.loadSource.mock.calls[0]?.[0] as string,
-			CHANNEL_ID,
-			"original-quality"
+			"http://localhost"
 		);
+		expect(source.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
+		expect(source.searchParams.has("profile")).toBe(false);
 		expect(screen.queryByTestId("player-error")).not.toBeInTheDocument();
 	});
 
@@ -152,7 +175,9 @@ describe("Player", () => {
 
 		await waitFor(() => expect(FakeHls.isSupported).toHaveBeenCalled());
 		expect(fakeInstances).toHaveLength(0);
-		expectLiveSource(video.src, CHANNEL_ID, "original-quality");
+		const source = new URL(video.src);
+		expect(source.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
+		expect(source.searchParams.has("profile")).toBe(false);
 	});
 
 	it("explains when neither HLS playback engine is supported", async () => {
@@ -269,8 +294,23 @@ describe("Player", () => {
 
 	it("explains playback health with distinct and contextual extra stats", async () => {
 		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
-		vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const url = String(input);
+			if (url.includes("/quality")) {
+				return new Response(
+					JSON.stringify({
+						channelId: CHANNEL_ID,
+						active: true,
+						checkedAt: "2026-07-24T12:01:26.400Z",
+						signalStrengthPercent: 88,
+						signalQualityPercent: 76,
+						symbolQualityPercent: 100,
+						networkRateMbps: 9.4
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } }
+				);
+			}
+			return new Response(
 				JSON.stringify({
 					channelId: CHANNEL_ID,
 					profile: "original-quality",
@@ -284,11 +324,20 @@ describe("Player", () => {
 						bufferBytes: 64 * 1_048_576,
 						maxBufferBytes: 10 * 1_024 ** 3
 					},
-					lastError: null
+					lastError: null,
+					pipeline: {
+						mode: "transcode",
+						health: "slow",
+						speed: 0.72,
+						fps: 21.6,
+						outputTimeSeconds: 86.4,
+						lastProgressAt: "2026-07-24T12:01:26.400Z",
+						progressAgeSeconds: 0.4
+					}
 				}),
 				{ status: 200, headers: { "Content-Type": "application/json" } }
-			)
-		);
+			);
+		});
 		try {
 			render(
 				<AdvancedModeProvider>
@@ -333,6 +382,10 @@ describe("Player", () => {
 
 			const stats = screen.getByTestId("player-extra-stats");
 			expect(stats).toHaveTextContent("Buffer ahead");
+			expect(stats).toHaveTextContent("Stream bitrate");
+			expect(stats).toHaveTextContent("8.00 Mbps");
+			expect(stats).toHaveTextContent("Connection estimate");
+			expect(stats).toHaveTextContent("12.00 Mbps");
 			expect(stats).toHaveTextContent("12.0 s");
 			expect(stats).toHaveTextContent("Behind live");
 			expect(stats).toHaveTextContent("4.3 s");
@@ -340,6 +393,10 @@ describe("Player", () => {
 			expect(stats).toHaveTextContent("25 / 1060 (2.4%)");
 			expect(stats).toHaveTextContent("Server status");
 			expect(stats).toHaveTextContent("Idle (kept warm)");
+			expect(stats).toHaveTextContent("Pipeline health");
+			expect(stats).toHaveTextContent("Slow · 0.72× · 21.6 FPS");
+			expect(stats).toHaveTextContent("Tuner/source");
+			expect(stats).toHaveTextContent("Strength 88% · Quality 76%");
 			expect(stats).toHaveTextContent("Live rewind");
 			expect(stats).toHaveTextContent("Up to 1 hr · 64.0 MiB on disk");
 			expect(stats).toHaveTextContent("30.0");
@@ -399,7 +456,7 @@ describe("Player", () => {
 				instance.loadSource.mock.calls.length - 1
 			]?.[0] as string,
 			"00000000-0000-4000-8000-000000000002",
-			"original-quality"
+			null
 		);
 	});
 
