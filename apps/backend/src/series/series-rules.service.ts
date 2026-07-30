@@ -60,7 +60,10 @@ export interface SeriesRulesServiceOptions {
 	recordings: RecordingsRepository;
 	epgPrograms: EpgProgramsRepository;
 	channels: ChannelsRepository;
-	channelEpgMap: ChannelEpgMapRepository;
+	channelEpgMap: Pick<
+		ChannelEpgMapRepository,
+		"getByChannelId" | "getByEpgChannelId"
+	>;
 	episodeClaims: SeriesEpisodeClaims;
 	/**
 	 * Hook that schedules a recording. In production this is the
@@ -611,6 +614,18 @@ export class SeriesRulesService {
 				return null;
 			}
 		}
+		if (
+			typeof this.options.channels.listSourcesByLogicalChannelId === "function"
+		) {
+			const sources =
+				await this.options.channels.listSourcesByLogicalChannelId(channelId);
+			return (
+				sources.find(
+					(source) => source.enabled && source.sourceStatus !== "unavailable"
+				)?.tunerId ?? null
+			);
+		}
+		// Legacy test seams still model one physical row per channel.
 		const row = await this.options.channels.getById(channelId);
 		return row?.tunerId ?? null;
 	}

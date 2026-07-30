@@ -1,8 +1,8 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 import type { DatabaseClient } from "../db/client";
-import { tuners } from "../db/schema";
+import { channels, logicalChannels, tuners } from "../db/schema";
 
 export type CreateTunerInput = {
 	kind: string;
@@ -96,11 +96,65 @@ export class TunersRepository {
 
 	/** Returns `true` if a row matched and was deleted. */
 	async delete(id: string): Promise<boolean> {
-		const deleted = await this.database
-			.delete(tuners)
-			.where(eq(tuners.id, id))
-			.returning({ id: tuners.id });
+		return this.database.transaction(async (tx) => {
+			const affected = await tx
+				.selectDistinct({ logicalChannelId: channels.logicalChannelId })
+				.from(channels)
+				.where(eq(channels.tunerId, id));
+			const logicalIds = affected
+				.map((row) => row.logicalChannelId)
+				.sort((left, right) => left.localeCompare(right));
+			if (logicalIds.length > 0) {
+				// Grouping operations use the same lock order, preventing partial promotion.
+				await tx
+					.select({ id: logicalChannels.id })
+					.from(logicalChannels)
+					.where(inArray(logicalChannels.id, logicalIds))
+					.orderBy(asc(logicalChannels.id))
+					.for("update");
+			}
+			const deleted = await tx
+				.delete(tuners)
+				.where(eq(tuners.id, id))
+				.returning({ id: tuners.id });
+			if (deleted.length === 0) return false;
 
-		return deleted.length > 0;
+			if (logicalIds.length === 0) return true;
+			const remaining = await tx
+				.select()
+				.from(channels)
+				.where(inArray(channels.logicalChannelId, logicalIds))
+				.orderBy(
+					asc(channels.logicalChannelId),
+					asc(channels.sourcePriority),
+					asc(channels.id)
+				);
+
+			for (const logicalChannelId of logicalIds) {
+				const sources = remaining.filter(
+					(source) => source.logicalChannelId === logicalChannelId
+				);
+				// An empty logical channel remains visible in management for manual recovery.
+				if (sources.length === 0) continue;
+				const [preferred] = sources;
+				await tx
+					.update(logicalChannels)
+					.set({
+						number: preferred!.number,
+						name: preferred!.name,
+						logoUrl: preferred!.logoUrl,
+						sortOrder: preferred!.sortOrder,
+						updatedAt: new Date()
+					})
+					.where(eq(logicalChannels.id, logicalChannelId));
+				for (const [priority, source] of sources.entries()) {
+					await tx
+						.update(channels)
+						.set({ sourcePriority: priority })
+						.where(eq(channels.id, source.id));
+				}
+			}
+			return true;
+		});
 	}
 }

@@ -82,13 +82,15 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-      channel_epg_map,
+	  logical_channel_epg_map,
+	  channel_epg_map,
       recordings,
       series_rules,
       epg_programs,
       epg_channels,
       epg_sources,
-      channels,
+	  channels,
+	  logical_channels,
       settings,
       scheduled_jobs,
       tuners
@@ -243,6 +245,20 @@ test("trigram + prefix matches return the expected channels", async () => {
 	// Number prefix — synthesised score 1.0 keeps it on top.
 	assert.equal(prefix.channels[0]?.id, seeded.fox.id);
 	assert.equal(prefix.channels[0]?.score, 1);
+});
+
+test("channel search omits groups whose sources are all unavailable", async () => {
+	const seeded = await seed();
+	await new ChannelsRepository(db).update(seeded.fox.id, {
+		sourceStatus: "unavailable"
+	});
+
+	const result = await service.search({ q: "fox" });
+
+	assert.equal(
+		result.channels.some((channel) => channel.id === seeded.fox.id),
+		false
+	);
 });
 
 test("FTS ranking orders programs sensibly", async () => {

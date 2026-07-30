@@ -31,19 +31,28 @@ export class SearchRepository {
 	async searchChannels(q: string, limit: number): Promise<ChannelSearchRow[]> {
 		const result = await this.database.execute<ChannelSearchRow>(sql`
       SELECT
-        id,
-        number,
-        name,
-        logo_url AS "logoUrl",
+		lc.id,
+		lc.number,
+		lc.name,
+		lc.logo_url AS "logoUrl",
         GREATEST(
-          similarity(name, ${q}),
-          CASE WHEN number LIKE ${q + "%"} THEN 1.0 ELSE 0 END
-        ) AS score
-      FROM channels
-      WHERE
-        name % ${q}
-        OR number LIKE ${q + "%"}
-      ORDER BY score DESC, name ASC
+		  similarity(lc.name, ${q}),
+		  CASE WHEN lc.number LIKE ${q + "%"} THEN 1.0 ELSE 0 END
+		) AS score
+	  FROM logical_channels lc
+      WHERE lc.enabled = true
+        AND EXISTS (
+          SELECT 1
+          FROM channels source
+		  WHERE source.logical_channel_id = lc.id
+            AND source.enabled = true
+            AND source.source_status <> 'unavailable'
+        )
+        AND (
+		  lc.name % ${q}
+		  OR lc.number LIKE ${q + "%"}
+		)
+      ORDER BY score DESC, lc.name ASC
       LIMIT ${limit}
     `);
 		return [...result.rows];
@@ -51,8 +60,8 @@ export class SearchRepository {
 
 	/**
 	 * Upcoming EPG programs ranked by `ts_rank_cd` against
-	 * `search_tsv`. Joins through `channel_epg_map` so the row carries
-	 * the tuner channel that should host playback when the user clicks
+	 * `search_tsv`. Joins through `logical_channel_epg_map` so the row carries
+	 * the stable channel identity used for playback when the user clicks
 	 * the result. Programs whose EPG channel is unmapped still appear
 	 * (with `channelId` null) so search does not silently lose data
 	 * during onboarding.
@@ -78,8 +87,8 @@ export class SearchRepository {
         ts_rank_cd(p.search_tsv, q.tsq) AS score
       FROM epg_programs p
       CROSS JOIN q
-      LEFT JOIN channel_epg_map m ON m.epg_channel_id = p.epg_channel_id
-      LEFT JOIN channels c ON c.id = m.channel_id
+	  LEFT JOIN logical_channel_epg_map m ON m.epg_channel_id = p.epg_channel_id
+	  LEFT JOIN logical_channels c ON c.id = m.logical_channel_id
       WHERE p.search_tsv @@ q.tsq
         AND p.stop >= ${nowUtc}
       ORDER BY score DESC, p.start ASC
@@ -144,7 +153,7 @@ export class SearchRepository {
         c.number AS "channelNumber",
         h.score
       FROM hits h
-      LEFT JOIN channels c ON c.id = h."channelId"
+	  LEFT JOIN logical_channels c ON c.id = h."channelId"
       ORDER BY h.score DESC, h."scheduledStart" DESC
       LIMIT ${limit}
     `);

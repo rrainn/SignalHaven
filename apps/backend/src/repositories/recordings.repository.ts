@@ -89,6 +89,8 @@ export type CreateScheduledRecordingInput = Omit<
 export type RecordingRecord = {
 	id: string;
 	channelId: string;
+	/** Physical source used for capture; absent on legacy and synthetic records. */
+	sourceChannelId?: string | null;
 	programId: string | null;
 	title: string;
 	status: RecordingStatus;
@@ -129,6 +131,7 @@ function toRecord(row: typeof recordings.$inferSelect): RecordingRecord {
 	return {
 		id: row.id,
 		channelId: row.channelId,
+		sourceChannelId: row.sourceChannelId ?? null,
 		programId: row.programId ?? null,
 		title: row.title,
 		status: row.status as RecordingStatus,
@@ -161,6 +164,7 @@ function toRecord(row: typeof recordings.$inferSelect): RecordingRecord {
 
 export type UpdateRecordingInput = Partial<{
 	status: RecordingStatus;
+	sourceChannelId: string | null;
 	actualStart: Date | null;
 	actualEnd: Date | null;
 	startReason: RecordingStartReason | null;

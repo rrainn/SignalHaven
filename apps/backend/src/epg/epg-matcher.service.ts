@@ -10,6 +10,7 @@
 
 import type { EventBus } from "../events/event-bus";
 import type { ChannelEpgMapRepository } from "../repositories/channel-epg-map.repository";
+import type { LogicalChannelEpgMapRepository } from "../repositories/logical-channel-epg-map.repository";
 import type {
 	ChannelRecord,
 	ChannelsRepository
@@ -49,6 +50,7 @@ export interface EpgMatcherOptions {
 	epgChannelsRepository: EpgChannelsRepository;
 	epgSourcesRepository: EpgSourcesRepository;
 	channelEpgMapRepository: ChannelEpgMapRepository;
+	logicalChannelEpgMapRepository?: LogicalChannelEpgMapRepository;
 	bus?: EventBus;
 	/** Invalidates cached Guide mappings after persistence changes. */
 	onMappingsChanged?: () => void;
@@ -66,6 +68,7 @@ export class EpgMatcherService {
 	private readonly epgChannels: EpgChannelsRepository;
 	private readonly epgSources: EpgSourcesRepository;
 	private readonly map: ChannelEpgMapRepository;
+	private readonly logicalMap: LogicalChannelEpgMapRepository | undefined;
 	private readonly bus: EventBus | undefined;
 	private readonly onMappingsChanged: (() => void) | undefined;
 
@@ -74,6 +77,7 @@ export class EpgMatcherService {
 		this.epgChannels = options.epgChannelsRepository;
 		this.epgSources = options.epgSourcesRepository;
 		this.map = options.channelEpgMapRepository;
+		this.logicalMap = options.logicalChannelEpgMapRepository;
 		this.bus = options.bus;
 		this.onMappingsChanged = options.onMappingsChanged;
 	}
@@ -116,6 +120,7 @@ export class EpgMatcherService {
 			throw new EpgChannelNotFoundError(epgChannelId);
 		}
 		const stored = await this.map.upsert(channelId, epgChannelId, true);
+		await this.logicalMap?.upsert(channel.logicalChannelId, epgChannelId, true);
 		this.onMappingsChanged?.();
 		if (this.bus) {
 			this.bus.publish({
@@ -157,6 +162,8 @@ export class EpgMatcherService {
 		let mappingsChanged = false;
 		try {
 			for (const channel of channels) {
+				// Retained missing sources must not replace a healthy group's guide feed.
+				if (channel.sourceStatus !== "active") continue;
 				const existing = mappingByChannel.get(channel.id);
 				if (existing?.manual) {
 					// Manual override — leave alone.
@@ -189,6 +196,16 @@ export class EpgMatcherService {
 					best.epgChannel.id,
 					false
 				);
+				const logicalMapping = await this.logicalMap?.getByLogicalChannelId(
+					channel.logicalChannelId
+				);
+				if (!logicalMapping) {
+					await this.logicalMap?.upsert(
+						channel.logicalChannelId,
+						best.epgChannel.id,
+						false
+					);
+				}
 				mappingsChanged = true;
 				summary.matched += 1;
 				if (this.bus) {

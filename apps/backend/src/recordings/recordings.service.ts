@@ -171,7 +171,10 @@ export interface RecordingsServiceOptions {
 	 * provided).
 	 */
 	epgPrograms?: EpgProgramsRepository;
-	channelEpgMap?: ChannelEpgMapRepository;
+	channelEpgMap?: Pick<
+		ChannelEpgMapRepository,
+		"getByChannelId" | "getByEpgChannelId"
+	>;
 	/**
 	 * Optional series-rule repository; required for retention-based
 	 * eviction (`enforceRetention`). When omitted, retention enforcement
@@ -237,7 +240,9 @@ export class RecordingsService {
 	private readonly resolver: StreamSourceResolver;
 	private readonly config: RecordingsConfigResolver;
 	private readonly epgPrograms: EpgProgramsRepository | undefined;
-	private readonly channelEpgMap: ChannelEpgMapRepository | undefined;
+	private readonly channelEpgMap:
+		| Pick<ChannelEpgMapRepository, "getByChannelId" | "getByEpgChannelId">
+		| undefined;
 	private readonly seriesRules: SeriesRulesRepository | undefined;
 	private readonly bus: EventBus | undefined;
 	private readonly runner: RecordingRunner | undefined;
@@ -1131,9 +1136,14 @@ export class RecordingsService {
 			return;
 		}
 
-		let source: ResolvedStreamSource;
+		let sources: ResolvedStreamSource[];
 		try {
-			source = await this.resolver.resolve(row.channelId);
+			sources = this.resolver.resolveCandidates
+				? await this.resolver.resolveCandidates(row.channelId)
+				: [await this.resolver.resolve(row.channelId)];
+			if (sources.length === 0) {
+				throw new ChannelNotStreamableError(row.channelId);
+			}
 		} catch (error) {
 			if (isPermanentSourceFailure(error)) {
 				await this.failScheduledAttempt(
@@ -1167,17 +1177,26 @@ export class RecordingsService {
 			return;
 		}
 
+		let source: ResolvedStreamSource | undefined;
 		let lease;
-		try {
-			lease = await this.allocator.acquire({
-				providerId: source.providerId,
-				channelId: source.providerChannelId,
-				purpose: "record",
-				// Recordings always outrank live leases; series priority remains a
-				// separate policy concern and does not change recovery ordering.
-				priority: 0
-			});
-		} catch (error) {
+		let allocationError: unknown;
+		for (const candidate of sources) {
+			try {
+				lease = await this.allocator.acquire({
+					providerId: candidate.providerId,
+					channelId: candidate.providerChannelId,
+					purpose: "record",
+					// Recordings always outrank live leases on every fallback source.
+					priority: 0
+				});
+				source = candidate;
+				break;
+			} catch (error) {
+				allocationError = error;
+			}
+		}
+		if (!source || !lease) {
+			const error = allocationError;
 			if (
 				error instanceof TunerNotFoundError ||
 				error instanceof UnsupportedTunerKindError
@@ -1193,6 +1212,11 @@ export class RecordingsService {
 			}
 			await this.retryTransientAttempt(row, context, cutoff, error);
 			return;
+		}
+		if (source.sourceChannelId) {
+			await this.repository.update(recordingId, {
+				sourceChannelId: source.sourceChannelId
+			});
 		}
 
 		let leaseReleased = false;

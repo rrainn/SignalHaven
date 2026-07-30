@@ -4,6 +4,30 @@ import { z } from "zod";
 
 import { tunerKindSchema } from "./tuners";
 
+/** Availability of one tuner-specific source without changing group membership. */
+export const channelSourceStatusSchema = z.enum([
+	"active",
+	"missing",
+	"unavailable"
+]);
+
+export type ChannelSourceStatus = z.infer<typeof channelSourceStatusSchema>;
+
+/** Physical source variant nested under a user-facing logical channel. */
+export const channelSourceSchema = z.object({
+	id: z.string().uuid(),
+	tunerId: z.string().uuid(),
+	tunerName: z.string(),
+	tunerKind: tunerKindSchema,
+	number: z.string(),
+	name: z.string(),
+	status: channelSourceStatusSchema,
+	priority: z.number().int().nonnegative(),
+	preferred: z.boolean()
+});
+
+export type ChannelSource = z.infer<typeof channelSourceSchema>;
+
 /**
  * Schemas for the channel-centric list view consumed by the U5-channels
  * Frontend (Channels page). Distinct from the EPG **grid** schema in
@@ -32,7 +56,10 @@ export const channelListItemSchema = z.object({
 	/** Canonical default sort key (server-assigned). */
 	sortOrder: z.number().int(),
 	/** False when the channel has no EPG mapping yet. */
-	hasMapping: z.boolean()
+	hasMapping: z.boolean(),
+	/** Ordered tuner-specific variants available for fallback. */
+	sources: z.array(channelSourceSchema).optional(),
+	availableSourceCount: z.number().int().nonnegative().optional()
 });
 
 export type ChannelListItem = z.infer<typeof channelListItemSchema>;
@@ -43,3 +70,22 @@ export const channelListSchema = z.object({
 });
 
 export type ChannelList = z.infer<typeof channelListSchema>;
+
+/** Merge selected logical channels into the primary channel's stable identity. */
+export const channelMergeSchema = z
+	.object({
+		channelIds: z.array(z.string().uuid()).min(2).max(100),
+		primaryChannelId: z.string().uuid()
+	})
+	.refine((value) => value.channelIds.includes(value.primaryChannelId), {
+		message: "primaryChannelId must be included in channelIds",
+		path: ["primaryChannelId"]
+	});
+
+export type ChannelMerge = z.infer<typeof channelMergeSchema>;
+
+/** Path for operations on a source nested under a logical channel. */
+export const channelSourceParamsSchema = z.object({
+	id: z.string().uuid(),
+	sourceId: z.string().uuid()
+});

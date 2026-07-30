@@ -564,6 +564,62 @@ test("operator stop blocks playlist retries until requests go quiet", async () =
 	}
 });
 
+test("logical channels fall back when the preferred tuner has no capacity", async () => {
+	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-source-fallback-"));
+	try {
+		const primaryProviderId = randomUUID();
+		const backupProviderId = randomUUID();
+		const allocator = new TunerAllocator({ capacity: async () => 1 });
+		const occupied = await allocator.acquire({
+			providerId: primaryProviderId,
+			channelId: "other-channel",
+			purpose: "live",
+			priority: 0
+		});
+		const resolver: StreamSourceResolver = {
+			resolve: async () => {
+				throw new Error("resolveCandidates should own grouped selection");
+			},
+			resolveCandidates: async () => [
+				{
+					providerId: primaryProviderId,
+					providerChannelId: "news-primary",
+					upstreamUrl: "fake://primary"
+				},
+				{
+					providerId: backupProviderId,
+					providerChannelId: "news-backup",
+					upstreamUrl: "fake://backup"
+				}
+			]
+		};
+		const streaming = new StreamingService({
+			allocator,
+			resolver,
+			tmpRoot,
+			runner: {
+				spawn: (args) => {
+					const pattern = args[
+						args.indexOf("-hls_segment_filename") + 1
+					] as string;
+					return makeFakeProcess(
+						pattern.substring(0, pattern.lastIndexOf("/"))
+					);
+				}
+			}
+		});
+
+		const session = await streaming.attach(randomUUID());
+
+		assert.equal(session.lease.providerId, backupProviderId);
+		session.detach();
+		await streaming.stopAll();
+		allocator.release(occupied.leaseId);
+	} finally {
+		await rm(tmpRoot, { recursive: true, force: true });
+	}
+});
+
 test("StreamSession stops and cleans up when its buffer exceeds the disk limit", async () => {
 	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-buffer-limit-"));
 	try {

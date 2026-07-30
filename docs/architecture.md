@@ -39,6 +39,23 @@ flowchart LR
 4. Backend publishes live updates over WebSocket topics (tuners, EPG, recordings, settings).
 5. Recordings and generated media are persisted on disk in the configured recordings directory.
 
+## Logical channels and tuner sources
+
+The channel users see is a stable `logical_channels` record. One or more
+tuner-specific `channels` rows sit beneath it in preference order. Guide rows,
+favorites, series rules, recordings, and playback URLs reference the logical
+identity, while stream allocation records the physical source it actually used.
+
+Playback and recording first try active sources in preference order and fall
+back across tuners when a source cannot resolve or has no capacity. A source
+missing from a successful lineup refresh remains linked and can be tried as a
+cautious fallback. Repeated misses mark it unavailable, which removes it from
+Guide and automatic selection without destroying the grouping. A later match on
+provider id or an unambiguous `tvg-id` reactivates the same source. Explicitly
+separating a source creates a new logical identity; deleting a tuner delinks its
+sources and promotes any remaining fallback while retaining an empty logical
+channel for history and manual recovery through the merge UI.
+
 ## Recording playback
 
 Completed recordings are exposed as VOD HLS through

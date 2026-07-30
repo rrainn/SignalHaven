@@ -1,6 +1,8 @@
 import {
 	channelEpgMappingPutSchema,
 	channelEpgMappingSchema,
+	channelListSchema,
+	channelMergeSchema,
 	epgCandidatesResponseSchema,
 	epgGridSchema,
 	epgProgramDetailsSchema,
@@ -107,6 +109,8 @@ const ChannelEpgMappingPut = registry.register(
 	"ChannelEpgMappingPut",
 	channelEpgMappingPutSchema
 );
+const ChannelList = registry.register("ChannelList", channelListSchema);
+const ChannelMerge = registry.register("ChannelMerge", channelMergeSchema);
 const Recording = registry.register("Recording", recordingSchema);
 const RecordingCreate = registry.register(
 	"RecordingCreate",
@@ -612,6 +616,89 @@ registry.registerPath({
 		},
 		404: {
 			description: "Program was deleted, unmapped, or is no longer available.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/channels",
+	summary: "List logical channels and their tuner sources",
+	description:
+		"Returns one stable user-facing channel per group, with physical tuner sources ordered for automatic fallback. Missing sources remain linked; unavailable sources stay visible for recovery but are not selected for playback.",
+	tags: ["channels"],
+	responses: {
+		200: {
+			description: "Logical channels with their ordered source variants.",
+			content: { "application/json": { schema: ChannelList } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/channels/merge",
+	summary: "Merge channels into one multi-source identity",
+	description:
+		"Moves every selected source, recording, and series rule to the chosen primary logical channel. The primary id and guide mapping remain stable.",
+	tags: ["channels"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: ChannelMerge } }
+		}
+	},
+	responses: {
+		200: {
+			description: "Updated logical channel list.",
+			content: { "application/json": { schema: ChannelList } }
+		},
+		409: {
+			description: "The selected channels cannot be merged.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/channels/{id}/sources/{sourceId}/split",
+	summary: "Separate a tuner source into its own channel",
+	tags: ["channels"],
+	request: {
+		params: z.object({ id: z.string().uuid(), sourceId: z.string().uuid() })
+	},
+	responses: {
+		200: {
+			description: "Updated logical channel list.",
+			content: { "application/json": { schema: ChannelList } }
+		},
+		409: {
+			description:
+				"The source does not belong to the group or is already alone.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/channels/{id}/sources/{sourceId}/preferred",
+	summary: "Choose the preferred source for a channel",
+	description:
+		"Promotes an active source to the front of fallback order and adopts its public channel metadata.",
+	tags: ["channels"],
+	request: {
+		params: z.object({ id: z.string().uuid(), sourceId: z.string().uuid() })
+	},
+	responses: {
+		200: {
+			description: "Updated logical channel list.",
+			content: { "application/json": { schema: ChannelList } }
+		},
+		409: {
+			description: "The source is unavailable or does not belong to the group.",
 			content: { "application/json": { schema: ErrorResponse } }
 		}
 	}
@@ -1269,6 +1356,8 @@ export {
 	EpgCandidatesResponse,
 	ChannelEpgMapping,
 	ChannelEpgMappingPut,
+	ChannelList,
+	ChannelMerge,
 	Recording,
 	RecordingCreate,
 	RecordingByProgramCreate,

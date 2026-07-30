@@ -55,8 +55,10 @@ class InMemoryChannelsRepository {
 	private rows = new Map<string, ChannelRecord>();
 
 	async create(input: CreateChannelInput): Promise<ChannelRecord> {
+		const id = randomUUID();
 		const row = {
-			id: randomUUID(),
+			id,
+			logicalChannelId: id,
 			tunerId: input.tunerId,
 			number: input.number,
 			providerChannelId: input.providerChannelId ?? null,
@@ -65,6 +67,8 @@ class InMemoryChannelsRepository {
 			tvgId: input.tvgId ?? null,
 			enabled: input.enabled,
 			sortOrder: input.sortOrder,
+			sourceStatus: "active",
+			sourcePriority: 0,
 			lineupMissingCount: 0
 		} as ChannelRecord;
 		this.rows.set(row.id, row);
@@ -92,6 +96,8 @@ class InMemoryChannelsRepository {
 			logoUrl?: string | null;
 			tvgId?: string | null;
 			sortOrder?: number;
+			sourceStatus?: "active" | "missing" | "unavailable";
+			sourcePriority?: number;
 			lineupMissingCount?: number;
 		}
 	): Promise<ChannelRecord | null> {
@@ -574,7 +580,7 @@ test("POST /api/v1/tuners/:id/sync counts an update when the channel name change
 	assert.equal(sync.body.total, 1);
 });
 
-test("POST /api/v1/tuners/:id/sync removes channels after three fresh misses", async () => {
+test("POST /api/v1/tuners/:id/sync retains unavailable sources after three fresh misses", async () => {
 	const { app, channelsRepo, factory } = buildHarness();
 
 	const created = await request(app)
@@ -617,8 +623,10 @@ test("POST /api/v1/tuners/:id/sync removes channels after three fresh misses", a
 	assert.equal(sync.status, 200);
 	assert.equal(sync.body.added, 0);
 	assert.equal(sync.body.updated, 0);
-	assert.equal(sync.body.removed, 1);
-	assert.equal(sync.body.total, 0);
+	assert.equal(sync.body.removed, 0);
+	assert.equal(sync.body.unavailable, 1);
+	assert.equal(sync.body.total, 1);
+	assert.equal((await channelsRepo.list())[0]?.sourceStatus, "unavailable");
 });
 
 test("POST /api/v1/tuners/:id/sync returns 404 for unknown tuner", async () => {

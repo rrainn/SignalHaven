@@ -29,6 +29,8 @@ export const DEFAULT_OPERATOR_STOP_QUIET_MS = 10_000;
  * provider knows the channel by, and the upstream URL to feed ffmpeg.
  */
 export interface ResolvedStreamSource {
+	/** Physical source row chosen from a logical channel group. */
+	sourceChannelId?: string;
 	providerId: string;
 	/** Per-tuner channel id (passed to allocator + recorded on the lease). */
 	providerChannelId: string;
@@ -50,6 +52,8 @@ export interface ResolvedStreamSource {
  */
 export interface StreamSourceResolver {
 	resolve(channelId: string): Promise<ResolvedStreamSource>;
+	/** Ordered fallback candidates; legacy resolvers may expose only resolve(). */
+	resolveCandidates?(channelId: string): Promise<ResolvedStreamSource[]>;
 }
 
 export class ChannelNotStreamableError extends Error {
@@ -250,9 +254,18 @@ export class StreamingService {
 		channelId: string,
 		requestedProfile?: TranscodeProfile
 	): Promise<StreamSession> {
-		const source = await this.resolver.resolve(channelId);
+		const sources = this.resolver.resolveCandidates
+			? await this.resolver.resolveCandidates(channelId)
+			: [await this.resolver.resolve(channelId)];
+		const firstSource = sources[0];
+		if (!firstSource) {
+			throw new ChannelNotStreamableError(channelId);
+		}
 		const [transcoding, timeShift] = await Promise.all([
-			this.transcodingResolver.resolve(requestedProfile, source.defaultProfile),
+			this.transcodingResolver.resolve(
+				requestedProfile,
+				firstSource.defaultProfile
+			),
 			this.timeShiftResolver.resolve()
 		]);
 		const bufferRoot = timeShift.enabled
@@ -271,12 +284,25 @@ export class StreamingService {
 			return session;
 		}
 
-		const lease: TunerLease = await this.allocator.acquire({
-			providerId: source.providerId,
-			channelId: source.providerChannelId,
-			purpose: this.purpose,
-			priority: this.livePriority
-		});
+		let source = firstSource;
+		let lease: TunerLease | undefined;
+		let allocationError: unknown;
+		for (const candidate of sources) {
+			try {
+				lease = await this.allocator.acquire({
+					providerId: candidate.providerId,
+					channelId: candidate.providerChannelId,
+					purpose: this.purpose,
+					priority: this.livePriority
+				});
+				source = candidate;
+				break;
+			} catch (error) {
+				allocationError = error;
+			}
+		}
+		if (!lease)
+			throw allocationError ?? new ChannelNotStreamableError(channelId);
 		try {
 			// Stop may race with tuner allocation, so check again before spawning.
 			this.assertNotOperatorStopped(key, channelId);

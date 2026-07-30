@@ -172,7 +172,7 @@ export const lineupSyncSettingsSchema = z.object({
 	enabled: z.boolean().default(true),
 	/** Imports run from an hourly scheduler tick when this interval is due. */
 	intervalHours: z.number().int().min(1).max(168).default(24),
-	/** Protects channels from transiently incomplete tuner responses. */
+	/** Successful misses before a retained source becomes unavailable. */
 	removalThreshold: z.number().int().min(2).max(10).default(3)
 });
 

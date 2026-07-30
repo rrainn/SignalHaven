@@ -15,7 +15,7 @@ export interface TunerLineupSyncServiceOptions {
 	channels: ChannelsRepository;
 	tuners: TunersService;
 	bus?: EventBus;
-	/** Resolves the number of consecutive successful misses required for removal. */
+	/** Resolves the successful-miss threshold for marking a source unavailable. */
 	resolveRemovalThreshold?: () => Promise<number>;
 	/** Resolves the live automatic-import policy for each scheduler tick. */
 	resolveSchedule?: () => Promise<{ enabled: boolean; intervalHours: number }>;
@@ -32,7 +32,7 @@ export interface SyncTunerOptions {
 
 /**
  * Imports tuner lineups into persistent channels with overlap protection and
- * delayed deletion. A failed fetch never mutates channel state or advances a
+ * retained-source lifecycle. A failed fetch never mutates channel state or advances a
  * missing-channel counter.
  */
 export class TunerLineupSyncService {
@@ -110,7 +110,8 @@ export class TunerLineupSyncService {
 			);
 			let added = 0;
 			let updated = 0;
-			let removed = 0;
+			const removed = 0;
+			let unavailable = 0;
 
 			for (let index = 0; index < lineup.length; index += 1) {
 				const incoming = lineup[index]!;
@@ -141,7 +142,11 @@ export class TunerLineupSyncService {
 					stored.logoUrl !== logoUrl ||
 					stored.tvgId !== tvgId ||
 					stored.sortOrder !== index;
-				if (displayChanged || stored.lineupMissingCount > 0) {
+				if (
+					displayChanged ||
+					stored.lineupMissingCount > 0 ||
+					stored.sourceStatus !== "active"
+				) {
 					await this.options.channels.update(stored.id, {
 						...(displayChanged
 							? {
@@ -153,7 +158,8 @@ export class TunerLineupSyncService {
 									sortOrder: index
 								}
 							: {}),
-						lineupMissingCount: 0
+						lineupMissingCount: 0,
+						sourceStatus: "active"
 					});
 					if (displayChanged) updated += 1;
 				}
@@ -163,11 +169,15 @@ export class TunerLineupSyncService {
 				if (matchedExistingIds.has(stored.id)) continue;
 				const missingCount = stored.lineupMissingCount + 1;
 				if (missingCount >= removalThreshold) {
-					await this.options.channels.deleteById(stored.id);
-					removed += 1;
+					await this.options.channels.update(stored.id, {
+						lineupMissingCount: missingCount,
+						sourceStatus: "unavailable"
+					});
+					if (stored.sourceStatus !== "unavailable") unavailable += 1;
 				} else {
 					await this.options.channels.update(stored.id, {
-						lineupMissingCount: missingCount
+						lineupMissingCount: missingCount,
+						sourceStatus: "missing"
 					});
 				}
 			}
@@ -177,7 +187,8 @@ export class TunerLineupSyncService {
 				added,
 				updated,
 				removed,
-				missing: after.filter((channel) => channel.lineupMissingCount > 0)
+				unavailable,
+				missing: after.filter((channel) => channel.sourceStatus === "missing")
 					.length,
 				total: after.length
 			};
@@ -247,7 +258,7 @@ function matchLineupChannels(
 		matches,
 		usedExistingIds,
 		(incoming) => incoming.tvgId?.trim() || null,
-		(stored) => (stored.providerChannelId ? null : stored.tvgId?.trim() || null)
+		(stored) => stored.tvgId?.trim() || null
 	);
 	matchUniqueIdentity(
 		lineup,

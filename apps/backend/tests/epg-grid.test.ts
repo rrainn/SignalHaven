@@ -26,6 +26,7 @@ import { resolveMigrationsFolder } from "../src/db/config";
 import { runMigrations } from "../src/db/migrate";
 import { EpgGridService } from "../src/epg/epg-grid.service";
 import { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.repository";
+import { LogicalChannelEpgMapRepository } from "../src/repositories/logical-channel-epg-map.repository";
 import { ChannelsRepository } from "../src/repositories/channels.repository";
 import { EpgChannelsRepository } from "../src/repositories/epg-channels.repository";
 import { EpgProgramsRepository } from "../src/repositories/epg-programs.repository";
@@ -62,9 +63,9 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-      channel_epg_map, recordings, series_rules,
+	  logical_channel_epg_map, channel_epg_map, recordings, series_rules,
       epg_programs, epg_channels, epg_sources,
-      channels, settings, scheduled_jobs, tuners
+	  channels, logical_channels, settings, scheduled_jobs, tuners
     RESTART IDENTITY CASCADE
   `);
 });
@@ -129,7 +130,7 @@ async function seedProgram(
 function buildService() {
 	return new EpgGridService({
 		channels: new ChannelsRepository(db),
-		channelEpgMap: new ChannelEpgMapRepository(db),
+		channelEpgMap: new LogicalChannelEpgMapRepository(db),
 		epgPrograms: new EpgProgramsRepository(db),
 		recordings: new RecordingsRepository(db)
 	});

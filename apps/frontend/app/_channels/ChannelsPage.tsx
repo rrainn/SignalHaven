@@ -3,17 +3,21 @@
 import type {
 	ChannelListItem,
 	ChannelQuality,
+	ChannelSource,
 	EventMessage,
 	Tuner
 } from "@signalhaven/shared";
 import {
 	Eye,
 	EyeOff,
+	ChevronDown,
+	Combine,
 	GripVertical,
 	Radio,
 	Search,
 	Star,
 	Tv,
+	Unlink,
 	X
 } from "lucide-react";
 import {
@@ -30,6 +34,9 @@ import {
 	getChannelQuality,
 	listChannels,
 	listTuners,
+	mergeChannels,
+	preferChannelSource,
+	splitChannelSource,
 	updateSettings
 } from "../../lib/api-client";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
@@ -40,6 +47,14 @@ import { EmptyState } from "../_ui/EmptyState";
 import { IconButton } from "../_ui/IconButton";
 import { Input } from "../_ui/Input";
 import { PageHeader } from "../_ui/PageHeader";
+import {
+	Modal,
+	ModalContent,
+	ModalDescription,
+	ModalFooter,
+	ModalHeader,
+	ModalTitle
+} from "../_ui/Modal";
 import {
 	Select,
 	SelectContent,
@@ -78,6 +93,19 @@ export interface ChannelsPageProps {
 	 * Returning a rejected promise surfaces a toast in the UI.
 	 */
 	persistPrefs?: ((prefs: ChannelsPrefs) => Promise<void>) | undefined;
+	/** Mutation seams keep the grouping workflow testable without network calls. */
+	mergeGroups?:
+		| ((
+				channelIds: string[],
+				primaryChannelId: string
+		  ) => Promise<ChannelListItem[]>)
+		| undefined;
+	splitSource?:
+		| ((channelId: string, sourceId: string) => Promise<ChannelListItem[]>)
+		| undefined;
+	preferSource?:
+		| ((channelId: string, sourceId: string) => Promise<ChannelListItem[]>)
+		| undefined;
 }
 
 /** Keep initial DOM work predictable even for provider lineups with thousands of channels. */
@@ -94,6 +122,7 @@ const CHANNEL_RENDER_BATCH_SIZE = 100;
 export function ChannelsPage(props: ChannelsPageProps) {
 	const useFixture = Boolean(props.initialChannels);
 	const preferences = usePreferencesOptional();
+	const advancedMode = useAdvancedModeOptional();
 
 	const [state, dispatch] = useReducer(channelsReducer, undefined, () => ({
 		...initialChannelsState,
@@ -111,6 +140,10 @@ export function ChannelsPage(props: ChannelsPageProps) {
 	const [error, setError] = useState<Error | null>(null);
 	const [persistenceError, setPersistenceError] = useState<string | null>(null);
 	const [renderLimit, setRenderLimit] = useState(CHANNEL_RENDER_BATCH_SIZE);
+	const [mergeOpen, setMergeOpen] = useState(false);
+	const [mergePrimaryId, setMergePrimaryId] = useState<string | null>(null);
+	const [groupingPending, setGroupingPending] = useState(false);
+	const [groupingError, setGroupingError] = useState<string | null>(null);
 	const lastPrefsRef = useRef<ChannelsPrefs | null>(state.prefs);
 	const pendingSaveCountRef = useRef(0);
 
@@ -161,7 +194,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 		topics: ["tuners"],
 		enabled: !useFixture,
 		onEvent: useCallback((event: EventMessage) => {
-			if (event.event !== "lineup.synced") return;
+			if (event.event !== "lineup.synced" && event.event !== "deleted") return;
 			void Promise.all([listChannels(), listTuners()])
 				.then(([channelsRes, tunersRes]) => {
 					dispatch({ type: "set-channels", channels: channelsRes.items });
@@ -237,11 +270,109 @@ export function ChannelsPage(props: ChannelsPageProps) {
 	const allSelected =
 		visibleIds.length > 0 && visibleIds.every((id) => state.selection.has(id));
 	const someSelected = state.selection.size > 0;
+	const selectedChannels = useMemo(
+		() => state.channels.filter((channel) => state.selection.has(channel.id)),
+		[state.channels, state.selection]
+	);
 
 	const onToggleSelectAll = useCallback(() => {
 		if (allSelected) dispatch({ type: "clear-selection" });
 		else dispatch({ type: "select-all", channelIds: visibleIds });
 	}, [allSelected, visibleIds]);
+
+	const applyGroupingResult = useCallback((channels: ChannelListItem[]) => {
+		dispatch({ type: "set-channels", channels });
+		dispatch({ type: "clear-selection" });
+		setRenderLimit(CHANNEL_RENDER_BATCH_SIZE);
+	}, []);
+
+	const handleMerge = useCallback(async () => {
+		if (!mergePrimaryId || selectedChannels.length < 2) return;
+		setGroupingPending(true);
+		setGroupingError(null);
+		try {
+			const ids = selectedChannels.map((channel) => channel.id);
+			const channels = props.mergeGroups
+				? await props.mergeGroups(ids, mergePrimaryId)
+				: (
+						await mergeChannels({
+							channelIds: ids,
+							primaryChannelId: mergePrimaryId
+						})
+					).items;
+			dispatch({
+				type: "set-prefs",
+				prefs: mergeChannelPreferences(state.prefs, ids, mergePrimaryId)
+			});
+			applyGroupingResult(channels);
+			setMergeOpen(false);
+		} catch (failure) {
+			setGroupingError(
+				formatClientError(
+					failure,
+					"Channels could not be merged. Review the selected sources and try again.",
+					Boolean(advancedMode?.enabled)
+				)
+			);
+		} finally {
+			setGroupingPending(false);
+		}
+	}, [
+		applyGroupingResult,
+		advancedMode?.enabled,
+		mergePrimaryId,
+		props,
+		selectedChannels,
+		state.prefs
+	]);
+
+	const handleSplitSource = useCallback(
+		async (channelId: string, sourceId: string) => {
+			setGroupingPending(true);
+			setGroupingError(null);
+			try {
+				const channels = props.splitSource
+					? await props.splitSource(channelId, sourceId)
+					: (await splitChannelSource(channelId, sourceId)).items;
+				applyGroupingResult(channels);
+			} catch (failure) {
+				setGroupingError(
+					formatClientError(
+						failure,
+						"This source could not be separated. Try again after the current channel update finishes.",
+						false
+					)
+				);
+			} finally {
+				setGroupingPending(false);
+			}
+		},
+		[applyGroupingResult, props]
+	);
+
+	const handlePreferSource = useCallback(
+		async (channelId: string, sourceId: string) => {
+			setGroupingPending(true);
+			setGroupingError(null);
+			try {
+				const channels = props.preferSource
+					? await props.preferSource(channelId, sourceId)
+					: (await preferChannelSource(channelId, sourceId)).items;
+				applyGroupingResult(channels);
+			} catch (failure) {
+				setGroupingError(
+					formatClientError(
+						failure,
+						"The preferred source could not be changed.",
+						false
+					)
+				);
+			} finally {
+				setGroupingPending(false);
+			}
+		},
+		[applyGroupingResult, props]
+	);
 
 	// ── Drag state ─────────────────────────────────────────────────────
 	const [dragId, setDragId] = useState<string | null>(null);
@@ -296,10 +427,22 @@ export function ChannelsPage(props: ChannelsPageProps) {
 					{persistenceError}
 				</p>
 			) : null}
+			{groupingError ? (
+				<p role="alert" className="text-sm text-danger">
+					{groupingError}
+				</p>
+			) : null}
 
 			{someSelected ? (
 				<BulkActionBar
 					count={state.selection.size}
+					canMerge={state.selection.size >= 2}
+					onMerge={() => {
+						const first = selectedChannels[0];
+						setMergePrimaryId(first?.id ?? null);
+						setGroupingError(null);
+						setMergeOpen(true);
+					}}
 					onUnselect={() => dispatch({ type: "clear-selection" })}
 					onHide={() =>
 						dispatch({
@@ -388,6 +531,13 @@ export function ChannelsPage(props: ChannelsPageProps) {
 											onDragEnd={onDragEnd}
 											onDragOver={() => setDropTargetId(channel.id)}
 											onDrop={() => onDropOn(channel.id)}
+											onPreferSource={(sourceId) =>
+												void handlePreferSource(channel.id, sourceId)
+											}
+											onSplitSource={(sourceId) =>
+												void handleSplitSource(channel.id, sourceId)
+											}
+											groupingPending={groupingPending}
 										/>
 									))}
 								</ul>
@@ -441,6 +591,17 @@ export function ChannelsPage(props: ChannelsPageProps) {
 					) : null}
 				</div>
 			)}
+
+			<MergeChannelsDialog
+				open={mergeOpen}
+				onOpenChange={setMergeOpen}
+				channels={selectedChannels}
+				primaryChannelId={mergePrimaryId}
+				onPrimaryChange={setMergePrimaryId}
+				onConfirm={() => void handleMerge()}
+				pending={groupingPending}
+				error={groupingError}
+			/>
 		</section>
 	);
 }
@@ -572,7 +733,9 @@ function ToolbarSelect(props: ToolbarSelectProps) {
 
 interface BulkActionBarProps {
 	count: number;
+	canMerge: boolean;
 	onUnselect: () => void;
+	onMerge: () => void;
 	onHide: () => void;
 	onUnhide: () => void;
 }
@@ -587,6 +750,15 @@ function BulkActionBar(props: BulkActionBarProps) {
 		>
 			<span className="text-sm text-primary">{props.count} selected</span>
 			<div className="ml-auto flex flex-wrap items-center gap-2">
+				<Button
+					variant="secondary"
+					size="sm"
+					disabled={!props.canMerge}
+					onClick={props.onMerge}
+				>
+					<Combine aria-hidden="true" className="h-4 w-4" />
+					Merge sources
+				</Button>
 				<Button variant="secondary" size="sm" onClick={props.onUnhide}>
 					<Eye aria-hidden="true" className="h-4 w-4" />
 					Unhide
@@ -651,6 +823,9 @@ interface ChannelRowProps {
 	onDragEnd: () => void;
 	onDragOver: () => void;
 	onDrop: () => void;
+	onPreferSource: (sourceId: string) => void;
+	onSplitSource: (sourceId: string) => void;
+	groupingPending: boolean;
 }
 
 /**
@@ -677,6 +852,11 @@ function ChannelRow(props: ChannelRowProps) {
 	const [quality, setQuality] = useState<ChannelQuality | null>(null);
 	const [qualityLoading, setQualityLoading] = useState(false);
 	const [qualityError, setQualityError] = useState<string | null>(null);
+	const [sourcesOpen, setSourcesOpen] = useState(false);
+	const sources = channel.sources ?? [];
+	const availableSourceCount =
+		channel.availableSourceCount ??
+		sources.filter((source) => source.status !== "unavailable").length;
 
 	// Long-press → drag for touch devices. On desktop the native HTML5
 	// dragstart fires immediately; touch needs a hold so taps still scroll.
@@ -747,7 +927,7 @@ function ChannelRow(props: ChannelRowProps) {
 			data-channel-row-id={channel.id}
 			data-testid="channel-row"
 			className={cn(
-				"flex items-center gap-3 px-3 py-2",
+				"flex flex-wrap items-center gap-3 px-3 py-2",
 				isDragging && "opacity-50",
 				isDropTarget && !isDragging && "bg-surface-muted",
 				isHidden && "text-secondary"
@@ -822,8 +1002,20 @@ function ChannelRow(props: ChannelRowProps) {
 			<SmartLink
 				href={`/watch/${encodeURIComponent(channel.id)}`}
 				aria-label={`Watch ${channel.number} ${channel.name}`}
-				title={`Watch ${channel.number} ${channel.name} live`}
-				className="group flex min-w-0 flex-1 items-center gap-3 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+				aria-disabled={availableSourceCount === 0}
+				tabIndex={availableSourceCount === 0 ? -1 : undefined}
+				title={
+					availableSourceCount === 0
+						? "This channel has no source available for playback"
+						: `Watch ${channel.number} ${channel.name} live`
+				}
+				onClick={(event) => {
+					if (availableSourceCount === 0) event.preventDefault();
+				}}
+				className={cn(
+					"group flex min-w-0 flex-1 basis-[calc(100%-4rem)] items-center gap-3 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 sm:basis-auto",
+					availableSourceCount === 0 && "cursor-not-allowed opacity-70"
+				)}
 			>
 				{/* Keep playback navigation separate from the row's management controls. */}
 				<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-surface-muted text-secondary transition-colors group-hover:bg-accent/15 group-hover:text-accent">
@@ -847,119 +1039,392 @@ function ChannelRow(props: ChannelRowProps) {
 							<Badge variant="outline">No guide</Badge>
 						) : null}
 						{isHidden ? <Badge variant="default">Hidden</Badge> : null}
+						{availableSourceCount === 0 ? (
+							<Badge variant="outline">No available source</Badge>
+						) : null}
 					</div>
-					<div className="text-xs text-secondary">{channel.tunerName}</div>
+					<div className="text-xs text-secondary">
+						{sources.length > 1
+							? `${sources.length} sources · ${availableSourceCount} available`
+							: channel.tunerName}
+					</div>
 				</div>
 			</SmartLink>
 
-			{advancedMode?.enabled && channel.tunerKind === "hdhomerun" ? (
-				<div className="flex items-center gap-2">
-					{quality ? (
-						<span
-							className="max-w-24 text-right text-[10px] text-secondary sm:max-w-none sm:text-xs"
-							data-testid={`channel-quality-${channel.id}`}
-						>
-							{quality.active
-								? [
-										quality.signalStrengthPercent !== undefined
-											? `SS ${quality.signalStrengthPercent}%`
-											: null,
-										quality.signalQualityPercent !== undefined
-											? `SQ ${quality.signalQualityPercent}%`
-											: null,
-										quality.symbolQualityPercent !== undefined
-											? `SEQ ${quality.symbolQualityPercent}%`
-											: null,
-										quality.lock ? `Lock ${quality.lock}` : null,
-										quality.networkRateMbps !== undefined
-											? `${quality.networkRateMbps} Mbps`
-											: null
-									]
-										.filter(Boolean)
-										.join(" · ") || "Tuned"
-								: "Not currently tuned"}
-						</span>
-					) : null}
-					{qualityError ? (
-						<span
-							role="alert"
-							className="max-w-24 text-right text-[10px] text-danger sm:max-w-none sm:text-xs"
-						>
-							{qualityError}
-						</span>
-					) : null}
-					<IconButton
-						aria-label={`Check signal quality for ${channel.name}`}
-						title="Check live HDHomeRun signal quality"
+			{/* Keep management actions together on a second mobile row so the
+			    channel identity remains readable. */}
+			<div className="ml-auto flex items-center gap-1">
+				{sources.length > 0 ? (
+					<Button
 						variant="ghost"
 						size="sm"
-						disabled={qualityLoading}
-						onClick={async () => {
-							setQualityLoading(true);
-							setQualityError(null);
-							try {
-								setQuality(await getChannelQuality(channel.id));
-							} catch (failure) {
-								setQualityError(
-									formatClientError(failure, "Signal check failed", true)
-								);
-							} finally {
-								setQualityLoading(false);
-							}
-						}}
+						aria-expanded={sourcesOpen}
+						aria-controls={`channel-sources-${channel.id}`}
+						onClick={() => setSourcesOpen((open) => !open)}
 					>
-						{qualityLoading ? (
-							<Spinner aria-hidden="true" className="h-4 w-4" />
-						) : (
-							<Radio aria-hidden="true" className="h-4 w-4" />
+						{sources.length} source{sources.length === 1 ? "" : "s"}
+						<ChevronDown
+							aria-hidden="true"
+							className={cn(
+								"h-4 w-4 transition-transform",
+								sourcesOpen && "rotate-180"
+							)}
+						/>
+					</Button>
+				) : null}
+
+				{advancedMode?.enabled && channel.tunerKind === "hdhomerun" ? (
+					<div className="flex items-center gap-2">
+						{quality ? (
+							<span
+								className="max-w-24 text-right text-[10px] text-secondary sm:max-w-none sm:text-xs"
+								data-testid={`channel-quality-${channel.id}`}
+							>
+								{quality.active
+									? [
+											quality.signalStrengthPercent !== undefined
+												? `SS ${quality.signalStrengthPercent}%`
+												: null,
+											quality.signalQualityPercent !== undefined
+												? `SQ ${quality.signalQualityPercent}%`
+												: null,
+											quality.symbolQualityPercent !== undefined
+												? `SEQ ${quality.symbolQualityPercent}%`
+												: null,
+											quality.lock ? `Lock ${quality.lock}` : null,
+											quality.networkRateMbps !== undefined
+												? `${quality.networkRateMbps} Mbps`
+												: null
+										]
+											.filter(Boolean)
+											.join(" · ") || "Tuned"
+									: "Not currently tuned"}
+							</span>
+						) : null}
+						{qualityError ? (
+							<span
+								role="alert"
+								className="max-w-24 text-right text-[10px] text-danger sm:max-w-none sm:text-xs"
+							>
+								{qualityError}
+							</span>
+						) : null}
+						<IconButton
+							aria-label={`Check signal quality for ${channel.name}`}
+							title="Check live HDHomeRun signal quality"
+							variant="ghost"
+							size="sm"
+							disabled={qualityLoading}
+							onClick={async () => {
+								setQualityLoading(true);
+								setQualityError(null);
+								try {
+									setQuality(
+										await getChannelQuality(sources[0]?.id ?? channel.id)
+									);
+								} catch (failure) {
+									setQualityError(
+										formatClientError(failure, "Signal check failed", true)
+									);
+								} finally {
+									setQualityLoading(false);
+								}
+							}}
+						>
+							{qualityLoading ? (
+								<Spinner aria-hidden="true" className="h-4 w-4" />
+							) : (
+								<Radio aria-hidden="true" className="h-4 w-4" />
+							)}
+						</IconButton>
+					</div>
+				) : null}
+
+				<IconButton
+					aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+					aria-pressed={isFavorite}
+					variant="ghost"
+					size="sm"
+					onClick={props.onToggleFavorite}
+					data-testid={`favorite-${channel.id}`}
+				>
+					<Star
+						aria-hidden="true"
+						className={cn(
+							"h-4 w-4",
+							isFavorite ? "fill-amber-400 text-amber-500" : ""
 						)}
-					</IconButton>
-				</div>
-			) : null}
+					/>
+				</IconButton>
 
-			<IconButton
-				aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
-				aria-pressed={isFavorite}
-				variant="ghost"
-				size="sm"
-				onClick={props.onToggleFavorite}
-				data-testid={`favorite-${channel.id}`}
-			>
-				<Star
-					aria-hidden="true"
-					className={cn(
-						"h-4 w-4",
-						isFavorite ? "fill-amber-400 text-amber-500" : ""
+				<IconButton
+					aria-label={isHidden ? "Unhide channel" : "Hide channel"}
+					aria-pressed={isHidden}
+					variant="ghost"
+					size="sm"
+					onClick={props.onToggleHidden}
+					data-testid={`hide-${channel.id}`}
+				>
+					{isHidden ? (
+						<EyeOff aria-hidden="true" className="h-4 w-4" />
+					) : (
+						<Eye aria-hidden="true" className="h-4 w-4" />
 					)}
-				/>
-			</IconButton>
+				</IconButton>
+			</div>
 
-			<IconButton
-				aria-label={isHidden ? "Unhide channel" : "Hide channel"}
-				aria-pressed={isHidden}
-				variant="ghost"
-				size="sm"
-				onClick={props.onToggleHidden}
-				data-testid={`hide-${channel.id}`}
-			>
-				{isHidden ? (
-					<EyeOff aria-hidden="true" className="h-4 w-4" />
-				) : (
-					<Eye aria-hidden="true" className="h-4 w-4" />
-				)}
-			</IconButton>
+			{sourcesOpen ? (
+				<ChannelSourcesPanel
+					id={`channel-sources-${channel.id}`}
+					sources={sources}
+					disabled={props.groupingPending}
+					onPrefer={props.onPreferSource}
+					onSplit={props.onSplitSource}
+				/>
+			) : null}
 		</li>
 	);
 }
 
+interface ChannelSourcesPanelProps {
+	id: string;
+	sources: ChannelSource[];
+	disabled: boolean;
+	onPrefer: (sourceId: string) => void;
+	onSplit: (sourceId: string) => void;
+}
+
+/** Show fallback order and lifecycle state without exposing provider internals. */
+function ChannelSourcesPanel(props: ChannelSourcesPanelProps) {
+	const hasRetainedSource = props.sources.some(
+		(source) => source.status !== "active"
+	);
+	return (
+		<div
+			id={props.id}
+			className="-mx-3 -mb-2 mt-1 basis-full border-t border-border bg-surface-muted/60 px-3 py-3"
+		>
+			<div className="space-y-2">
+				{props.sources.map((source) => {
+					const status = sourceStatusPresentation(source.status);
+					return (
+						<div
+							key={source.id}
+							className="flex flex-col gap-2 py-1 sm:flex-row sm:items-center"
+						>
+							<div className="min-w-0 flex-1">
+								<div className="flex flex-wrap items-center gap-2 text-sm text-primary">
+									<span
+										aria-hidden="true"
+										className={cn("h-2 w-2 rounded-full", status.dotClass)}
+									/>
+									<span className="font-medium">{source.tunerName}</span>
+									<span className="text-secondary">
+										{source.number} · {source.name}
+									</span>
+									{source.preferred ? <Badge>Preferred</Badge> : null}
+								</div>
+								<p className="ml-4 text-xs text-secondary">{status.label}</p>
+							</div>
+							<div className="flex items-center gap-2 sm:justify-end">
+								{!source.preferred ? (
+									<Button
+										variant="ghost"
+										size="sm"
+										disabled={props.disabled || source.status !== "active"}
+										onClick={() => props.onPrefer(source.id)}
+									>
+										Make preferred
+									</Button>
+								) : null}
+								{props.sources.length > 1 ? (
+									<Button
+										variant="ghost"
+										size="sm"
+										disabled={props.disabled}
+										onClick={() => props.onSplit(source.id)}
+									>
+										<Unlink aria-hidden="true" className="h-4 w-4" />
+										Separate
+									</Button>
+								) : null}
+							</div>
+						</div>
+					);
+				})}
+			</div>
+			{hasRetainedSource ? (
+				<p className="mt-3 max-w-3xl text-xs leading-5 text-secondary">
+					Missing sources remain linked so a provider move or temporary lineup
+					outage does not erase this group. Use Separate only when the source is
+					actually a different channel.
+				</p>
+			) : null}
+		</div>
+	);
+}
+
+interface MergeChannelsDialogProps {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	channels: ChannelListItem[];
+	primaryChannelId: string | null;
+	onPrimaryChange: (channelId: string) => void;
+	onConfirm: () => void;
+	pending: boolean;
+	error: string | null;
+}
+
+/** Confirm the durable identity that survives a many-source merge. */
+function MergeChannelsDialog(props: MergeChannelsDialogProps) {
+	return (
+		<Modal open={props.open} onOpenChange={props.onOpenChange}>
+			<ModalContent>
+				<ModalHeader>
+					<ModalTitle>Merge channel sources</ModalTitle>
+					<ModalDescription>
+						These entries will become one channel in the guide. Choose the
+						identity whose name, number, artwork, guide mapping, and preferences
+						should remain.
+					</ModalDescription>
+				</ModalHeader>
+
+				<fieldset className="space-y-2">
+					<legend className="mb-2 text-sm font-medium text-primary">
+						Channel identity to keep
+					</legend>
+					{props.channels.map((channel) => (
+						<label
+							key={channel.id}
+							className={cn(
+								"flex cursor-pointer items-start gap-3 rounded-md border px-3 py-3",
+								props.primaryChannelId === channel.id
+									? "border-accent bg-accent/10"
+									: "border-border"
+							)}
+						>
+							<input
+								type="radio"
+								name="merge-primary-channel"
+								value={channel.id}
+								checked={props.primaryChannelId === channel.id}
+								onChange={() => props.onPrimaryChange(channel.id)}
+								className="mt-1 h-4 w-4"
+							/>
+							<span className="min-w-0">
+								<span className="block text-sm font-medium text-primary">
+									{channel.number} · {channel.name}
+								</span>
+								<span className="block text-xs text-secondary">
+									{channel.sources?.length ?? 1} source
+									{(channel.sources?.length ?? 1) === 1 ? "" : "s"} ·{" "}
+									{channel.tunerName}
+								</span>
+							</span>
+						</label>
+					))}
+				</fieldset>
+
+				<p className="text-xs leading-5 text-secondary">
+					Recordings and series rules move to the retained identity. Sources are
+					tried in preference order, and a missing source stays attached for
+					recovery instead of being silently deleted.
+				</p>
+				{props.error ? (
+					<p role="alert" className="text-sm text-danger">
+						{props.error}
+					</p>
+				) : null}
+
+				<ModalFooter>
+					<Button
+						variant="secondary"
+						disabled={props.pending}
+						onClick={() => props.onOpenChange(false)}
+					>
+						Cancel
+					</Button>
+					<Button
+						disabled={props.pending || !props.primaryChannelId}
+						onClick={props.onConfirm}
+					>
+						{props.pending ? <Spinner aria-hidden="true" /> : null}
+						Merge {props.channels.length} channels
+					</Button>
+				</ModalFooter>
+			</ModalContent>
+		</Modal>
+	);
+}
+
+function sourceStatusPresentation(status: ChannelSource["status"]): {
+	label: string;
+	dotClass: string;
+} {
+	switch (status) {
+		case "missing":
+			return {
+				label: "Missing from the latest lineup sync; fallback remains enabled.",
+				dotClass: "bg-amber-500"
+			};
+		case "unavailable":
+			return {
+				label: "Unavailable after repeated syncs; retained for recovery.",
+				dotClass: "bg-danger"
+			};
+		case "active":
+		default:
+			return {
+				label: "Available for live TV and recordings.",
+				dotClass: "bg-success"
+			};
+	}
+}
+
 /* ── Helpers ───────────────────────────────────────────────────── */
+
+/** Collapse source-specific preferences onto the identity retained by a merge. */
+function mergeChannelPreferences(
+	prefs: ChannelsPrefs,
+	mergedIds: string[],
+	primaryId: string
+): ChannelsPrefs {
+	const merged = new Set(mergedIds);
+	const favorite = mergedIds.some((id) => prefs.favorites.includes(id));
+	const hidden = mergedIds.every((id) => prefs.hidden.includes(id));
+	const withoutMerged = (ids: string[]) => ids.filter((id) => !merged.has(id));
+	const earliestOrder = prefs.order.findIndex((id) => merged.has(id));
+	const order = withoutMerged(prefs.order);
+	if (earliestOrder >= 0) {
+		order.splice(Math.min(earliestOrder, order.length), 0, primaryId);
+	}
+	return {
+		favorites: favorite
+			? [...withoutMerged(prefs.favorites), primaryId]
+			: withoutMerged(prefs.favorites),
+		hidden: hidden
+			? [...withoutMerged(prefs.hidden), primaryId]
+			: withoutMerged(prefs.hidden),
+		order
+	};
+}
 
 function uniqueTuners(
 	channels: ChannelListItem[]
 ): { id: string; name: string }[] {
 	const map = new Map<string, string>();
 	for (const c of channels) {
-		if (!map.has(c.tunerId)) map.set(c.tunerId, c.tunerName);
+		const sources = c.sources ?? [];
+		if (sources.length === 0) {
+			// New responses represent recoverable empty groups explicitly.
+			if (c.sources === undefined && !map.has(c.tunerId)) {
+				map.set(c.tunerId, c.tunerName);
+			}
+			continue;
+		}
+		for (const source of sources) {
+			if (!map.has(source.tunerId)) map.set(source.tunerId, source.tunerName);
+		}
 	}
 	return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
 }

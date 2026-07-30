@@ -33,6 +33,7 @@ import { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.rep
 import { ChannelsRepository } from "../src/repositories/channels.repository";
 import { EpgChannelsRepository } from "../src/repositories/epg-channels.repository";
 import { EpgSourcesRepository } from "../src/repositories/epg-sources.repository";
+import { SettingsRepository } from "../src/repositories/settings.repository";
 import { TunersRepository } from "../src/repositories/tuners.repository";
 import { createApp } from "../src/app";
 import { getEventBus } from "../src/events";
@@ -67,9 +68,9 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-      channel_epg_map, recordings, series_rules,
+	  logical_channel_epg_map, channel_epg_map, recordings, series_rules,
       epg_programs, epg_channels, epg_sources,
-      channels, settings, scheduled_jobs, tuners
+	  channels, logical_channels, settings, scheduled_jobs, tuners
     RESTART IDENTITY CASCADE
   `);
 });
@@ -144,7 +145,11 @@ function buildApp() {
 		bus
 	});
 	const epgMatcherService = buildMatcher();
-	return createApp({ tunersService, epgMatcherService });
+	return createApp({
+		tunersService,
+		epgMatcherService,
+		channelsRepository: new ChannelsRepository(db)
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +320,185 @@ test("GET /api/v1/channels returns channels in sortOrder ascending order", async
 	assert.equal(res.body.items[0].name, "Alpha");
 	assert.equal(res.body.items[1].name, "Beta");
 	assert.equal(res.body.items[2].name, "Gamma");
+});
+
+test("POST /api/v1/channels/merge groups sources under the primary channel", async () => {
+	const primaryTuner = await seedTuner("Primary");
+	const backupTuner = await seedTuner("Backup");
+	const primary = await seedChannel(primaryTuner.id, {
+		name: "News",
+		number: "5.1",
+		sortOrder: 1
+	});
+	const backup = await seedChannel(backupTuner.id, {
+		name: "News backup",
+		number: "5.1",
+		sortOrder: 2
+	});
+
+	const response = await request(buildApp())
+		.post("/api/v1/channels/merge")
+		.send({
+			channelIds: [primary.id, backup.id],
+			primaryChannelId: primary.id
+		});
+
+	assert.equal(response.status, 200);
+	assert.equal(response.body.items.length, 1);
+	assert.equal(response.body.items[0].id, primary.id);
+	assert.deepEqual(
+		response.body.items[0].sources.map((source: { id: string }) => source.id),
+		[primary.id, backup.id]
+	);
+	assert.equal(
+		(await new ChannelsRepository(db).getById(backup.id))?.logicalChannelId,
+		primary.id
+	);
+});
+
+test("merging channels reconciles channel and playback preferences", async () => {
+	const primaryTuner = await seedTuner("Primary");
+	const backupTuner = await seedTuner("Backup");
+	const primary = await seedChannel(primaryTuner.id, { sortOrder: 1 });
+	const backup = await seedChannel(backupTuner.id, { sortOrder: 2 });
+	const settings = new SettingsRepository(db);
+	await settings.upsert("channels", {
+		favorites: [backup.id],
+		hidden: [primary.id, backup.id],
+		order: [backup.id, primary.id]
+	});
+	await settings.upsert("player", {
+		volume: 1,
+		muted: false,
+		captionsEnabled: false,
+		qualityByChannel: { [backup.id]: "720p" }
+	});
+
+	await new ChannelsRepository(db).mergeLogicalChannels(
+		[primary.id, backup.id],
+		primary.id
+	);
+
+	assert.deepEqual((await settings.getByKey("channels"))?.value, {
+		favorites: [primary.id],
+		hidden: [primary.id],
+		order: [primary.id]
+	});
+	assert.deepEqual((await settings.getByKey("player"))?.value, {
+		volume: 1,
+		muted: false,
+		captionsEnabled: false,
+		qualityByChannel: { [primary.id]: "720p" }
+	});
+});
+
+test("source preference and split operations preserve physical source identity", async () => {
+	const primaryTuner = await seedTuner("Primary");
+	const backupTuner = await seedTuner("Backup");
+	const primary = await seedChannel(primaryTuner.id, { sortOrder: 1 });
+	const backup = await seedChannel(backupTuner.id, {
+		name: "Backup News",
+		number: "12.4",
+		sortOrder: 2
+	});
+	const app = buildApp();
+	await request(app)
+		.post("/api/v1/channels/merge")
+		.send({
+			channelIds: [primary.id, backup.id],
+			primaryChannelId: primary.id
+		});
+
+	const preferred = await request(app).post(
+		`/api/v1/channels/${primary.id}/sources/${backup.id}/preferred`
+	);
+	assert.equal(preferred.status, 200);
+	assert.equal(preferred.body.items[0].sources[0].id, backup.id);
+	assert.equal(preferred.body.items[0].name, "Backup News");
+	assert.equal(preferred.body.items[0].number, "12.4");
+
+	const split = await request(app).post(
+		`/api/v1/channels/${primary.id}/sources/${backup.id}/split`
+	);
+	assert.equal(split.status, 200);
+	assert.equal(split.body.items.length, 2);
+	assert.ok(
+		split.body.items.some((item: { sources: Array<{ id: string }> }) =>
+			item.sources.some((source) => source.id === backup.id)
+		)
+	);
+	const originalGroup = split.body.items.find(
+		(item: { id: string }) => item.id === primary.id
+	);
+	assert.equal(originalGroup.name, "Channel 1");
+	assert.equal(originalGroup.sources[0].priority, 0);
+});
+
+test("preferred source metadata moves the logical channel without changing its id", async () => {
+	const tuner = await seedTuner("Primary");
+	const source = await seedChannel(tuner.id, {
+		name: "News",
+		number: "5.1",
+		sortOrder: 1
+	});
+	const repository = new ChannelsRepository(db);
+
+	await repository.update(source.id, {
+		name: "News HD",
+		number: "12.4",
+		sortOrder: 4
+	});
+
+	const logical = await repository.getLogicalChannelById(source.id);
+	assert.equal(logical?.id, source.id);
+	assert.equal(logical?.name, "News HD");
+	assert.equal(logical?.number, "12.4");
+	assert.equal(logical?.sortOrder, 4);
+});
+
+test("temporary misses stay usable until the source becomes unavailable", async () => {
+	const tuner = await seedTuner("Primary");
+	const source = await seedChannel(tuner.id);
+	const repository = new ChannelsRepository(db);
+
+	await repository.update(source.id, { sourceStatus: "missing" });
+	assert.deepEqual(
+		(await repository.listEnabledForGrid()).map((channel) => channel.id),
+		[source.id]
+	);
+
+	await repository.update(source.id, { sourceStatus: "unavailable" });
+	assert.deepEqual(await repository.listEnabledForGrid(), []);
+});
+
+test("deleting a tuner delinks its source and promotes the remaining fallback", async () => {
+	const primaryTuner = await seedTuner("Primary");
+	const backupTuner = await seedTuner("Backup");
+	const primary = await seedChannel(primaryTuner.id, {
+		name: "Primary News",
+		number: "5.1",
+		sortOrder: 1
+	});
+	const backup = await seedChannel(backupTuner.id, {
+		name: "Backup News",
+		number: "12.4",
+		sortOrder: 2
+	});
+	const channels = new ChannelsRepository(db);
+	await channels.mergeLogicalChannels([primary.id, backup.id], primary.id);
+
+	await new TunersRepository(db).delete(primaryTuner.id);
+
+	const [summary] = await channels.listLogicalChannelSummaries();
+	assert.ok(summary);
+	assert.equal(summary.channel.id, primary.id);
+	assert.equal(summary.channel.name, "Backup News");
+	assert.equal(summary.channel.number, "12.4");
+	assert.deepEqual(
+		summary.sources.map((source) => source.id),
+		[backup.id]
+	);
+	assert.equal(summary.sources[0]?.sourcePriority, 0);
 });
 
 // ---------------------------------------------------------------------------

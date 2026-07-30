@@ -48,9 +48,9 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-	  series_rule_episodes, channel_epg_map, recordings, series_rules,
-	  epg_programs, episodes, epg_channels, epg_sources,
-      channels, settings, scheduled_jobs, tuners
+	  series_rule_episodes, logical_channel_epg_map, channel_epg_map,
+	  recordings, series_rules, epg_programs, episodes, epg_channels, epg_sources,
+	  channels, logical_channels, settings, scheduled_jobs, tuners
     RESTART IDENTITY CASCADE
   `);
 });

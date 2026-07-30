@@ -25,6 +25,7 @@ import {
 } from "./recordings/recordings.service";
 import { ChannelEpgMapRepository } from "./repositories/channel-epg-map.repository";
 import { ChannelsRepository } from "./repositories/channels.repository";
+import { LogicalChannelEpgMapRepository } from "./repositories/logical-channel-epg-map.repository";
 import { EpgChannelsRepository } from "./repositories/epg-channels.repository";
 import { EpgProgramsRepository } from "./repositories/epg-programs.repository";
 import { EpgSourcesRepository } from "./repositories/epg-sources.repository";
@@ -150,7 +151,7 @@ export function createAppWithServices(
 		options.epgGridService ??
 		new EpgGridService({
 			channels: new ChannelsRepository(db),
-			channelEpgMap: new ChannelEpgMapRepository(db),
+			channelEpgMap: new LogicalChannelEpgMapRepository(db),
 			epgPrograms: new EpgProgramsRepository(db),
 			recordings: new RecordingsRepository(db)
 		});
@@ -161,6 +162,7 @@ export function createAppWithServices(
 			epgChannelsRepository: new EpgChannelsRepository(db),
 			epgSourcesRepository: new EpgSourcesRepository(db),
 			channelEpgMapRepository: new ChannelEpgMapRepository(db),
+			logicalChannelEpgMapRepository: new LogicalChannelEpgMapRepository(db),
 			bus,
 			onMappingsChanged: () => epgGridService.invalidateSnapshot()
 		});
@@ -238,7 +240,7 @@ export function createAppWithServices(
 				settingsService.getAll()
 			),
 			epgPrograms: new EpgProgramsRepository(db),
-			channelEpgMap: new ChannelEpgMapRepository(db),
+			channelEpgMap: new LogicalChannelEpgMapRepository(db),
 			seriesRules: new SeriesRulesRepository(db),
 			logger,
 			bus,
@@ -296,7 +298,7 @@ export function createAppWithServices(
 			recordings: new RecordingsRepository(db),
 			epgPrograms: new EpgProgramsRepository(db),
 			channels: new ChannelsRepository(db),
-			channelEpgMap: new ChannelEpgMapRepository(db),
+			channelEpgMap: new LogicalChannelEpgMapRepository(db),
 			episodeClaims: new SeriesEpisodeClaimsRepository(db),
 			schedule: (input) =>
 				recordingsService.schedule({

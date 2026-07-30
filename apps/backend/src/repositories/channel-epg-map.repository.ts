@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import type { DatabaseClient } from "../db/client";
-import { channelEpgMap } from "../db/schema";
+import { channelEpgMap, channels, logicalChannelEpgMap } from "../db/schema";
 
 export type ChannelEpgMapRecord = typeof channelEpgMap.$inferSelect;
 
@@ -20,14 +20,37 @@ export class ChannelEpgMapRepository {
 	 * to leave it alone on subsequent EPG refreshes.
 	 */
 	async upsert(channelId: string, epgChannelId: string, manual = false) {
-		const [created] = await this.database
-			.insert(channelEpgMap)
-			.values({ channelId, epgChannelId, manual })
-			.onConflictDoUpdate({
-				target: channelEpgMap.channelId,
-				set: { epgChannelId, manual }
-			})
-			.returning();
+		const created = await this.database.transaction(async (tx) => {
+			const [stored] = await tx
+				.insert(channelEpgMap)
+				.values({ channelId, epgChannelId, manual })
+				.onConflictDoUpdate({
+					target: channelEpgMap.channelId,
+					set: { epgChannelId, manual }
+				})
+				.returning();
+			const [source] = await tx
+				.select({ logicalChannelId: channels.logicalChannelId })
+				.from(channels)
+				.where(eq(channels.id, channelId))
+				.limit(1);
+			if (source) {
+				const insert = tx.insert(logicalChannelEpgMap).values({
+					logicalChannelId: source.logicalChannelId,
+					epgChannelId,
+					manual
+				});
+				if (manual) {
+					await insert.onConflictDoUpdate({
+						target: logicalChannelEpgMap.logicalChannelId,
+						set: { epgChannelId, manual: true }
+					});
+				} else {
+					await insert.onConflictDoNothing();
+				}
+			}
+			return stored;
+		});
 
 		if (!created) {
 			throw new Error("Failed to upsert channel EPG map record");
