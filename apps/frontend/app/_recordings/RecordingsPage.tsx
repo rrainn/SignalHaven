@@ -774,9 +774,13 @@ export function RecordingsPage(props: RecordingsPageProps) {
 				<div
 					data-testid="recordings-loading"
 					aria-busy="true"
-					className="flex min-h-60 items-center justify-center"
+					className="flex min-h-60 flex-col items-center justify-center gap-3 px-6 text-center"
 				>
 					<Spinner size="lg" label="Loading recordings" />
+					{/* Keep loading feedback visible while the initial library request settles. */}
+					<h2 className="text-2xl font-semibold tracking-tight text-primary">
+						Loading your recordings
+					</h2>
 				</div>
 			) : visible.length === 0 ? (
 				<EmptyRecordingsState

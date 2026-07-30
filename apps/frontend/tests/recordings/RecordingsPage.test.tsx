@@ -474,6 +474,9 @@ describe("RecordingsPage", () => {
 		);
 
 		expect(screen.getByTestId("recordings-loading")).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { level: 2, name: /loading/i })
+		).toBeVisible();
 		expect(screen.queryByTestId("recordings-empty")).not.toBeInTheDocument();
 
 		const emptyStateAdditions: Element[] = [];
