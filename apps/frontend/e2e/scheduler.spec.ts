@@ -58,6 +58,7 @@ interface MockSeriesRule {
 	epgChannelId: null;
 	keepCount: number;
 	newOnly: boolean;
+	episodePolicy: "all" | "confirmed_new" | "new_and_unknown";
 	priority: number;
 	retentionDays: number | null;
 	createdAt: string;
@@ -238,7 +239,8 @@ async function mockSchedulerBackend(page: Page): Promise<SchedulerMockState> {
 				channelId?: string | null;
 				keepCount: number;
 				retentionDays?: number | null;
-				newOnly: boolean;
+				episodePolicy?: "all" | "confirmed_new" | "new_and_unknown";
+				newOnly?: boolean;
 				priority: number;
 			};
 			const created: MockSeriesRule = {
@@ -247,7 +249,11 @@ async function mockSchedulerBackend(page: Page): Promise<SchedulerMockState> {
 				channelId: body.channelId ?? null,
 				epgChannelId: null,
 				keepCount: body.keepCount,
-				newOnly: body.newOnly,
+				newOnly:
+					(body.episodePolicy ?? (body.newOnly ? "confirmed_new" : "all")) !==
+					"all",
+				episodePolicy:
+					body.episodePolicy ?? (body.newOnly ? "confirmed_new" : "all"),
 				priority: body.priority,
 				retentionDays: body.retentionDays ?? null,
 				createdAt: "2025-01-01T00:00:00Z",

@@ -124,6 +124,11 @@ export async function importXmltv(
          description text,
          episode integer,
          season integer,
+		 provider_episode_id text,
+		 episode_identity_key text,
+		 original_air_date date,
+		 broadcast_newness text NOT NULL,
+		 newness_source text NOT NULL,
          categories text[] NOT NULL
        ) ON COMMIT DROP`
 		);
@@ -255,6 +260,11 @@ export async function importXmltv(
          s.description,
          s.episode,
          s.season,
+		 s.provider_episode_id,
+		 s.episode_identity_key,
+		 s.original_air_date,
+		 s.broadcast_newness,
+		 s.newness_source,
          s.categories
        FROM (
          SELECT DISTINCT ON (channel_external_id, external_id, start)
@@ -267,6 +277,11 @@ export async function importXmltv(
                 description,
                 episode,
                 season,
+				provider_episode_id,
+				episode_identity_key,
+				original_air_date,
+				broadcast_newness,
+				newness_source,
                 categories
            FROM epg_programs_staging
           ORDER BY
@@ -305,14 +320,46 @@ export async function importXmltv(
 			inserted: 0
 		};
 
+		// Episode rows are durable catalog entries; refreshing or pruning broadcast
+		// rows only advances their last-seen timestamp and never removes history.
+		await client.query(
+			`INSERT INTO episodes (
+         identity_key, provider_episode_id, series_key, season, episode,
+         subtitle, original_air_date, first_seen_at, last_seen_at
+       )
+       SELECT DISTINCT ON (episode_identity_key)
+         episode_identity_key,
+         provider_episode_id,
+         regexp_replace(lower(btrim(title)), '\\s+', ' ', 'g'),
+         season,
+         episode,
+         subtitle,
+         original_air_date,
+         now(),
+         now()
+       FROM epg_programs_import
+       WHERE episode_identity_key IS NOT NULL
+       ORDER BY episode_identity_key, start DESC
+       ON CONFLICT (identity_key) DO UPDATE SET
+         provider_episode_id = COALESCE(EXCLUDED.provider_episode_id, episodes.provider_episode_id),
+         series_key = EXCLUDED.series_key,
+         season = COALESCE(EXCLUDED.season, episodes.season),
+         episode = COALESCE(EXCLUDED.episode, episodes.episode),
+         subtitle = COALESCE(EXCLUDED.subtitle, episodes.subtitle),
+         original_air_date = COALESCE(EXCLUDED.original_air_date, episodes.original_air_date),
+         last_seen_at = now()`
+		);
+
 		const programsRes = await client.query(
 			`INSERT INTO epg_programs (
          id, epg_channel_id, external_id, start, stop, title, subtitle,
-         description, episode, season, categories
+		 description, episode, season, provider_episode_id, episode_identity_key,
+		 original_air_date, broadcast_newness, newness_source, categories
        )
        SELECT
          id, epg_channel_id, external_id, start, stop, title, subtitle,
-         description, episode, season, categories
+		 description, episode, season, provider_episode_id, episode_identity_key,
+		 original_air_date, broadcast_newness, newness_source, categories
        FROM epg_programs_import
        ON CONFLICT (epg_channel_id, external_id, start)
          WHERE external_id IS NOT NULL
@@ -323,14 +370,25 @@ export async function importXmltv(
            description = EXCLUDED.description,
            episode = EXCLUDED.episode,
            season = EXCLUDED.season,
+		   provider_episode_id = EXCLUDED.provider_episode_id,
+		   episode_identity_key = EXCLUDED.episode_identity_key,
+		   original_air_date = EXCLUDED.original_air_date,
+		   broadcast_newness = EXCLUDED.broadcast_newness,
+		   newness_source = EXCLUDED.newness_source,
            categories = EXCLUDED.categories
 		 WHERE (epg_programs.stop, epg_programs.title, epg_programs.subtitle,
 		        epg_programs.description, epg_programs.episode,
-		        epg_programs.season, epg_programs.categories)
+		        epg_programs.season, epg_programs.provider_episode_id,
+		        epg_programs.episode_identity_key, epg_programs.original_air_date,
+		        epg_programs.broadcast_newness, epg_programs.newness_source,
+		        epg_programs.categories)
 		       IS DISTINCT FROM
 		       (EXCLUDED.stop, EXCLUDED.title, EXCLUDED.subtitle,
 		        EXCLUDED.description, EXCLUDED.episode,
-		        EXCLUDED.season, EXCLUDED.categories)`
+		        EXCLUDED.season, EXCLUDED.provider_episode_id,
+		        EXCLUDED.episode_identity_key, EXCLUDED.original_air_date,
+		        EXCLUDED.broadcast_newness, EXCLUDED.newness_source,
+		        EXCLUDED.categories)`
 		);
 		const affectedPrograms = programsRes.rowCount ?? 0;
 		progress.programsUpserted = affectedPrograms;
@@ -418,7 +476,8 @@ async function copyPrograms(
 		copyFrom(
 			`COPY epg_programs_staging (
          external_id, channel_external_id, start, stop, title, subtitle,
-         description, episode, season, categories
+		 description, episode, season, provider_episode_id, episode_identity_key,
+		 original_air_date, broadcast_newness, newness_source, categories
        ) FROM STDIN WITH (FORMAT text)`
 		)
 	);
@@ -472,6 +531,15 @@ function* serializePrograms(rows: XmltvProgram[]): Generator<string> {
 			row.description === null ? "\\N" : escapeCopyText(row.description),
 			row.episode === null ? "\\N" : String(row.episode),
 			row.season === null ? "\\N" : String(row.season),
+			row.providerEpisodeId === null
+				? "\\N"
+				: escapeCopyText(row.providerEpisodeId),
+			row.episodeIdentityKey === null
+				? "\\N"
+				: escapeCopyText(row.episodeIdentityKey),
+			row.originalAirDate === null ? "\\N" : row.originalAirDate,
+			row.broadcastNewness,
+			row.newnessSource,
 			escapeCopyText(serializeTextArray(row.categories))
 		];
 		yield `${cols.join("\t")}\n`;

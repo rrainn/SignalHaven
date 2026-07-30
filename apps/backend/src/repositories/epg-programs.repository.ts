@@ -1,8 +1,8 @@
-import { and, asc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 import type { DatabaseClient } from "../db/client";
-import { epgPrograms } from "../db/schema";
+import { episodes, epgPrograms } from "../db/schema";
 
 export type EpgProgramRecord = typeof epgPrograms.$inferSelect;
 
@@ -26,27 +26,59 @@ export type CreateEpgProgramInput = {
 	episode?: number;
 	season?: number;
 	categories?: string[];
+	providerEpisodeId?: string;
+	episodeIdentityKey?: string;
+	originalAirDate?: string;
+	broadcastNewness?: "new" | "rerun" | "premiere" | "unknown";
+	newnessSource?:
+		| "xmltv_new"
+		| "xmltv_previously_shown"
+		| "xmltv_premiere"
+		| "original_air_date"
+		| "none";
 };
 
 export class EpgProgramsRepository {
 	constructor(private readonly database: DatabaseClient) {}
 
 	async create(input: CreateEpgProgramInput) {
-		const [created] = await this.database
-			.insert(epgPrograms)
-			.values({
-				id: randomUUID(),
-				epgChannelId: input.epgChannelId,
-				start: input.start,
-				stop: input.stop,
-				title: input.title,
-				subtitle: input.subtitle,
-				description: input.description,
-				episode: input.episode,
-				season: input.season,
-				categories: input.categories
-			})
-			.returning();
+		const created = await this.database.transaction(async (tx) => {
+			if (input.episodeIdentityKey) {
+				await tx
+					.insert(episodes)
+					.values({
+						identityKey: input.episodeIdentityKey,
+						providerEpisodeId: input.providerEpisodeId,
+						seriesKey: input.title.trim().toLowerCase().replace(/\s+/g, " "),
+						season: input.season,
+						episode: input.episode,
+						subtitle: input.subtitle,
+						originalAirDate: input.originalAirDate
+					})
+					.onConflictDoNothing();
+			}
+			const [row] = await tx
+				.insert(epgPrograms)
+				.values({
+					id: randomUUID(),
+					epgChannelId: input.epgChannelId,
+					start: input.start,
+					stop: input.stop,
+					title: input.title,
+					subtitle: input.subtitle,
+					description: input.description,
+					episode: input.episode,
+					season: input.season,
+					categories: input.categories,
+					providerEpisodeId: input.providerEpisodeId,
+					episodeIdentityKey: input.episodeIdentityKey,
+					originalAirDate: input.originalAirDate,
+					broadcastNewness: input.broadcastNewness ?? "unknown",
+					newnessSource: input.newnessSource ?? "none"
+				})
+				.returning();
+			return row;
+		});
 
 		if (!created) {
 			throw new Error("Failed to create EPG program record");
@@ -105,33 +137,6 @@ export class EpgProgramsRepository {
 			.from(epgPrograms)
 			.where(and(...conditions))
 			.orderBy(asc(epgPrograms.start));
-	}
-
-	/**
-	 * Detect whether the given program is a re-run: returns true when
-	 * another EPG program with the same title and (when both are set)
-	 * the same season + episode aired strictly earlier. Used to honour
-	 * the "new episodes only" series-rule flag.
-	 *
-	 * Uses an existence query rather than a count for index-friendliness;
-	 * title comparison is case-insensitive and literal (no wildcards).
-	 */
-	async hasPriorAiring(program: EpgProgramRecord): Promise<boolean> {
-		const conditions = [
-			sql`lower(${epgPrograms.title}) = lower(${program.title})`,
-			lt(epgPrograms.start, program.start),
-			ne(epgPrograms.id, program.id)
-		];
-		if (program.season !== null && program.episode !== null) {
-			conditions.push(eq(epgPrograms.season, program.season));
-			conditions.push(eq(epgPrograms.episode, program.episode));
-		}
-		const [hit] = await this.database
-			.select({ id: epgPrograms.id })
-			.from(epgPrograms)
-			.where(and(...conditions))
-			.limit(1);
-		return hit !== undefined;
 	}
 
 	/**

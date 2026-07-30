@@ -34,6 +34,7 @@ import { CommercialsRepository } from "./repositories/commercials.repository";
 import { ScheduledJobsRepository } from "./repositories/scheduled-jobs.repository";
 import { SearchRepository } from "./repositories/search.repository";
 import { SeriesRulesRepository } from "./repositories/series-rules.repository";
+import { SeriesEpisodeClaimsRepository } from "./repositories/series-episode-claims.repository";
 import { SettingsRepository } from "./repositories/settings.repository";
 import { TunersRepository } from "./repositories/tuners.repository";
 import { Scheduler } from "./scheduler/scheduler";
@@ -296,6 +297,7 @@ export function createAppWithServices(
 			epgPrograms: new EpgProgramsRepository(db),
 			channels: new ChannelsRepository(db),
 			channelEpgMap: new ChannelEpgMapRepository(db),
+			episodeClaims: new SeriesEpisodeClaimsRepository(db),
 			schedule: (input) =>
 				recordingsService.schedule({
 					channelId: input.channelId,
@@ -316,6 +318,7 @@ export function createAppWithServices(
 					return null;
 				}
 			},
+			logger,
 			bus
 		});
 	// Subscribe to `recording.completed` so finished episodes trigger

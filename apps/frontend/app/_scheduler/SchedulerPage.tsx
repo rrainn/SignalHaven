@@ -296,7 +296,7 @@ export function SchedulerPage(props: SchedulerPageProps) {
 			channelId: string | null;
 			keepCount: number;
 			retentionDays: number | null;
-			newOnly: boolean;
+			episodePolicy: SeriesRule["episodePolicy"];
 			priority: number;
 		}) => {
 			setEditorSubmitting(true);
@@ -313,7 +313,7 @@ export function SchedulerPage(props: SchedulerPageProps) {
 						channelId: value.channelId,
 						keepCount: value.keepCount,
 						retentionDays: value.retentionDays,
-						newOnly: value.newOnly,
+						episodePolicy: value.episodePolicy,
 						priority: value.priority
 					});
 					dispatch({ type: "upsert-series-rule", rule: created });
@@ -784,11 +784,13 @@ function SeriesRulesTable(props: SeriesRulesTableProps) {
 										}`}
 							</Badge>
 							<Badge variant="outline">Priority {rule.priority}</Badge>
-							{rule.newOnly ? (
-								<Badge variant="outline">New only</Badge>
-							) : (
-								<Badge variant="outline">All airings</Badge>
-							)}
+							<Badge variant="outline">
+								{rule.episodePolicy === "confirmed_new"
+									? "Confirmed new only"
+									: rule.episodePolicy === "new_and_unknown"
+										? "New + unclassified"
+										: "All episodes"}
+							</Badge>
 						</CardContent>
 					</Card>
 				</li>

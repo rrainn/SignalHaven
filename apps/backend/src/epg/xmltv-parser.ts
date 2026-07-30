@@ -37,9 +37,30 @@ export interface XmltvProgram {
 	episode: number | null;
 	season: number | null;
 	categories: string[];
+	/** Stable episode identifier supplied by the guide provider when available. */
+	providerEpisodeId: string | null;
+	/** Durable identity used after the transient guide row is pruned. */
+	episodeIdentityKey: string | null;
+	/** Calendar date on which the provider says the episode first aired. */
+	originalAirDate: string | null;
+	/** Provider classification; unknown is intentional when the feed is silent. */
+	broadcastNewness: BroadcastNewness;
+	/** Evidence used to classify the broadcast for diagnostics. */
+	newnessSource: BroadcastNewnessSource;
 	/** Stable identifier inside the source: "channelId|startISO". */
 	externalId: string;
 }
+
+/** Provider-backed broadcast classification used by series recording policies. */
+export type BroadcastNewness = "new" | "rerun" | "premiere" | "unknown";
+
+/** Stable evidence labels retained so scheduling decisions are explainable. */
+export type BroadcastNewnessSource =
+	| "xmltv_new"
+	| "xmltv_previously_shown"
+	| "xmltv_premiere"
+	| "original_air_date"
+	| "none";
 
 export interface XmltvEvents {
 	onChannel(channel: XmltvChannel): void | Promise<void>;
@@ -187,6 +208,10 @@ interface ProgramAccumulator {
 	episode: number | null;
 	season: number | null;
 	categories: string[];
+	providerEpisodeId: string | null;
+	originalAirDate: string | null;
+	broadcastNewness: BroadcastNewness;
+	newnessSource: BroadcastNewnessSource;
 }
 
 interface ChannelAccumulator {
@@ -322,7 +347,11 @@ export async function parseXmltvStream(
 						description: null,
 						episode: null,
 						season: null,
-						categories: []
+						categories: [],
+						providerEpisodeId: null,
+						originalAirDate: null,
+						broadcastNewness: "unknown",
+						newnessSource: "none"
 					};
 				} catch {
 					// Skip programmes with bad timestamps; they would otherwise
@@ -357,8 +386,31 @@ export async function parseXmltvStream(
 					const system = (attrs["system"] ?? "").toLowerCase();
 					textTarget = (value) => {
 						if (!currentProgram) return;
-						applyEpisodeNum(currentProgram, system, value.trim());
+						const trimmed = value.trim();
+						applyEpisodeNum(currentProgram, system, trimmed);
+						if (
+							trimmed &&
+							(system === "dd_progid" ||
+								(currentProgram.providerEpisodeId === null &&
+									system !== "" &&
+									system !== "xmltv_ns" &&
+									system !== "onscreen" &&
+									system !== "original-air-date"))
+						) {
+							currentProgram.providerEpisodeId = `${system}:${trimmed}`;
+						}
 					};
+				} else if (name === "date") {
+					textTarget = (value) => {
+						if (!currentProgram) return;
+						currentProgram.originalAirDate = parseXmltvDate(value);
+					};
+				} else if (name === "new") {
+					setProgramNewness(currentProgram, "new", "xmltv_new");
+				} else if (name === "previously-shown") {
+					setProgramNewness(currentProgram, "rerun", "xmltv_previously_shown");
+				} else if (name === "premiere") {
+					setProgramNewness(currentProgram, "premiere", "xmltv_premiere");
 				}
 			}
 		});
@@ -393,6 +445,7 @@ export async function parseXmltvStream(
 					handleAsync(events.onChannel(out));
 				}
 			} else if (name === "programme" && currentProgram) {
+				applyOriginalAirDateNewness(currentProgram);
 				const program: XmltvProgram = {
 					externalId: currentProgram.externalId,
 					channelExternalId: currentProgram.channelExternalId,
@@ -403,7 +456,12 @@ export async function parseXmltvStream(
 					description: currentProgram.description,
 					episode: currentProgram.episode,
 					season: currentProgram.season,
-					categories: currentProgram.categories
+					categories: currentProgram.categories,
+					providerEpisodeId: currentProgram.providerEpisodeId,
+					episodeIdentityKey: buildEpisodeIdentityKey(currentProgram),
+					originalAirDate: currentProgram.originalAirDate,
+					broadcastNewness: currentProgram.broadcastNewness,
+					newnessSource: currentProgram.newnessSource
 				};
 				currentProgram = null;
 				if (program.channelExternalId && program.title) {
@@ -420,6 +478,50 @@ export async function parseXmltvStream(
 		stream.on("error", (err) => fail(err as Error));
 		stream.pipe(parser);
 	});
+}
+
+/** Parse the common XMLTV YYYYMMDD date form without inventing a timezone. */
+function parseXmltvDate(value: string): string | null {
+	const match = /^(\d{4})-?(\d{2})-?(\d{2})/.exec(value.trim());
+	return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+/** Prefer explicit rerun evidence when a malformed feed supplies contradictions. */
+function setProgramNewness(
+	program: ProgramAccumulator,
+	newness: BroadcastNewness,
+	source: BroadcastNewnessSource
+): void {
+	if (program.broadcastNewness === "rerun" && newness !== "rerun") return;
+	program.broadcastNewness = newness;
+	program.newnessSource = source;
+}
+
+/** Use original-air-date only when the feed did not provide an explicit marker. */
+function applyOriginalAirDateNewness(program: ProgramAccumulator): void {
+	if (!program.originalAirDate || program.broadcastNewness !== "unknown")
+		return;
+	const broadcastDate = program.start.toISOString().slice(0, 10);
+	if (program.originalAirDate < broadcastDate) {
+		setProgramNewness(program, "rerun", "original_air_date");
+	} else if (program.originalAirDate === broadcastDate) {
+		setProgramNewness(program, "new", "original_air_date");
+	}
+}
+
+/** Build only identities strong enough to survive guide pruning safely. */
+function buildEpisodeIdentityKey(program: ProgramAccumulator): string | null {
+	if (program.providerEpisodeId) return program.providerEpisodeId;
+	const title = program.title?.trim().toLowerCase().replace(/\s+/g, " ");
+	if (!title) return null;
+	if (program.season !== null && program.episode !== null) {
+		return `title:${title}:s${program.season}:e${program.episode}`;
+	}
+	const subtitle = program.subtitle?.trim().toLowerCase().replace(/\s+/g, " ");
+	if (subtitle && program.originalAirDate) {
+		return `title:${title}:subtitle:${subtitle}:date:${program.originalAirDate}`;
+	}
+	return null;
 }
 
 function applyEpisodeNum(

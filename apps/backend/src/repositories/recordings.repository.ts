@@ -58,7 +58,20 @@ export type CreateRecordingInput = {
 	schedulerJobId?: string | null;
 	seriesRuleId?: string | null;
 	manuallyProtected?: boolean;
+	episodeSnapshot?: RecordingEpisodeSnapshot;
 };
+
+/** Immutable episode metadata copied from the guide when scheduling. */
+export interface RecordingEpisodeSnapshot {
+	identityKey: string | null;
+	subtitle: string | null;
+	description: string | null;
+	season: number | null;
+	episode: number | null;
+	categories: string[];
+	artworkUrl: string | null;
+	originalAirDate: string | null;
+}
 
 /**
  * Recording and one-off job data persisted together for a new schedule.
@@ -93,6 +106,14 @@ export type RecordingRecord = {
 	manuallyProtected: boolean;
 	watchedAt: Date | null;
 	resumePositionSeconds: number | null;
+	episodeIdentityKey?: string | null;
+	episodeSubtitle?: string | null;
+	episodeDescription?: string | null;
+	episodeSeason?: number | null;
+	episodeNumber?: number | null;
+	episodeCategories?: string[];
+	episodeArtworkUrl?: string | null;
+	episodeOriginalAirDate?: string | null;
 	createdAt: Date;
 	updatedAt: Date;
 };
@@ -125,6 +146,14 @@ function toRecord(row: typeof recordings.$inferSelect): RecordingRecord {
 		manuallyProtected: row.manuallyProtected ?? false,
 		watchedAt: row.watchedAt ?? null,
 		resumePositionSeconds: row.resumePositionSeconds ?? null,
+		episodeIdentityKey: row.episodeIdentityKey ?? null,
+		episodeSubtitle: row.episodeSubtitle ?? null,
+		episodeDescription: row.episodeDescription ?? null,
+		episodeSeason: row.episodeSeason ?? null,
+		episodeNumber: row.episodeNumber ?? null,
+		episodeCategories: row.episodeCategories ?? [],
+		episodeArtworkUrl: row.episodeArtworkUrl ?? null,
+		episodeOriginalAirDate: row.episodeOriginalAirDate ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt
 	};
@@ -225,6 +254,15 @@ export class RecordingsRepository {
 					schedulerJobId: jobId,
 					seriesRuleId: input.seriesRuleId ?? null,
 					manuallyProtected: input.manuallyProtected ?? false,
+					episodeIdentityKey: input.episodeSnapshot?.identityKey ?? null,
+					episodeSubtitle: input.episodeSnapshot?.subtitle ?? null,
+					episodeDescription: input.episodeSnapshot?.description ?? null,
+					episodeSeason: input.episodeSnapshot?.season ?? null,
+					episodeNumber: input.episodeSnapshot?.episode ?? null,
+					episodeCategories: input.episodeSnapshot?.categories ?? [],
+					episodeArtworkUrl: input.episodeSnapshot?.artworkUrl ?? null,
+					episodeOriginalAirDate:
+						input.episodeSnapshot?.originalAirDate ?? null,
 					createdAt: now,
 					updatedAt: now
 				})
@@ -283,6 +321,15 @@ export class RecordingsRepository {
 					schedulerJobId: input.schedulerJobId ?? null,
 					seriesRuleId: input.seriesRuleId ?? null,
 					manuallyProtected: input.manuallyProtected ?? false,
+					episodeIdentityKey: input.episodeSnapshot?.identityKey ?? null,
+					episodeSubtitle: input.episodeSnapshot?.subtitle ?? null,
+					episodeDescription: input.episodeSnapshot?.description ?? null,
+					episodeSeason: input.episodeSnapshot?.season ?? null,
+					episodeNumber: input.episodeSnapshot?.episode ?? null,
+					episodeCategories: input.episodeSnapshot?.categories ?? [],
+					episodeArtworkUrl: input.episodeSnapshot?.artworkUrl ?? null,
+					episodeOriginalAirDate:
+						input.episodeSnapshot?.originalAirDate ?? null,
 					createdAt: now,
 					updatedAt: now
 				})
@@ -685,6 +732,23 @@ export class RecordingsRepository {
 			.where(activeProgramCondition(programId))
 			.limit(1);
 		return row ? toRecord(row) : null;
+	}
+
+	/** Find durable prior work without joining a guide row that may be pruned. */
+	async findExistingForEpisodeIdentity(
+		episodeIdentityKey: string
+	): Promise<RecordingRecord | null> {
+		const [record] = await this.database
+			.select()
+			.from(recordings)
+			.where(
+				and(
+					eq(recordings.episodeIdentityKey, episodeIdentityKey),
+					inArray(recordings.status, ["scheduled", "recording", "completed"])
+				)
+			)
+			.limit(1);
+		return record ? toRecord(record) : null;
 	}
 
 	/**

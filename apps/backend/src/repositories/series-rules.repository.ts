@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 import type { DatabaseClient } from "../db/client";
+import type { EpisodePolicy } from "@signalhaven/shared";
 import { seriesRules } from "../db/schema";
 
 export type CreateSeriesRuleInput = {
@@ -9,7 +10,8 @@ export type CreateSeriesRuleInput = {
 	channelId?: string | null;
 	epgChannelId?: string | null;
 	keepCount: number;
-	newOnly: boolean;
+	episodePolicy?: EpisodePolicy;
+	newOnly?: boolean;
 	priority: number;
 	retentionDays?: number | null;
 };
@@ -20,6 +22,7 @@ export type UpdateSeriesRuleInput = Partial<{
 	epgChannelId: string | null;
 	keepCount: number;
 	newOnly: boolean;
+	episodePolicy: EpisodePolicy;
 	priority: number;
 	retentionDays: number | null;
 }>;
@@ -31,6 +34,7 @@ export type SeriesRuleRecord = {
 	epgChannelId: string | null;
 	keepCount: number;
 	newOnly: boolean;
+	episodePolicy: EpisodePolicy;
 	priority: number;
 	retentionDays: number | null;
 	createdAt: Date;
@@ -45,6 +49,7 @@ function toRecord(row: typeof seriesRules.$inferSelect): SeriesRuleRecord {
 		epgChannelId: row.epgChannelId ?? null,
 		keepCount: row.keepCount,
 		newOnly: row.newOnly,
+		episodePolicy: row.episodePolicy as EpisodePolicy,
 		priority: row.priority,
 		retentionDays: row.retentionDays ?? null,
 		createdAt: row.createdAt,
@@ -57,6 +62,8 @@ export class SeriesRulesRepository {
 
 	async create(input: CreateSeriesRuleInput): Promise<SeriesRuleRecord> {
 		const now = new Date();
+		const episodePolicy =
+			input.episodePolicy ?? (input.newOnly ? "confirmed_new" : "all");
 		const [created] = await this.database
 			.insert(seriesRules)
 			.values({
@@ -65,7 +72,8 @@ export class SeriesRulesRepository {
 				channelId: input.channelId ?? null,
 				epgChannelId: input.epgChannelId ?? null,
 				keepCount: input.keepCount,
-				newOnly: input.newOnly,
+				newOnly: episodePolicy !== "all",
+				episodePolicy,
 				priority: input.priority,
 				retentionDays: input.retentionDays ?? null,
 				createdAt: now,
@@ -102,9 +110,15 @@ export class SeriesRulesRepository {
 		id: string,
 		patch: UpdateSeriesRuleInput
 	): Promise<SeriesRuleRecord | null> {
+		const normalizedPatch = { ...patch };
+		if (patch.episodePolicy) {
+			normalizedPatch.newOnly = patch.episodePolicy !== "all";
+		} else if (patch.newOnly !== undefined) {
+			normalizedPatch.episodePolicy = patch.newOnly ? "confirmed_new" : "all";
+		}
 		const [updated] = await this.database
 			.update(seriesRules)
-			.set({ ...patch, updatedAt: new Date() })
+			.set({ ...normalizedPatch, updatedAt: new Date() })
 			.where(eq(seriesRules.id, id))
 			.returning();
 

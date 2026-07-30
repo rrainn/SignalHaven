@@ -13,7 +13,6 @@ import {
 	SelectValue
 } from "../_ui/Select";
 import { Spinner } from "../_ui/Spinner";
-import { Switch } from "../_ui/Switch";
 
 import {
 	draftFromSeriesRule,
@@ -227,19 +226,32 @@ export function SeriesRuleEditor(props: SeriesRuleEditorProps) {
 				requires it. Protected recordings are never auto-deleted.
 			</p>
 
-			<label className="flex items-center justify-between gap-3 text-sm">
-				<span>
-					<span className="block text-primary">New episodes only</span>
-					<span className="block text-xs text-secondary">
-						Skip programs that have already aired before.
-					</span>
+			<label className="block space-y-1 text-sm">
+				<span className="text-primary">Episode policy</span>
+				<Select
+					value={draft.episodePolicy}
+					onValueChange={(value) =>
+						update("episodePolicy", value as SeriesRuleDraft["episodePolicy"])
+					}
+				>
+					<SelectTrigger
+						data-testid="series-rule-episode-policy"
+						aria-label="Episode policy"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="all">All episodes</SelectItem>
+						<SelectItem value="confirmed_new">Confirmed new only</SelectItem>
+						<SelectItem value="new_and_unknown">
+							New and unclassified
+						</SelectItem>
+					</SelectContent>
+				</Select>
+				<span className="block text-xs text-secondary">
+					Confirmed new uses guide-provider evidence. Choose unclassified when
+					your provider omits new or rerun markers.
 				</span>
-				<Switch
-					data-testid="series-rule-new-only"
-					checked={draft.newOnly}
-					onCheckedChange={(checked) => update("newOnly", checked)}
-					aria-label="New episodes only"
-				/>
 			</label>
 
 			{props.serverError ? (

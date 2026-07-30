@@ -79,7 +79,8 @@ const REC: RecordingDetail = {
 		episode: 1,
 		season: 1,
 		categories: ["Drama"],
-		artworkUrl: null
+		artworkUrl: null,
+		originalAirDate: null
 	}
 };
 

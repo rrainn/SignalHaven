@@ -189,7 +189,7 @@ export function useProgramRecordingActions(
 							title: target.title,
 							channelId: target.channelId,
 							keepCount: 5,
-							newOnly: false,
+							episodePolicy: "all",
 							priority: 0
 						}));
 				await recorder(program);

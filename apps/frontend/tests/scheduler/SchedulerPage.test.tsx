@@ -48,6 +48,7 @@ const RULE_BASE = {
 	channelId: null,
 	epgChannelId: null,
 	keepCount: 5,
+	episodePolicy: "all",
 	newOnly: false,
 	priority: 0,
 	retentionDays: null,
@@ -134,7 +135,7 @@ describe("SchedulerPage", () => {
 			id: "r1",
 			title: "Sherlock",
 			keepCount: 5,
-			newOnly: false,
+			episodePolicy: "all",
 			priority: 0
 		});
 		const onCreateSeriesRule = vi.fn().mockResolvedValue(created);
@@ -158,7 +159,7 @@ describe("SchedulerPage", () => {
 			channelId: null,
 			keepCount: 5,
 			retentionDays: null,
-			newOnly: false,
+			episodePolicy: "all",
 			priority: 0
 		});
 		// The newly-created rule appears in the list.

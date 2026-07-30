@@ -431,9 +431,47 @@ test("listPage(): batch-loads rich metadata for the bounded page", async () => {
 		episode: 1,
 		season: 1,
 		categories: ["Drama"],
-		artworkUrl: "https://example.com/pilot.jpg"
+		artworkUrl: "https://example.com/pilot.jpg",
+		originalAirDate: null
 	});
 
+	await rm(tmp, { recursive: true, force: true });
+});
+
+test("listPage(): uses the durable episode snapshot after guide pruning", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-snapshot-"));
+	repo.add(
+		makeRow({
+			programId: null,
+			episodeIdentityKey: "dd_progid:EP00000001.0001",
+			episodeSubtitle: "Pilot",
+			episodeDescription: "The first episode.",
+			episodeSeason: 1,
+			episodeNumber: 1,
+			episodeCategories: ["Drama"],
+			episodeArtworkUrl: "https://example.com/pilot.jpg",
+			episodeOriginalAirDate: "2026-01-01"
+		})
+	);
+	const svc = buildService({ repo, tmp });
+
+	const page = await svc.listPage({
+		limit: 24,
+		offset: 0,
+		sort: "scheduledStart",
+		direction: "desc"
+	});
+
+	assert.deepEqual(page.items[0]?.metadata, {
+		subtitle: "Pilot",
+		description: "The first episode.",
+		episode: 1,
+		season: 1,
+		categories: ["Drama"],
+		artworkUrl: "https://example.com/pilot.jpg",
+		originalAirDate: "2026-01-01"
+	});
 	await rm(tmp, { recursive: true, force: true });
 });
 

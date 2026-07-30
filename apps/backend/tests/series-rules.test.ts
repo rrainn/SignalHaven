@@ -20,6 +20,7 @@ import type {
 	SeriesRuleRecord,
 	SeriesRulesRepository
 } from "../src/repositories/series-rules.repository";
+import type { SeriesEpisodeClaims } from "../src/repositories/series-episode-claims.repository";
 import type { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.repository";
 import { SeriesRulesService } from "../src/series/series-rules.service";
 
@@ -31,13 +32,18 @@ import { SeriesRulesService } from "../src/series/series-rules.service";
 class FakeRulesRepo {
 	readonly rows = new Map<string, SeriesRuleRecord>();
 	add(
-		rule: Omit<SeriesRuleRecord, "createdAt" | "updatedAt" | "retentionDays"> &
-			Partial<Pick<SeriesRuleRecord, "retentionDays">>
+		rule: Omit<
+			SeriesRuleRecord,
+			"createdAt" | "updatedAt" | "retentionDays" | "episodePolicy"
+		> &
+			Partial<Pick<SeriesRuleRecord, "retentionDays" | "episodePolicy">>
 	): SeriesRuleRecord {
 		const now = new Date();
 		const row: SeriesRuleRecord = {
 			retentionDays: null,
 			...rule,
+			episodePolicy:
+				rule.episodePolicy ?? (rule.newOnly ? "confirmed_new" : "all"),
 			createdAt: now,
 			updatedAt: now
 		};
@@ -55,7 +61,8 @@ class FakeRulesRepo {
 		channelId?: string | null;
 		epgChannelId?: string | null;
 		keepCount: number;
-		newOnly: boolean;
+		episodePolicy?: SeriesRuleRecord["episodePolicy"];
+		newOnly?: boolean;
 		priority: number;
 		retentionDays?: number | null;
 	}): Promise<SeriesRuleRecord> {
@@ -65,7 +72,11 @@ class FakeRulesRepo {
 			channelId: input.channelId ?? null,
 			epgChannelId: input.epgChannelId ?? null,
 			keepCount: input.keepCount,
-			newOnly: input.newOnly,
+			newOnly: input.episodePolicy
+				? input.episodePolicy !== "all"
+				: (input.newOnly ?? false),
+			episodePolicy:
+				input.episodePolicy ?? (input.newOnly ? "confirmed_new" : "all"),
 			priority: input.priority,
 			retentionDays: input.retentionDays ?? null
 		});
@@ -80,6 +91,7 @@ class FakeRulesRepo {
 				| "epgChannelId"
 				| "keepCount"
 				| "newOnly"
+				| "episodePolicy"
 				| "priority"
 				| "retentionDays"
 			>
@@ -116,7 +128,17 @@ class FakeEpgProgramsRepo {
 			description: input.description ?? null,
 			episode: input.episode ?? null,
 			season: input.season ?? null,
-			categories: input.categories ?? null
+			categories: input.categories ?? [],
+			episodeIdentityKey:
+				input.episodeIdentityKey ??
+				(input.season !== null &&
+				input.season !== undefined &&
+				input.episode !== null &&
+				input.episode !== undefined
+					? `title:${input.title.toLowerCase()}:s${input.season}:e${input.episode}`
+					: null),
+			broadcastNewness: input.broadcastNewness ?? "unknown",
+			newnessSource: input.newnessSource ?? "none"
 		} as EpgProgramRecord;
 		this.rows.push(row);
 		return row;
@@ -211,6 +233,19 @@ class FakeRecordingsRepo {
 		}
 		return null;
 	}
+	async findExistingForEpisodeIdentity(
+		episodeIdentityKey: string
+	): Promise<RecordingRecord | null> {
+		return (
+			[...this.rows.values()].find(
+				(row) =>
+					row.episodeIdentityKey === episodeIdentityKey &&
+					(row.status === "scheduled" ||
+						row.status === "recording" ||
+						row.status === "completed")
+			) ?? null
+		);
+	}
 	async listCompletedBySeriesRule(
 		seriesRuleId: string
 	): Promise<RecordingRecord[]> {
@@ -268,6 +303,39 @@ class FakeChannelEpgMap {
 	}
 }
 
+/** In-memory equivalent of the database's atomic composite primary key. */
+class FakeEpisodeClaims implements SeriesEpisodeClaims {
+	readonly claims = new Map<string, string | null>();
+	async claim(
+		seriesRuleId: string,
+		episodeIdentityKey: string
+	): Promise<boolean> {
+		const key = `${seriesRuleId}:${episodeIdentityKey}`;
+		if (this.claims.has(key)) return false;
+		this.claims.set(key, null);
+		return true;
+	}
+	async attachRecording(
+		seriesRuleId: string,
+		episodeIdentityKey: string,
+		recordingId: string
+	): Promise<void> {
+		this.claims.set(`${seriesRuleId}:${episodeIdentityKey}`, recordingId);
+	}
+	async markCompleted(): Promise<void> {}
+	async releaseByRecordingId(recordingId: string): Promise<void> {
+		for (const [key, value] of this.claims) {
+			if (value === recordingId) this.claims.delete(key);
+		}
+	}
+	async release(
+		seriesRuleId: string,
+		episodeIdentityKey: string
+	): Promise<void> {
+		this.claims.delete(`${seriesRuleId}:${episodeIdentityKey}`);
+	}
+}
+
 // Cross-fake lookup table so FakeRecordingsRepo can resolve program rows
 // without requiring callers to thread the EPG repo through directly.
 const epRowsById = new Map<string, EpgProgramRecord>();
@@ -290,6 +358,7 @@ function makeService(opts: {
 	capacity?: (providerId: string) => Promise<number | null>;
 	bus?: EventBus;
 	now?: () => Date;
+	episodeClaims?: SeriesEpisodeClaims;
 }) {
 	return new SeriesRulesService({
 		rules: opts.rules as unknown as SeriesRulesRepository,
@@ -297,6 +366,7 @@ function makeService(opts: {
 		epgPrograms: opts.epgPrograms as unknown as EpgProgramsRepository,
 		channels: opts.channels as unknown as ChannelsRepository,
 		channelEpgMap: opts.channelEpgMap as unknown as ChannelEpgMapRepository,
+		episodeClaims: opts.episodeClaims ?? new FakeEpisodeClaims(),
 		schedule:
 			opts.schedule ??
 			(async (input) => {
@@ -305,6 +375,10 @@ function makeService(opts: {
 					id,
 					channelId: input.channelId,
 					programId: input.programId,
+					episodeIdentityKey:
+						opts.epgPrograms.rows.find(
+							(program) => program.id === input.programId
+						)?.episodeIdentityKey ?? null,
 					title: input.title,
 					status: "scheduled",
 					scheduledStart: input.start,
@@ -486,7 +560,7 @@ test("evaluate(): schedules upcoming matching programs", async () => {
 	assert.equal(recordings.rows.size, 1);
 });
 
-test("evaluate(): newOnly skips re-airings detected via prior airdate", async () => {
+test("evaluate(): confirmed-new policy uses provider newness after guide pruning", async () => {
 	const rules = new FakeRulesRepo();
 	const recordings = new FakeRecordingsRepo();
 	const epg = new FakeEpgProgramsRepo();
@@ -517,8 +591,8 @@ test("evaluate(): newOnly skips re-airings detected via prior airdate", async ()
 		priority: 0
 	});
 
-	// Original airing — in the past, so not a candidate but reachable
-	// via the prior-airdate query.
+	// The old broadcast may be pruned without affecting the provider-backed
+	// classification on the two future candidates.
 	epg.add({
 		id: randomUUID(),
 		title: "Daily Show",
@@ -537,7 +611,9 @@ test("evaluate(): newOnly skips re-airings detected via prior airdate", async ()
 		start: future,
 		stop: new Date(future.getTime() + 30 * 60 * 1000),
 		season: 7,
-		episode: 42
+		episode: 42,
+		broadcastNewness: "rerun",
+		newnessSource: "xmltv_previously_shown"
 	});
 	// Future first airing of a different episode — this one should run.
 	const future2 = new Date(Date.now() + 2 * 60 * 60 * 1000);
@@ -548,7 +624,9 @@ test("evaluate(): newOnly skips re-airings detected via prior airdate", async ()
 		start: future2,
 		stop: new Date(future2.getTime() + 30 * 60 * 1000),
 		season: 7,
-		episode: 43
+		episode: 43,
+		broadcastNewness: "new",
+		newnessSource: "xmltv_new"
 	});
 
 	const service = makeService({
@@ -564,6 +642,110 @@ test("evaluate(): newOnly skips re-airings detected via prior airdate", async ()
 	assert.equal(result.skippedNotNew, 1);
 	const scheduled = [...recordings.rows.values()];
 	assert.equal(scheduled[0]?.scheduledStart.getTime(), future2.getTime());
+});
+
+test("evaluate(): confirmed-new and new-plus-unknown policies differ explicitly", async () => {
+	const rules = new FakeRulesRepo();
+	const recordings = new FakeRecordingsRepo();
+	const epg = new FakeEpgProgramsRepo();
+	const channels = new FakeChannelsRepo();
+	const map = new FakeChannelEpgMap();
+	const channelId = randomUUID();
+	const epgChannelId = randomUUID();
+	channels.add({
+		id: channelId,
+		tunerId: randomUUID(),
+		number: "5.1",
+		name: "Five"
+	} as ChannelRecord);
+	map.link(channelId, epgChannelId);
+	const rule = rules.add({
+		id: randomUUID(),
+		title: "Unclassified Show",
+		channelId,
+		epgChannelId: null,
+		keepCount: 5,
+		newOnly: true,
+		episodePolicy: "confirmed_new",
+		priority: 0
+	});
+	const start = new Date(Date.now() + 60 * 60 * 1000);
+	epg.add({
+		title: rule.title,
+		epgChannelId,
+		start,
+		stop: new Date(start.getTime() + 30 * 60 * 1000),
+		season: 1,
+		episode: 1,
+		broadcastNewness: "unknown"
+	});
+	const service = makeService({
+		rules,
+		recordings,
+		epgPrograms: epg,
+		channels,
+		channelEpgMap: map
+	});
+
+	const confirmed = await service.evaluate();
+	assert.equal(confirmed.scheduled, 0);
+	assert.equal(confirmed.skippedUnknown, 1);
+	await rules.update(rule.id, { episodePolicy: "new_and_unknown" });
+	const permissive = await service.evaluate();
+	assert.equal(permissive.scheduled, 1);
+});
+
+test("evaluate(): shared atomic claims prevent concurrent duplicate scheduling", async () => {
+	const rules = new FakeRulesRepo();
+	const recordings = new FakeRecordingsRepo();
+	const epg = new FakeEpgProgramsRepo();
+	const channels = new FakeChannelsRepo();
+	const map = new FakeChannelEpgMap();
+	const claims = new FakeEpisodeClaims();
+	const channelId = randomUUID();
+	const epgChannelId = randomUUID();
+	channels.add({
+		id: channelId,
+		tunerId: randomUUID(),
+		number: "5.1",
+		name: "Five"
+	} as ChannelRecord);
+	map.link(channelId, epgChannelId);
+	rules.add({
+		id: randomUUID(),
+		title: "Concurrent Show",
+		channelId,
+		epgChannelId: null,
+		keepCount: 5,
+		newOnly: false,
+		priority: 0
+	});
+	const start = new Date(Date.now() + 60 * 60 * 1000);
+	epg.add({
+		title: "Concurrent Show",
+		epgChannelId,
+		start,
+		stop: new Date(start.getTime() + 30 * 60 * 1000),
+		season: 1,
+		episode: 1
+	});
+	const options = {
+		rules,
+		recordings,
+		epgPrograms: epg,
+		channels,
+		channelEpgMap: map,
+		episodeClaims: claims
+	};
+	const first = makeService(options);
+	const second = makeService(options);
+
+	const results = await Promise.all([first.evaluate(), second.evaluate()]);
+	assert.equal(
+		results.reduce((sum, result) => sum + result.scheduled, 0),
+		1
+	);
+	assert.equal(recordings.rows.size, 1);
 });
 
 test("evaluate(): dedupes by (series-id, season, episode)", async () => {
@@ -626,6 +808,7 @@ test("evaluate(): dedupes by (series-id, season, episode)", async () => {
 		id: randomUUID(),
 		channelId,
 		programId: futureEp.id,
+		episodeIdentityKey: futureEp.episodeIdentityKey,
 		title: "Quiz Night",
 		status: "scheduled",
 		scheduledStart: future1,
