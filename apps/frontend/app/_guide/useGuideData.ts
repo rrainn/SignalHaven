@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import { getEpgGrid } from "../../lib/api-client";
+import { GUIDE_INVALIDATE_EVENT } from "../../lib/app-events";
 import { parseRecordingEvent } from "../../lib/recording-events";
 import { useWebSocketEvents } from "../../lib/ws-client";
 import type { ProgramRecordingPatch } from "../_recordings/useProgramRecordingActions";
@@ -198,6 +199,15 @@ export function useGuideData(opts: UseGuideDataOptions): {
 		() => loadSlices([{ from: Date.parse(fromIso), to: Date.parse(toIso) }]),
 		[fromIso, loadSlices, toIso]
 	);
+
+	useEffect(() => {
+		// Onboarding runs over the already-mounted Guide, so its initial empty
+		// response must be reconciled explicitly when setup finishes.
+		const handleInvalidation = () => void refresh();
+		window.addEventListener(GUIDE_INVALIDATE_EVENT, handleInvalidation);
+		return () =>
+			window.removeEventListener(GUIDE_INVALIDATE_EVENT, handleInvalidation);
+	}, [refresh]);
 
 	useEffect(() => {
 		// Skip the initial fetch when the parent injected a fixture (tests).

@@ -128,6 +128,34 @@ describe("useGuideData request ordering", () => {
 		);
 	});
 
+	it("reconciles the current range when onboarding invalidates the guide", async () => {
+		const windowStart = new Date("2026-06-01T12:00:00.000Z");
+		const windowEnd = new Date("2026-06-01T18:00:00.000Z");
+		getEpgGridMock
+			.mockResolvedValueOnce({
+				from: windowStart.toISOString(),
+				to: windowEnd.toISOString(),
+				channels: [],
+				programs: []
+			})
+			.mockResolvedValueOnce(guideData(windowStart, windowEnd, "Imported"));
+
+		const { result } = renderHook(() =>
+			useGuideData({ windowStart, windowEnd, liveUpdates: false })
+		);
+		await waitFor(() => expect(result.current.state.status).toBe("ready"));
+		expect(result.current.state.data?.channels).toHaveLength(0);
+
+		act(() => {
+			window.dispatchEvent(new Event("signalhaven:guide-invalidate"));
+		});
+
+		await waitFor(() => expect(getEpgGridMock).toHaveBeenCalledTimes(2));
+		await waitFor(() =>
+			expect(result.current.state.data?.channels[0]?.name).toBe("Imported")
+		);
+	});
+
 	it("aborts the previous request when the requested range changes", async () => {
 		const firstRequest = deferred<EpgGrid>();
 		const secondRequest = deferred<EpgGrid>();
