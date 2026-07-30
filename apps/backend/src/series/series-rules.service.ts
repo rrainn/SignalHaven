@@ -5,7 +5,8 @@ import {
 	recordingConflictListSchema,
 	SERIES_RULE_EVENT,
 	type Recording,
-	type RecordingConflict
+	type RecordingConflict,
+	type EpisodePolicy
 } from "@signalhaven/shared";
 
 import type { EventBus } from "../events/event-bus";
@@ -23,6 +24,7 @@ import type {
 	SeriesRuleRecord,
 	SeriesRulesRepository
 } from "../repositories/series-rules.repository";
+import type { SeriesEpisodeClaims } from "../repositories/series-episode-claims.repository";
 import { RECORDING_EVENT } from "../recordings/recordings.service";
 
 /**
@@ -42,12 +44,24 @@ export type ChannelProviderResolver = (
 	channelId: string
 ) => Promise<string | null>;
 
+/** Structured decision log used to explain why each candidate was handled. */
+export interface SeriesRulesLogger {
+	debug(context: Record<string, unknown>, message: string): void;
+	warn(context: Record<string, unknown>, message: string): void;
+}
+
+const noopLogger: SeriesRulesLogger = {
+	debug: () => {},
+	warn: () => {}
+};
+
 export interface SeriesRulesServiceOptions {
 	rules: SeriesRulesRepository;
 	recordings: RecordingsRepository;
 	epgPrograms: EpgProgramsRepository;
 	channels: ChannelsRepository;
 	channelEpgMap: ChannelEpgMapRepository;
+	episodeClaims: SeriesEpisodeClaims;
 	/**
 	 * Hook that schedules a recording. In production this is the
 	 * existing {@link RecordingsService.schedule} method; tests inject a
@@ -73,6 +87,7 @@ export interface SeriesRulesServiceOptions {
 	/** Maximum number of conflicts to retain in the in-memory ring. */
 	conflictLimit?: number;
 	idFactory?: () => string;
+	logger?: SeriesRulesLogger;
 }
 
 /**
@@ -82,6 +97,7 @@ export interface SeriesRuleEvaluationResult {
 	scheduled: number;
 	skippedDuplicate: number;
 	skippedNotNew: number;
+	skippedUnknown: number;
 	conflicts: RecordingConflict[];
 }
 
@@ -104,7 +120,7 @@ const DEFAULT_CONFLICT_LIMIT = 100;
  *
  *   * `evaluate()` walks every series rule, finds matching upcoming
  *     EPG programs, applies the (series-id, season, episode) dedupe +
- *     `newOnly` filters, and hands the survivors to the conflict
+ *     provider-backed episode-policy filters, and hands the survivors to the conflict
  *     resolver before scheduling.
  *   * Conflict resolver: groups candidates by tuner-provider, and at
  *     each overlap window beyond capacity drops the lowest-priority
@@ -121,6 +137,7 @@ export class SeriesRulesService {
 	private readonly now: () => Date;
 	private readonly conflictLimit: number;
 	private readonly idFactory: () => string;
+	private readonly logger: SeriesRulesLogger;
 	private busUnsubscribe: (() => void) | undefined;
 	/** Serialise `evaluate()` calls; concurrent evaluations would race. */
 	private evaluationQueue: Promise<unknown> = Promise.resolve();
@@ -133,6 +150,7 @@ export class SeriesRulesService {
 			options.conflictLimit ?? DEFAULT_CONFLICT_LIMIT
 		);
 		this.idFactory = options.idFactory ?? (() => randomUUID());
+		this.logger = options.logger ?? noopLogger;
 	}
 
 	// ---------- CRUD passthrough ----------
@@ -150,7 +168,8 @@ export class SeriesRulesService {
 		channelId?: string | null;
 		epgChannelId?: string | null;
 		keepCount: number;
-		newOnly: boolean;
+		episodePolicy?: EpisodePolicy;
+		newOnly?: boolean;
 		priority: number;
 		retentionDays?: number | null;
 	}): Promise<SeriesRuleRecord> {
@@ -168,6 +187,7 @@ export class SeriesRulesService {
 			channelId?: string | null;
 			epgChannelId?: string | null;
 			keepCount?: number;
+			episodePolicy?: EpisodePolicy;
 			newOnly?: boolean;
 			priority?: number;
 			retentionDays?: number | null;
@@ -206,12 +226,30 @@ export class SeriesRulesService {
 			return this.busUnsubscribe;
 		}
 		const detach = this.options.bus.subscribe("recordings", (event) => {
-			if (event.event !== RECORDING_EVENT.completed) return;
 			const recording = event.data as Recording | undefined;
-			if (!recording?.seriesRuleId) return;
-			void this.enforceKeepCount(recording.seriesRuleId).catch(() => {
-				/* swallowed; surfaced via subsequent enforcement attempts */
-			});
+			if (!recording) return;
+			if (event.event === RECORDING_EVENT.completed) {
+				void this.options.episodeClaims
+					.markCompleted(recording.id)
+					.catch(() => {
+						/* A later lifecycle event or evaluator pass can reconcile history. */
+					});
+				if (!recording.seriesRuleId) return;
+				void this.enforceKeepCount(recording.seriesRuleId).catch(() => {
+					/* swallowed; surfaced via subsequent enforcement attempts */
+				});
+				return;
+			}
+			if (
+				event.event === RECORDING_EVENT.failed ||
+				event.event === RECORDING_EVENT.cancelled
+			) {
+				void this.options.episodeClaims
+					.releaseByRecordingId(recording.id)
+					.catch(() => {
+						/* Failed/cancelled rows remain retryable on the next reconciliation. */
+					});
+			}
 		});
 		this.busUnsubscribe = detach;
 		return () => {
@@ -269,6 +307,7 @@ export class SeriesRulesService {
 			scheduled: 0,
 			skippedDuplicate: 0,
 			skippedNotNew: 0,
+			skippedUnknown: 0,
 			conflicts: []
 		};
 		const rules = await this.options.rules.list();
@@ -300,6 +339,7 @@ export class SeriesRulesService {
 					// No tuner channel mapped — drop, but don't even try to
 					// schedule. We don't surface this as a conflict (it's a
 					// configuration issue, not a scheduling one).
+					this.logDecision(rule, program, "skipped_no_channel");
 					continue;
 				}
 
@@ -308,29 +348,30 @@ export class SeriesRulesService {
 					await this.options.recordings.findActiveByProgramId(program.id);
 				if (existingByProgram) {
 					result.skippedDuplicate += 1;
+					this.logDecision(rule, program, "skipped_duplicate_program");
 					continue;
 				}
-				const existingByEpisode =
-					await this.options.recordings.findExistingForSeriesEpisode({
-						seriesRuleId: rule.id,
-						title: rule.title,
-						season: program.season,
-						episode: program.episode
-					});
+				const existingByEpisode = program.episodeIdentityKey
+					? await this.options.recordings.findExistingForEpisodeIdentity(
+							program.episodeIdentityKey
+						)
+					: null;
 				if (existingByEpisode) {
 					result.skippedDuplicate += 1;
+					this.logDecision(rule, program, "skipped_duplicate_episode");
 					continue;
 				}
 
-				// newOnly: skip if a prior airing of the same series + episode
-				// has been seen in the EPG.
-				if (rule.newOnly) {
-					const reaired =
-						await this.options.epgPrograms.hasPriorAiring(program);
-					if (reaired) {
+				const episodePolicy = rule.episodePolicy;
+				if (!allowsBroadcast(episodePolicy, program.broadcastNewness)) {
+					if (program.broadcastNewness === "unknown") {
+						result.skippedUnknown += 1;
+						this.logDecision(rule, program, "skipped_unknown_newness");
+					} else {
 						result.skippedNotNew += 1;
-						continue;
+						this.logDecision(rule, program, "skipped_provider_rerun");
 					}
+					continue;
 				}
 
 				const providerId = await this.resolveProviderId(channelId);
@@ -342,8 +383,25 @@ export class SeriesRulesService {
 		result.conflicts = resolved.conflicts;
 
 		for (const candidate of resolved.granted) {
+			const identityKey = candidate.program.episodeIdentityKey;
+			let claimed = false;
 			try {
-				await this.options.schedule({
+				if (identityKey) {
+					claimed = await this.options.episodeClaims.claim(
+						candidate.rule.id,
+						identityKey
+					);
+					if (!claimed) {
+						result.skippedDuplicate += 1;
+						this.logDecision(
+							candidate.rule,
+							candidate.program,
+							"skipped_atomic_claim"
+						);
+						continue;
+					}
+				}
+				const recording = await this.options.schedule({
 					channelId: candidate.channelId,
 					title: candidate.program.title,
 					start: candidate.program.start,
@@ -351,8 +409,31 @@ export class SeriesRulesService {
 					programId: candidate.program.id,
 					seriesRuleId: candidate.rule.id
 				});
+				if (identityKey) {
+					await this.options.episodeClaims.attachRecording(
+						candidate.rule.id,
+						identityKey,
+						recording.id
+					);
+				}
 				result.scheduled += 1;
-			} catch {
+				this.logDecision(candidate.rule, candidate.program, "scheduled");
+			} catch (error) {
+				if (claimed && identityKey) {
+					await this.options.episodeClaims
+						.release(candidate.rule.id, identityKey)
+						.catch(() => undefined);
+				}
+				this.logger.warn(
+					{
+						seriesRuleId: candidate.rule.id,
+						programId: candidate.program.id,
+						episodeIdentityKey: identityKey,
+						reason: "schedule_failed",
+						error: error instanceof Error ? error.message : String(error)
+					},
+					"Series recording candidate was not scheduled"
+				);
 				// A schedule failure (e.g. storage not configured) shouldn't
 				// poison the rest of the batch; the user will see the
 				// unscheduled program on the next pass.
@@ -592,6 +673,7 @@ export class SeriesRulesService {
 			scheduled: result.scheduled,
 			skippedDuplicate: result.skippedDuplicate,
 			skippedNotNew: result.skippedNotNew,
+			skippedUnknown: result.skippedUnknown,
 			conflicts: result.conflicts.length
 		});
 	}
@@ -604,4 +686,34 @@ export class SeriesRulesService {
 			data: data as unknown
 		});
 	}
+
+	/** Emit one stable reason per candidate decision for production diagnosis. */
+	private logDecision(
+		rule: SeriesRuleRecord,
+		program: EpgProgramRecord,
+		reason: string
+	): void {
+		this.logger.debug(
+			{
+				seriesRuleId: rule.id,
+				programId: program.id,
+				episodeIdentityKey: program.episodeIdentityKey,
+				episodePolicy: rule.episodePolicy,
+				broadcastNewness: program.broadcastNewness,
+				newnessSource: program.newnessSource,
+				reason
+			},
+			"Series recording candidate evaluated"
+		);
+	}
+}
+
+/** Apply explicit unknown handling without consulting transient guide history. */
+function allowsBroadcast(
+	policy: EpisodePolicy,
+	newness: EpgProgramRecord["broadcastNewness"]
+): boolean {
+	if (policy === "all") return true;
+	if (newness === "new" || newness === "premiere") return true;
+	return policy === "new_and_unknown" && newness === "unknown";
 }

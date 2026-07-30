@@ -248,6 +248,20 @@ that returns before reaching `removalThreshold` has its miss count reset.
 
 ## Series recording retention
 
+Series rules also carry an `episodePolicy`:
+
+| Value             | Behavior                                                                |
+| ----------------- | ----------------------------------------------------------------------- |
+| `all`             | Records every uniquely identified episode or airing.                    |
+| `confirmed_new`   | Records only provider-confirmed new broadcasts and premieres.           |
+| `new_and_unknown` | Also records broadcasts whose provider supplies no newness information. |
+
+SignalHaven reads XMLTV `new`, `premiere`, `previously-shown`, original-air-date,
+and stable episode-number metadata. Missing evidence remains `unknown`; a short
+local guide window is never treated as proof that an episode is new. The legacy
+`newOnly` API field remains as a compatibility projection while clients migrate
+to `episodePolicy`.
+
 Each series rule has two independent retention controls:
 
 | Key             | Type                           | Default | Description                                                                     |

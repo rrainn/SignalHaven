@@ -3,6 +3,7 @@ import {
 	bigint,
 	boolean,
 	customType,
+	date,
 	index,
 	integer,
 	jsonb,
@@ -117,6 +118,23 @@ export const epgChannels = pgTable(
 	]
 );
 
+/** Durable episode metadata intentionally outlives transient guide broadcasts. */
+export const episodes = pgTable("episodes", {
+	identityKey: text("identity_key").primaryKey(),
+	providerEpisodeId: text("provider_episode_id"),
+	seriesKey: text("series_key").notNull(),
+	season: integer("season"),
+	episode: integer("episode"),
+	subtitle: text("subtitle"),
+	originalAirDate: date("original_air_date"),
+	firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+		.defaultNow()
+		.notNull(),
+	lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+		.defaultNow()
+		.notNull()
+});
+
 export const epgPrograms = pgTable(
 	"epg_programs",
 	{
@@ -125,6 +143,11 @@ export const epgPrograms = pgTable(
 			.notNull()
 			.references(() => epgChannels.id, { onDelete: "cascade" }),
 		externalId: text("external_id"),
+		providerEpisodeId: text("provider_episode_id"),
+		episodeIdentityKey: text("episode_identity_key").references(
+			() => episodes.identityKey,
+			{ onDelete: "set null" }
+		),
 		start: timestamp("start", { withTimezone: true }).notNull(),
 		stop: timestamp("stop", { withTimezone: true }).notNull(),
 		title: text("title").notNull(),
@@ -132,6 +155,9 @@ export const epgPrograms = pgTable(
 		description: text("description"),
 		episode: integer("episode"),
 		season: integer("season"),
+		originalAirDate: date("original_air_date"),
+		broadcastNewness: text("broadcast_newness").notNull().default("unknown"),
+		newnessSource: text("newness_source").notNull().default("none"),
 		categories: text("categories")
 			.array()
 			.notNull()
@@ -168,6 +194,20 @@ export const recordings = pgTable(
 		programId: uuid("program_id").references(() => epgPrograms.id, {
 			onDelete: "set null"
 		}),
+		episodeIdentityKey: text("episode_identity_key").references(
+			() => episodes.identityKey,
+			{ onDelete: "set null" }
+		),
+		episodeSubtitle: text("episode_subtitle"),
+		episodeDescription: text("episode_description"),
+		episodeSeason: integer("episode_season"),
+		episodeNumber: integer("episode_number"),
+		episodeCategories: text("episode_categories")
+			.array()
+			.notNull()
+			.default(sql`'{}'::text[]`),
+		episodeArtworkUrl: text("episode_artwork_url"),
+		episodeOriginalAirDate: date("episode_original_air_date"),
 		title: text("title").notNull(),
 		status: text("status").notNull(),
 		scheduledStart: timestamp("scheduled_start", {
@@ -201,6 +241,7 @@ export const recordings = pgTable(
 			table.scheduledStart
 		),
 		index("recordings_series_rule_idx").on(table.seriesRuleId),
+		index("recordings_episode_identity_idx").on(table.episodeIdentityKey),
 		index("recordings_channel_scheduled_start_idx").on(
 			table.channelId,
 			table.scheduledStart
@@ -235,6 +276,7 @@ export const seriesRules = pgTable("series_rules", {
 	}),
 	keepCount: integer("keep_count").notNull(),
 	newOnly: boolean("new_only").notNull().default(false),
+	episodePolicy: text("episode_policy").notNull().default("all"),
 	priority: integer("priority").notNull().default(0),
 	retentionDays: integer("retention_days"),
 	createdAt: timestamp("created_at", { withTimezone: true })
@@ -244,6 +286,38 @@ export const seriesRules = pgTable("series_rules", {
 		.defaultNow()
 		.notNull()
 });
+
+/** Atomic, durable claim preventing a rule from recording one episode twice. */
+export const seriesRuleEpisodes = pgTable(
+	"series_rule_episodes",
+	{
+		seriesRuleId: uuid("series_rule_id")
+			.notNull()
+			.references(() => seriesRules.id, { onDelete: "cascade" }),
+		episodeIdentityKey: text("episode_identity_key")
+			.notNull()
+			.references(() => episodes.identityKey, { onDelete: "cascade" }),
+		state: text("state").notNull(),
+		recordingId: uuid("recording_id").references(() => recordings.id, {
+			onDelete: "set null"
+		}),
+		claimedAt: timestamp("claimed_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [
+		unique("series_rule_episodes_identity_unique").on(
+			table.seriesRuleId,
+			table.episodeIdentityKey
+		),
+		index("series_rule_episodes_recording_idx")
+			.on(table.recordingId)
+			.where(sql`${table.recordingId} IS NOT NULL`)
+	]
+);
 
 export const settings = pgTable("settings", {
 	key: text("key").primaryKey(),

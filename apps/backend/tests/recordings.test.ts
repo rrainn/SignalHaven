@@ -70,6 +70,9 @@ class FakeRecordingsRepo {
 			...(input.seriesRuleId ? { seriesRuleId: input.seriesRuleId } : {}),
 			...(input.manuallyProtected !== undefined
 				? { manuallyProtected: input.manuallyProtected }
+				: {}),
+			...(input.episodeSnapshot
+				? { episodeSnapshot: input.episodeSnapshot }
 				: {})
 		});
 		try {
@@ -111,6 +114,14 @@ class FakeRecordingsRepo {
 			manuallyProtected: input.manuallyProtected ?? false,
 			watchedAt: null,
 			resumePositionSeconds: null,
+			episodeIdentityKey: input.episodeSnapshot?.identityKey ?? null,
+			episodeSubtitle: input.episodeSnapshot?.subtitle ?? null,
+			episodeDescription: input.episodeSnapshot?.description ?? null,
+			episodeSeason: input.episodeSnapshot?.season ?? null,
+			episodeNumber: input.episodeSnapshot?.episode ?? null,
+			episodeCategories: input.episodeSnapshot?.categories ?? [],
+			episodeArtworkUrl: input.episodeSnapshot?.artworkUrl ?? null,
+			episodeOriginalAirDate: input.episodeSnapshot?.originalAirDate ?? null,
 			createdAt: now,
 			updatedAt: now
 		};
@@ -465,6 +476,14 @@ class FakeEpgProgramsRepo {
 			start: Date;
 			stop: Date;
 			title: string;
+			episodeIdentityKey?: string | null;
+			subtitle?: string | null;
+			description?: string | null;
+			season?: number | null;
+			episode?: number | null;
+			categories?: string[];
+			artworkUrl?: string | null;
+			originalAirDate?: string | null;
 		}
 	>();
 
@@ -474,6 +493,14 @@ class FakeEpgProgramsRepo {
 		start: Date;
 		stop: Date;
 		title: string;
+		episodeIdentityKey?: string | null;
+		subtitle?: string | null;
+		description?: string | null;
+		season?: number | null;
+		episode?: number | null;
+		categories?: string[];
+		artworkUrl?: string | null;
+		originalAirDate?: string | null;
 	}) {
 		this.rows.set(row.id, { ...row });
 	}
@@ -516,7 +543,20 @@ test("scheduleByProgram(): resolves channel via mapping, links to program, copie
 	const programId = randomUUID();
 	const start = new Date(Date.now() + 60_000);
 	const stop = new Date(start.getTime() + 30 * 60_000);
-	programs.put({ id: programId, epgChannelId, start, stop, title: "Movie" });
+	programs.put({
+		id: programId,
+		epgChannelId,
+		start,
+		stop,
+		title: "Movie",
+		episodeIdentityKey: "dd_progid:MV00000001.0001",
+		subtitle: "Premiere",
+		description: "A durable synopsis.",
+		season: 1,
+		episode: 1,
+		categories: ["Drama"],
+		originalAirDate: "2026-01-01"
+	});
 	map.put(channelId, epgChannelId);
 
 	const service = new RecordingsService({
@@ -537,6 +577,9 @@ test("scheduleByProgram(): resolves channel via mapping, links to program, copie
 	assert.equal(created.channelId, channelId);
 	assert.equal(created.programId, programId);
 	assert.equal(created.title, "Movie");
+	assert.equal(created.episodeIdentityKey, "dd_progid:MV00000001.0001");
+	assert.equal(created.episodeSubtitle, "Premiere");
+	assert.equal(created.episodeOriginalAirDate, "2026-01-01");
 	assert.equal(created.scheduledStart.getTime(), start.getTime());
 	assert.equal(created.scheduledEnd.getTime(), stop.getTime());
 	assert.ok(created.schedulerJobId, "scheduler job id should be linked");

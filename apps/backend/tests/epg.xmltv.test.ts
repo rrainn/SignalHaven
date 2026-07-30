@@ -48,8 +48,8 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
-      channel_epg_map, recordings, series_rules,
-      epg_programs, epg_channels, epg_sources,
+	  series_rule_episodes, channel_epg_map, recordings, series_rules,
+	  epg_programs, episodes, epg_channels, epg_sources,
       channels, settings, scheduled_jobs, tuners
     RESTART IDENTITY CASCADE
   `);
@@ -60,7 +60,10 @@ const SMALL_XMLTV = `<?xml version="1.0" encoding="UTF-8"?>
   <channel id="c1"><display-name>Channel One</display-name></channel>
   <channel id="c2"><display-name>Channel Two</display-name></channel>
   <programme channel="c1" start="20260101120000 +0000" stop="20260101130000 +0000">
-    <title>Program A</title><desc>First</desc><category>News</category>
+	<title>Program A</title><desc>First</desc><category>News</category>
+	<date>20260101</date>
+	<episode-num system="dd_progid">EP00000001.0001</episode-num>
+	<episode-num system="xmltv_ns">0.0.</episode-num><new />
   </programme>
   <programme channel="c1" start="20260101130000 +0000" stop="20260101140000 +0000">
     <title>Program B</title>
@@ -108,6 +111,21 @@ test("importXmltv populates channels and programs idempotently", async () => {
 		"SELECT count(*)::int AS count FROM epg_programs"
 	);
 	assert.equal(programCount.rows[0]?.count, 3);
+	const durableEpisode = await pool.query<{
+		identity_key: string;
+		broadcast_newness: string;
+		newness_source: string;
+	}>(
+		`SELECT episode.identity_key, program.broadcast_newness, program.newness_source
+		   FROM epg_programs program
+		   JOIN episodes episode ON episode.identity_key = program.episode_identity_key
+		  WHERE program.title = 'Program A'`
+	);
+	assert.deepEqual(durableEpisode.rows[0], {
+		identity_key: "dd_progid:EP00000001.0001",
+		broadcast_newness: "new",
+		newness_source: "xmltv_new"
+	});
 	const tuplesBeforeRefresh = await pool.query<{
 		id: string;
 		xmin: string;
@@ -162,6 +180,10 @@ test("importXmltv prunes programs whose stop is older than the cutoff", async ()
 		"SELECT count(*)::int AS count FROM epg_programs"
 	);
 	assert.equal(programCount.rows[0]?.count, 0);
+	const episodeCount = await pool.query<{ count: number }>(
+		"SELECT count(*)::int AS count FROM episodes"
+	);
+	assert.equal(episodeCount.rows[0]?.count, 1);
 });
 
 test("importXmltv removes programs missing from a refreshed guide window", async () => {

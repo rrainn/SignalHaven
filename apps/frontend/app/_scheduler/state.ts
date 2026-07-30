@@ -2,6 +2,7 @@
 
 import {
 	seriesRuleCreateSchema,
+	type EpisodePolicy,
 	type Recording,
 	type RecordingConflict,
 	type RecordingStatus,
@@ -20,7 +21,7 @@ import {
  *   - Upcoming recordings list (chronological) with status badges and
  *     quick cancel — see {@link selectUpcomingRecordings} +
  *     `remove-recording` / `upsert-recording`.
- *   - Series rules manager (create/edit/delete + keepCount, newOnly,
+ *   - Series rules manager (create/edit/delete + keepCount, episode policy,
  *     priority) — see `set-series-rules`, `upsert-series-rule`,
  *     `remove-series-rule` + the editor validation below.
  *   - Conflict view: `set-conflicts`, `add-conflict` (driven by the WS
@@ -174,7 +175,7 @@ export interface SeriesRuleDraft {
 	channelId: string | null;
 	keepCount: string;
 	retentionDays: string;
-	newOnly: boolean;
+	episodePolicy: EpisodePolicy;
 	priority: string;
 }
 
@@ -183,7 +184,7 @@ export const initialSeriesRuleDraft: SeriesRuleDraft = {
 	channelId: null,
 	keepCount: "5",
 	retentionDays: "",
-	newOnly: false,
+	episodePolicy: "all",
 	priority: "0"
 };
 
@@ -201,7 +202,7 @@ export interface SeriesRuleValidationOk {
 		channelId: string | null;
 		keepCount: number;
 		retentionDays: number | null;
-		newOnly: boolean;
+		episodePolicy: EpisodePolicy;
 		priority: number;
 	};
 }
@@ -228,7 +229,7 @@ export function validateSeriesRuleDraft(
 		keepCount,
 		retentionDays:
 			trimmedRetentionDays.length > 0 ? Number(trimmedRetentionDays) : null,
-		newOnly: draft.newOnly,
+		episodePolicy: draft.episodePolicy,
 		priority
 	};
 	const parsed = seriesRuleCreateSchema.safeParse(candidate);
@@ -265,7 +266,7 @@ export function validateSeriesRuleDraft(
 			channelId: parsed.data.channelId ?? null,
 			keepCount: parsed.data.keepCount,
 			retentionDays: parsed.data.retentionDays ?? null,
-			newOnly: parsed.data.newOnly,
+			episodePolicy: parsed.data.episodePolicy ?? "all",
 			priority: parsed.data.priority
 		}
 	};
@@ -279,7 +280,7 @@ export function draftFromSeriesRule(rule: SeriesRule): SeriesRuleDraft {
 		keepCount: String(rule.keepCount),
 		retentionDays:
 			rule.retentionDays !== null ? String(rule.retentionDays) : "",
-		newOnly: rule.newOnly,
+		episodePolicy: rule.episodePolicy,
 		priority: String(rule.priority)
 	};
 }

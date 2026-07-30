@@ -173,7 +173,8 @@ describe("RecordingsPage", () => {
 				episode: 2,
 				season: 1,
 				categories: ["Drama"],
-				artworkUrl: "https://example.com/episode.jpg"
+				artworkUrl: "https://example.com/episode.jpg",
+				originalAirDate: null
 			}
 		};
 

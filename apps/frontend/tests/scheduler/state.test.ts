@@ -53,6 +53,7 @@ const RULE_BASE: Omit<SeriesRule, "id" | "title"> = {
 	channelId: null,
 	epgChannelId: null,
 	keepCount: 5,
+	episodePolicy: "all",
 	newOnly: false,
 	priority: 0,
 	retentionDays: null,
@@ -294,7 +295,7 @@ describe("validateSeriesRuleDraft", () => {
 			channelId: "00000000-0000-4000-8000-000000000001",
 			keepCount: "10",
 			retentionDays: "30",
-			newOnly: true,
+			episodePolicy: "confirmed_new",
 			priority: "-3"
 		});
 		expect(r.ok).toBe(true);
@@ -304,7 +305,7 @@ describe("validateSeriesRuleDraft", () => {
 				channelId: "00000000-0000-4000-8000-000000000001",
 				keepCount: 10,
 				retentionDays: 30,
-				newOnly: true,
+				episodePolicy: "confirmed_new",
 				priority: -3
 			});
 		}
@@ -319,7 +320,7 @@ describe("draftFromSeriesRule", () => {
 				keepCount: 7,
 				retentionDays: 30,
 				priority: -2,
-				newOnly: true
+				episodePolicy: "confirmed_new"
 			})
 		);
 		expect(draft).toEqual({
@@ -328,7 +329,7 @@ describe("draftFromSeriesRule", () => {
 			keepCount: "7",
 			retentionDays: "30",
 			priority: "-2",
-			newOnly: true
+			episodePolicy: "confirmed_new"
 		});
 	});
 });

@@ -89,7 +89,7 @@ describe("SeriesRuleEditor", () => {
 			channelId: null,
 			keepCount: 5,
 			retentionDays: null,
-			newOnly: false,
+			episodePolicy: "all",
 			priority: 0
 		});
 	});
@@ -101,6 +101,7 @@ describe("SeriesRuleEditor", () => {
 			channelId: null,
 			epgChannelId: null,
 			keepCount: 7,
+			episodePolicy: "confirmed_new",
 			newOnly: true,
 			priority: -3,
 			retentionDays: 30,
@@ -121,6 +122,9 @@ describe("SeriesRuleEditor", () => {
 		expect(screen.getByTestId("series-rule-keep-count")).toHaveValue(7);
 		expect(screen.getByTestId("series-rule-retention-days")).toHaveValue(30);
 		expect(screen.getByTestId("series-rule-priority")).toHaveValue(-3);
+		expect(screen.getByTestId("series-rule-episode-policy")).toHaveTextContent(
+			"Confirmed new only"
+		);
 	});
 
 	it("shows no age limit for a legacy rule without retention days", () => {
@@ -130,6 +134,7 @@ describe("SeriesRuleEditor", () => {
 			channelId: null,
 			epgChannelId: null,
 			keepCount: 7,
+			episodePolicy: "all",
 			newOnly: false,
 			priority: 0,
 			retentionDays: null,

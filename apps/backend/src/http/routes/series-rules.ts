@@ -20,6 +20,7 @@ function toPublicSeriesRule(row: SeriesRuleRecord): {
 	channelId: string | null;
 	epgChannelId: string | null;
 	keepCount: number;
+	episodePolicy: SeriesRuleRecord["episodePolicy"];
 	newOnly: boolean;
 	priority: number;
 	retentionDays: number | null;
@@ -32,7 +33,8 @@ function toPublicSeriesRule(row: SeriesRuleRecord): {
 		channelId: row.channelId,
 		epgChannelId: row.epgChannelId,
 		keepCount: row.keepCount,
-		newOnly: row.newOnly,
+		episodePolicy: row.episodePolicy,
+		newOnly: row.episodePolicy !== "all",
 		priority: row.priority,
 		retentionDays: row.retentionDays,
 		createdAt: row.createdAt.toISOString(),
@@ -62,7 +64,8 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 					channelId?: string | null;
 					epgChannelId?: string | null;
 					keepCount: number;
-					newOnly: boolean;
+					episodePolicy?: SeriesRuleRecord["episodePolicy"];
+					newOnly?: boolean;
 					priority: number;
 					retentionDays?: number | null;
 				};
@@ -71,7 +74,8 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 					channelId: body.channelId ?? null,
 					epgChannelId: body.epgChannelId ?? null,
 					keepCount: body.keepCount,
-					newOnly: body.newOnly,
+					episodePolicy:
+						body.episodePolicy ?? (body.newOnly ? "confirmed_new" : "all"),
 					priority: body.priority,
 					retentionDays: body.retentionDays ?? null
 				});

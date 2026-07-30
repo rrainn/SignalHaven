@@ -80,7 +80,8 @@ export const recordingMetadataSchema = z.object({
 	episode: z.number().int().nullable(),
 	season: z.number().int().nullable(),
 	categories: z.array(z.string()),
-	artworkUrl: z.string().nullable()
+	artworkUrl: z.string().nullable(),
+	originalAirDate: z.string().nullable().default(null)
 });
 
 export type RecordingMetadata = z.infer<typeof recordingMetadataSchema>;

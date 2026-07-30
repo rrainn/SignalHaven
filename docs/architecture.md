@@ -89,10 +89,12 @@ inserts or deletes ahead of a loaded page do not shift its continuation.
 `limit` remains bounded (50 by default, 200 maximum).
 
 Each page includes the full filtered row count and known disk size, plus
-complete aggregates for series represented on that page. EPG artwork,
-subtitle, description, episode numbering, and categories are batch-loaded for
-the bounded rows so library and series cards do not issue one detail request
-per item. The web library keeps filters, sorting, grouping, layout, and
+complete aggregates for series represented on that page. When a recording is
+scheduled, artwork, subtitle, description, episode numbering, categories, and
+original air date are copied into an immutable recording snapshot. The library
+therefore retains metadata after its transient EPG broadcast row is pruned; old
+rows without snapshots still use a bounded batch lookup. The web library keeps
+filters, sorting, grouping, layout, and
 loaded-page count in the URL, appends pages through an accessible Load More
 control, and retains successful pages when a later request fails. Series detail
 uses the same endpoint with the dedicated `seriesRuleId` filter; Scheduler
@@ -105,3 +107,13 @@ failed requests visibly, and serializes playback progress writes so an older
 request cannot overwrite a newer position. Explicit deletion rejects protected
 rows unless the confirmation flow sends `overrideProtection=true`; automatic
 quota, retention, and keep-count eviction select only unprotected rows.
+
+## Durable episode identity
+
+EPG program rows represent broadcasts and are pruned with each guide refresh.
+The `episodes` catalog stores stronger identities—provider episode IDs first,
+then normalized title plus season/episode, then subtitle plus original air date.
+Title alone never forms an episode identity. `series_rule_episodes` atomically
+claims `(rule, episode)` pairs, preventing duplicate schedules across concurrent
+backend processes. Completed claims survive recording retention; failed and
+cancelled claims are released, and abandoned pre-schedule claims expire safely.

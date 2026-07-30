@@ -124,6 +124,60 @@ test("parseXmltvStream emits channels and programs", async () => {
 	assert.equal(second.episode, 5);
 });
 
+test("parseXmltvStream preserves provider newness and episode identity metadata", async () => {
+	const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    <tv>
+      <channel id="c1"><display-name>Channel One</display-name></channel>
+      <programme channel="c1" start="20260101120000 +0000" stop="20260101130000 +0000">
+        <title>Reliable Drama</title>
+        <date>20260101</date>
+        <episode-num system="dd_progid">EP01234567.0042</episode-num>
+        <episode-num system="xmltv_ns">2.4.</episode-num>
+        <new />
+      </programme>
+      <programme channel="c1" start="20260102120000 +0000" stop="20260102130000 +0000">
+        <title>Reliable Drama</title>
+        <episode-num system="dd_progid">EP01234567.0042</episode-num>
+        <previously-shown start="20260101120000 +0000" />
+      </programme>
+      <programme channel="c1" start="20260103120000 +0000" stop="20260103130000 +0000">
+        <title>Imported Drama</title>
+        <premiere>First showing in this country</premiere>
+      </programme>
+    </tv>`;
+
+	const { programs } = await parse(xml);
+	assert.equal(programs[0]?.providerEpisodeId, "dd_progid:EP01234567.0042");
+	assert.equal(programs[0]?.episodeIdentityKey, "dd_progid:EP01234567.0042");
+	assert.equal(programs[0]?.originalAirDate, "2026-01-01");
+	assert.equal(programs[0]?.broadcastNewness, "new");
+	assert.equal(programs[0]?.newnessSource, "xmltv_new");
+	assert.equal(programs[1]?.broadcastNewness, "rerun");
+	assert.equal(programs[1]?.newnessSource, "xmltv_previously_shown");
+	assert.equal(programs[2]?.broadcastNewness, "premiere");
+	assert.equal(programs[2]?.newnessSource, "xmltv_premiere");
+});
+
+test("parseXmltvStream creates a stable numbered fallback without title-only identity", async () => {
+	const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    <tv>
+      <channel id="c1"><display-name>Channel One</display-name></channel>
+      <programme channel="c1" start="20260101120000 +0000" stop="20260101130000 +0000">
+        <title>  Reliable   Drama </title>
+        <episode-num system="xmltv_ns">1.2.</episode-num>
+      </programme>
+      <programme channel="c1" start="20260102120000 +0000" stop="20260102130000 +0000">
+        <title>Daily News</title>
+      </programme>
+    </tv>`;
+
+	const { programs } = await parse(xml);
+	assert.equal(programs[0]?.episodeIdentityKey, "title:reliable drama:s2:e3");
+	assert.equal(programs[1]?.episodeIdentityKey, null);
+	assert.equal(programs[1]?.broadcastNewness, "unknown");
+	assert.equal(programs[1]?.newnessSource, "none");
+});
+
 test("parseXmltvStream preserves every channel display name", async () => {
 	const xml = `<?xml version="1.0" encoding="UTF-8"?>
     <tv>

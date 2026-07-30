@@ -35,6 +35,7 @@ import type {
 	RecordingListCursor,
 	RecordingListPage,
 	RecordingRecord,
+	RecordingEpisodeSnapshot,
 	RecordingsRepository,
 	UpdateRecordingInput
 } from "../repositories/recordings.repository";
@@ -354,6 +355,7 @@ export class RecordingsService {
 			throw new Error("`end` must be strictly after `start`");
 		}
 		const config = await this.config.resolve();
+		const episodeSnapshot = await this.loadEpisodeSnapshot(input.programId);
 		const runAt = new Date(
 			input.start.getTime() - config.paddingBeforeSec * 1000
 		);
@@ -374,7 +376,8 @@ export class RecordingsService {
 					: {}),
 				...(input.manuallyProtected !== undefined
 					? { manuallyProtected: input.manuallyProtected }
-					: {})
+					: {}),
+				...(episodeSnapshot ? { episodeSnapshot } : {})
 			})
 		);
 
@@ -467,9 +470,11 @@ export class RecordingsService {
 			...result,
 			items: items.map((record) => ({
 				...record,
-				metadata: record.programId
-					? (metadataByProgramId.get(record.programId) ?? null)
-					: null
+				metadata:
+					toSnapshotMetadata(record) ??
+					(record.programId
+						? (metadataByProgramId.get(record.programId) ?? null)
+						: null)
 			})),
 			nextCursor
 		};
@@ -545,6 +550,8 @@ export class RecordingsService {
 	private async loadMetadata(
 		record: RecordingRecord
 	): Promise<RecordingMetadata | null> {
+		const snapshot = toSnapshotMetadata(record);
+		if (snapshot) return snapshot;
 		if (!record.programId || !this.epgPrograms) {
 			return null;
 		}
@@ -553,6 +560,25 @@ export class RecordingsService {
 			return null;
 		}
 		return toRecordingMetadata(program);
+	}
+
+	/** Copy guide metadata before the broadcast row can be pruned. */
+	private async loadEpisodeSnapshot(
+		programId: string | undefined
+	): Promise<RecordingEpisodeSnapshot | null> {
+		if (!programId || !this.epgPrograms) return null;
+		const program = await this.epgPrograms.getById(programId);
+		if (!program) return null;
+		return {
+			identityKey: program.episodeIdentityKey ?? null,
+			subtitle: program.subtitle ?? null,
+			description: program.description ?? null,
+			season: program.season ?? null,
+			episode: program.episode ?? null,
+			categories: program.categories ?? [],
+			artworkUrl: program.artworkUrl ?? null,
+			originalAirDate: program.originalAirDate ?? null
+		};
 	}
 
 	/** Batch the metadata projection for one already-bounded recordings page. */
@@ -1602,6 +1628,7 @@ function toRecordingMetadata(program: {
 	season: number | null;
 	categories: string[];
 	artworkUrl: string | null;
+	originalAirDate?: string | null;
 }): RecordingMetadata {
 	return {
 		subtitle: program.subtitle ?? null,
@@ -1609,7 +1636,31 @@ function toRecordingMetadata(program: {
 		episode: program.episode ?? null,
 		season: program.season ?? null,
 		categories: program.categories ?? [],
-		artworkUrl: program.artworkUrl ?? null
+		artworkUrl: program.artworkUrl ?? null,
+		originalAirDate: program.originalAirDate ?? null
+	};
+}
+
+/** Rehydrate the public metadata contract entirely from the durable snapshot. */
+function toSnapshotMetadata(record: RecordingRecord): RecordingMetadata | null {
+	const hasSnapshot =
+		record.episodeIdentityKey != null ||
+		record.episodeSubtitle != null ||
+		record.episodeDescription != null ||
+		record.episodeSeason != null ||
+		record.episodeNumber != null ||
+		(record.episodeCategories?.length ?? 0) > 0 ||
+		record.episodeArtworkUrl != null ||
+		record.episodeOriginalAirDate != null;
+	if (!hasSnapshot) return null;
+	return {
+		subtitle: record.episodeSubtitle ?? null,
+		description: record.episodeDescription ?? null,
+		episode: record.episodeNumber ?? null,
+		season: record.episodeSeason ?? null,
+		categories: record.episodeCategories ?? [],
+		artworkUrl: record.episodeArtworkUrl ?? null,
+		originalAirDate: record.episodeOriginalAirDate ?? null
 	};
 }
 

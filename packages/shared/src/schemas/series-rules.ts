@@ -2,14 +2,23 @@ import "../zod-openapi-setup";
 
 import { z } from "zod";
 
+/** How a series rule handles broadcasts whose provider newness is unknown. */
+export const episodePolicySchema = z.enum([
+	"all",
+	"confirmed_new",
+	"new_and_unknown"
+]);
+
+export type EpisodePolicy = z.infer<typeof episodePolicySchema>;
+
 /**
  * A "season pass" rule (rrainn/SignalHaven#R3-series). The evaluator scans
  * upcoming EPG programs whose title matches `title` (case-insensitive),
  * optionally restricted to a single tuner channel or EPG channel, and
  * schedules a recording per matching program.
  *
- *   * `newOnly` — skip programs that already aired previously (detected
- *     via prior airdate of the same series + season + episode).
+ *   * `episodePolicy` — use provider-backed newness without treating a short
+ *     guide cache as broadcast history.
  *   * `keepCount` — after a recording finishes, the oldest extra
  *     completed recordings produced by this rule are deleted (rows
  *     marked `manuallyProtected` are never evicted). When age retention
@@ -25,6 +34,8 @@ export const seriesRuleSchema = z.object({
 	channelId: z.string().uuid().nullable(),
 	epgChannelId: z.string().uuid().nullable(),
 	keepCount: z.number().int().min(1),
+	episodePolicy: episodePolicySchema,
+	/** @deprecated Compatibility projection; prefer `episodePolicy`. */
 	newOnly: z.boolean(),
 	priority: z.number().int(),
 	/**
@@ -51,7 +62,9 @@ export const seriesRuleCreateSchema = z.object({
 	channelId: z.string().uuid().nullish(),
 	epgChannelId: z.string().uuid().nullish(),
 	keepCount: z.number().int().min(1).max(1000).default(5),
-	newOnly: z.boolean().default(false),
+	episodePolicy: episodePolicySchema.optional(),
+	/** @deprecated Accepted for older clients during the policy migration. */
+	newOnly: z.boolean().optional(),
 	priority: z.number().int().min(-100).max(100).default(0),
 	retentionDays: z.number().int().min(1).max(36500).nullish()
 });
@@ -64,6 +77,8 @@ export const seriesRulePatchSchema = z
 		channelId: z.string().uuid().nullable(),
 		epgChannelId: z.string().uuid().nullable(),
 		keepCount: z.number().int().min(1).max(1000),
+		episodePolicy: episodePolicySchema,
+		/** @deprecated Accepted for older clients during the policy migration. */
 		newOnly: z.boolean(),
 		priority: z.number().int().min(-100).max(100),
 		retentionDays: z.number().int().min(1).max(36500).nullable()

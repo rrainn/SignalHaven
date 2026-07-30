@@ -27,6 +27,7 @@ import { EpgSourcesRepository } from "../src/repositories/epg-sources.repository
 import { RecordingsRepository } from "../src/repositories/recordings.repository";
 import { ScheduledJobsRepository } from "../src/repositories/scheduled-jobs.repository";
 import { SeriesRulesRepository } from "../src/repositories/series-rules.repository";
+import { SeriesEpisodeClaimsRepository } from "../src/repositories/series-episode-claims.repository";
 import { SettingsRepository } from "../src/repositories/settings.repository";
 import { TunersRepository } from "../src/repositories/tuners.repository";
 import { Scheduler } from "../src/scheduler/scheduler";
@@ -74,10 +75,12 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
+	  series_rule_episodes,
       channel_epg_map,
       recordings,
       series_rules,
       epg_programs,
+	  episodes,
       epg_channels,
       epg_sources,
       channels,
@@ -554,6 +557,7 @@ test("series rules repository CRUD round-trip", async () => {
 	assert.equal(fetched.keepCount, 5);
 	assert.equal(fetched.priority, 10);
 	assert.equal(fetched.newOnly, true);
+	assert.equal(fetched.episodePolicy, "confirmed_new");
 	assert.ok(fetched.createdAt instanceof Date);
 	assert.ok(fetched.updatedAt instanceof Date);
 
@@ -571,6 +575,38 @@ test("series rules repository CRUD round-trip", async () => {
 	assert.equal(await seriesRulesRepository.delete(created.id), true);
 	assert.equal(await seriesRulesRepository.getById(created.id), null);
 	assert.equal(await seriesRulesRepository.delete(created.id), false);
+});
+
+test("series episode claims arbitrate concurrency and recover abandoned claims", async () => {
+	const rule = await new SeriesRulesRepository(db).create({
+		title: "Claimed Show",
+		keepCount: 5,
+		episodePolicy: "all",
+		priority: 0
+	});
+	const episodeIdentityKey = `dd_progid:${randomUUID()}`;
+	await pool.query(
+		`INSERT INTO episodes (identity_key, series_key)
+		 VALUES ($1, $2)`,
+		[episodeIdentityKey, "claimed show"]
+	);
+	const first = new SeriesEpisodeClaimsRepository(db);
+	const second = new SeriesEpisodeClaimsRepository(db);
+
+	const outcomes = await Promise.all([
+		first.claim(rule.id, episodeIdentityKey),
+		second.claim(rule.id, episodeIdentityKey)
+	]);
+	assert.equal(outcomes.filter(Boolean).length, 1);
+
+	// Simulate a process stopping between claim creation and recording attach.
+	await pool.query(
+		`UPDATE series_rule_episodes
+		 SET updated_at = now() - interval '11 minutes'
+		 WHERE series_rule_id = $1 AND episode_identity_key = $2`,
+		[rule.id, episodeIdentityKey]
+	);
+	assert.equal(await first.claim(rule.id, episodeIdentityKey), true);
 });
 
 test("settings repository round-trip", async () => {
@@ -678,6 +714,10 @@ test("scheduled jobs repository persists, claims, completes and recovers", async
 
 test("migration up and down round-trip", async () => {
 	const downSql = await fs.readFile(downMigrationPath, "utf8");
+	const durableEpisodeDownSql = await fs.readFile(
+		path.join(migrationsFolder, "0018_durable_episode_identity.down.sql"),
+		"utf8"
+	);
 	const upSql = await fs.readFile(
 		path.join(migrationsFolder, "0000_initial_schema.sql"),
 		"utf8"
@@ -703,11 +743,13 @@ test("migration up and down round-trip", async () => {
 			"0014_commercial_analysis.sql",
 			"0015_tuner_lineup_sync.sql",
 			"0016_channel_provider_identity.sql",
-			"0017_recordings_program_updated_index.sql"
+			"0017_recordings_program_updated_index.sql",
+			"0018_durable_episode_identity.sql"
 		].map((file) => fs.readFile(path.join(migrationsFolder, file), "utf8"))
 	);
 	// Drop the later tables first so the 0000 down migration can run
 	// cleanly without lingering FK references.
+	await pool.query(durableEpisodeDownSql);
 	await pool.query("DROP TABLE IF EXISTS scheduled_jobs CASCADE");
 	await pool.query("DROP TABLE IF EXISTS epg_sources CASCADE");
 	// Commercial marker tables reference recordings and must be removed before
