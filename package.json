@@ -9,8 +9,8 @@
 		"packages/*"
 	],
 	"scripts": {
-		"dev": "concurrently -n backend,frontend \"PORT=3001 pnpm --filter @signalhaven/backend dev\" \"SIGNALHAVEN_BACKEND_ORIGIN=http://localhost:3001 pnpm --filter @signalhaven/frontend dev\"",
-		"build": "pnpm -r --if-present run build",
+		"dev": "node scripts/run-with-env.mjs concurrently --kill-others -n backend,frontend \"PORT=3001 pnpm --filter @signalhaven/backend dev\" \"SIGNALHAVEN_BACKEND_ORIGIN=http://localhost:3001 pnpm --filter @signalhaven/frontend dev\"",
+		"build": "node scripts/run-with-env.mjs pnpm -r --if-present run build",
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"lint": "pnpm -r --if-present run lint",
@@ -21,13 +21,13 @@
 		"test:preview": "node --test scripts/safe-preview.test.mjs",
 		"test:coverage": "pnpm run test:ci-config && pnpm --filter @signalhaven/shared build && concurrently --kill-others-on-fail -n backend,frontend \"pnpm --filter @signalhaven/backend test:coverage\" \"pnpm --filter @signalhaven/frontend test\"",
 		"typecheck": "tsc --build --pretty false",
-		"preview:safe": "node scripts/safe-preview.mjs safe",
-		"preview:build": "node scripts/safe-preview.mjs build",
-		"preview:start": "node scripts/safe-preview.mjs start",
-		"preview:stop": "node scripts/safe-preview.mjs stop",
-		"screenshots:readme": "node apps/frontend/scripts/capture-readme-screenshots.mjs",
+		"preview:safe": "node scripts/run-with-env.mjs node scripts/safe-preview.mjs safe",
+		"preview:build": "node scripts/run-with-env.mjs node scripts/safe-preview.mjs build",
+		"preview:start": "node scripts/run-with-env.mjs node scripts/safe-preview.mjs start",
+		"preview:stop": "node scripts/run-with-env.mjs node scripts/safe-preview.mjs stop",
+		"screenshots:readme": "node scripts/run-with-env.mjs node apps/frontend/scripts/capture-readme-screenshots.mjs",
 		"prepare": "husky",
-		"db:migrate": "pnpm --filter @signalhaven/backend db:migrate"
+		"db:migrate": "node scripts/run-with-env.mjs pnpm --filter @signalhaven/backend db:migrate"
 	},
 	"lint-staged": {
 		"*.{ts,tsx,js,jsx,mjs,cjs}": [

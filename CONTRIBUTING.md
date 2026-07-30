@@ -13,7 +13,7 @@ Thanks for contributing to SignalHaven.
 ```bash
 pnpm install --frozen-lockfile
 cp .env.example .env
-# set POSTGRES_PASSWORD in .env
+# set PGPASSWORD in .env
 ```
 
 Start local PostgreSQL:
@@ -25,7 +25,7 @@ docker compose up -d postgres
 Run backend migrations (optional if using startup auto-migrate):
 
 ```bash
-pnpm --filter @signalhaven/backend db:migrate
+pnpm run db:migrate
 ```
 
 Start the monorepo dev servers:
@@ -34,6 +34,8 @@ Start the monorepo dev servers:
 pnpm run dev
 ```
 
+- Root application scripts load the repository `.env` automatically. Existing
+  shell environment variables still take precedence.
 - Frontend: typically `http://localhost:3000`
 - Backend API: `http://localhost:3001` when started by the root development command
 - For separate processes, set `PORT=3001` on the backend and
