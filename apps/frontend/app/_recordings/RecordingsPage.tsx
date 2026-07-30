@@ -777,10 +777,13 @@ export function RecordingsPage(props: RecordingsPageProps) {
 					className="flex min-h-60 flex-col items-center justify-center gap-3 px-6 text-center"
 				>
 					<Spinner size="lg" label="Loading recordings" />
-					{/* Keep loading feedback visible while the initial library request settles. */}
+					{/* Give the loading phase a stable, prominent content anchor while data settles. */}
 					<h2 className="text-2xl font-semibold tracking-tight text-primary">
 						Loading your recordings
 					</h2>
+					<p className="max-w-xl text-lg leading-7 text-secondary">
+						Preparing your complete library. This should only take a moment.
+					</p>
 				</div>
 			) : visible.length === 0 ? (
 				<EmptyRecordingsState
