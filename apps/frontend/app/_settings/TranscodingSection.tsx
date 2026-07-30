@@ -8,7 +8,13 @@ import {
 	type TranscodeProfile
 } from "@signalhaven/shared";
 import { Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useState,
+	type FormEvent
+} from "react";
 
 import { listChannels, updateSettings } from "../../lib/api-client";
 import { Badge } from "../_ui/Badge";
@@ -33,6 +39,8 @@ export type TranscodingSectionProps = {
 };
 
 const PROFILE_VALUES = transcodeProfileSchema.options;
+/** Match the Channels page so large lineups have predictable initial DOM work. */
+const CHANNEL_OVERRIDE_RENDER_BATCH_SIZE = 100;
 const HWACCEL_OPTIONS = [
 	"auto",
 	"none",
@@ -63,6 +71,9 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 		settings.player.qualityByChannel
 	);
 	const [channels, setChannels] = useState<ChannelListItem[]>([]);
+	const [channelRenderLimit, setChannelRenderLimit] = useState(
+		CHANNEL_OVERRIDE_RENDER_BATCH_SIZE
+	);
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -73,7 +84,10 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 		let cancelled = false;
 		void listChannels()
 			.then((res) => {
-				if (!cancelled) setChannels(res.items);
+				if (!cancelled) {
+					setChannels(res.items);
+					setChannelRenderLimit(CHANNEL_OVERRIDE_RENDER_BATCH_SIZE);
+				}
 			})
 			.catch(() => {
 				/* ignore — UI degrades gracefully */
@@ -82,6 +96,11 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 			cancelled = true;
 		};
 	}, []);
+
+	const renderedChannels = useMemo(
+		() => channels.slice(0, channelRenderLimit),
+		[channelRenderLimit, channels]
+	);
 
 	const onSubmit = useCallback(
 		async (event: FormEvent<HTMLFormElement>) => {
@@ -271,7 +290,7 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 						</p>
 					) : (
 						<ul aria-label="Per-channel overrides" className="space-y-2">
-							{channels.map((c) => {
+							{renderedChannels.map((c) => {
 								const value = overrides[c.id] ?? "";
 								return (
 									<li
@@ -326,6 +345,35 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 							})}
 						</ul>
 					)}
+					{channels.length > 0 ? (
+						<div className="flex flex-col items-center gap-2">
+							<p
+								className="text-xs text-secondary"
+								data-testid="transcoding-channels-summary"
+								aria-live="polite"
+							>
+								Showing {renderedChannels.length.toLocaleString()} of{" "}
+								{channels.length.toLocaleString()} channels
+							</p>
+							{renderedChannels.length < channels.length ? (
+								<Button
+									type="button"
+									variant="secondary"
+									data-testid="transcoding-channels-load-more"
+									onClick={() =>
+										setChannelRenderLimit((current) =>
+											Math.min(
+												current + CHANNEL_OVERRIDE_RENDER_BATCH_SIZE,
+												channels.length
+											)
+										)
+									}
+								>
+									Show more channels
+								</Button>
+							) : null}
+						</div>
+					) : null}
 				</CardContent>
 			</Card>
 

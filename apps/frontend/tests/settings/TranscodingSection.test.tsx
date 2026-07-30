@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 
 import type { Settings } from "@signalhaven/shared";
 
+import { buildChannelsFixture } from "../../app/_channels/fixtures";
 import { TranscodingSection } from "../../app/_settings/TranscodingSection";
 
 vi.mock("../../lib/api-client", async () => {
@@ -17,11 +18,14 @@ vi.mock("../../lib/api-client", async () => {
 	};
 });
 
-import { updateSettings } from "../../lib/api-client";
+import { listChannels, updateSettings } from "../../lib/api-client";
 
+const listChannelsMock = vi.mocked(listChannels);
 const updateSettingsMock = vi.mocked(updateSettings);
 
 beforeEach(() => {
+	listChannelsMock.mockReset();
+	listChannelsMock.mockResolvedValue({ items: [] });
 	updateSettingsMock.mockReset();
 });
 
@@ -93,5 +97,34 @@ describe("TranscodingSection", () => {
 			| { transcoding?: { videoBitrateKbps?: number } }
 			| undefined;
 		expect(arg?.transcoding?.videoBitrateKbps).toBe(8000);
+	});
+
+	it("bounds the initial override render for large channel lineups", async () => {
+		const user = userEvent.setup();
+		const seed = buildChannelsFixture()[0]!;
+		const channels = Array.from({ length: 125 }, (_, index) => ({
+			...seed,
+			id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+			number: String(index + 1),
+			name: `Channel ${index + 1}`,
+			sortOrder: index
+		}));
+		listChannelsMock.mockResolvedValue({ items: channels });
+
+		render(<TranscodingSection settings={baseSettings} onChanged={() => {}} />);
+
+		// A large lineup must not mount every interactive profile picker at once.
+		expect(
+			await screen.findAllByRole("combobox", { name: /profile override for/i })
+		).toHaveLength(100);
+		expect(
+			screen.getByTestId("transcoding-channels-summary")
+		).toHaveTextContent(/100.*125/);
+
+		await user.click(screen.getByTestId("transcoding-channels-load-more"));
+
+		expect(
+			screen.getAllByRole("combobox", { name: /profile override for/i })
+		).toHaveLength(125);
 	});
 });
