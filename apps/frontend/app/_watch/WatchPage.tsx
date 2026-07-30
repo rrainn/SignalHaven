@@ -12,7 +12,7 @@ import type {
 } from "@signalhaven/shared";
 import { RECORDING_EVENT } from "@signalhaven/shared";
 import { RadioTower } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getEpgGrid, listChannels } from "../../lib/api-client";
 import { parseRecordingEvent } from "../../lib/recording-events";
@@ -69,6 +69,10 @@ export interface WatchPageProps {
 	 * the player. Tests / Storybook can swap this with a no-op.
 	 */
 	onChannelChange?: (channelId: string) => void;
+	/** Optional settings seam used by isolated previews and tests. */
+	persistChannelPreferences?:
+		| ((preferences: ChannelsSettings) => Promise<void> | void)
+		| undefined;
 	/** Optional action seams; production defaults call the DVR APIs. */
 	onRecord?:
 		| ((
@@ -126,6 +130,7 @@ export function WatchPage(props: WatchPageProps) {
 		initialPlayerSettings,
 		nowOverride,
 		onChannelChange = defaultUrlSync,
+		persistChannelPreferences,
 		onRecord,
 		onCancel,
 		onRecordSeries,
@@ -158,6 +163,12 @@ export function WatchPage(props: WatchPageProps) {
 	);
 
 	const [currentChannelId, setCurrentChannelId] = useState(initialChannelId);
+	const [favoriteIds, setFavoriteIds] = useState<ReadonlySet<string>>(
+		() => new Set(channelPreferences.favorites)
+	);
+	const [favoriteSaving, setFavoriteSaving] = useState(false);
+	const favoriteSavingRef = useRef(false);
+	const [favoriteError, setFavoriteError] = useState<string | null>(null);
 	const [channels, setChannels] = useState<ChannelListItem[]>(
 		initialChannels ?? []
 	);
@@ -167,6 +178,12 @@ export function WatchPage(props: WatchPageProps) {
 	);
 
 	const [now, setNow] = useState<Date>(() => nowOverride ?? new Date());
+	useEffect(() => {
+		// Avoid replacing the optimistic state with the old provider snapshot.
+		if (favoriteSavingRef.current) return;
+		setFavoriteIds(new Set(channelPreferences.favorites));
+	}, [channelPreferences.favorites]);
+
 	useEffect(() => {
 		if (nowOverride) return;
 		const id = setInterval(() => setNow(new Date()), 30_000);
@@ -289,16 +306,11 @@ export function WatchPage(props: WatchPageProps) {
 		() =>
 			orderForSwitcher(
 				channels,
-				channelPreferences.favorites,
+				[...favoriteIds],
 				channelPreferences.hidden,
 				channelPreferences.order
 			),
-		[channelPreferences, channels]
-	);
-
-	const favoritesSet = useMemo(
-		() => new Set(channelPreferences.favorites),
-		[channelPreferences.favorites]
+		[channelPreferences.hidden, channelPreferences.order, channels, favoriteIds]
 	);
 
 	const currentChannel = useMemo(
@@ -380,6 +392,58 @@ export function WatchPage(props: WatchPageProps) {
 		[recordProgramSeries]
 	);
 
+	const handleToggleFavorite = useCallback(() => {
+		if (!currentChannel || favoriteSaving) return;
+		const previousFavorites = new Set(favoriteIds);
+		const nextFavorites = new Set(favoriteIds);
+		if (nextFavorites.has(currentChannel.id)) {
+			nextFavorites.delete(currentChannel.id);
+		} else {
+			nextFavorites.add(currentChannel.id);
+		}
+
+		const nextPreferences: ChannelsSettings = {
+			...channelPreferences,
+			favorites: [...nextFavorites]
+		};
+		setFavoriteIds(nextFavorites);
+		setFavoriteSaving(true);
+		favoriteSavingRef.current = true;
+		setFavoriteError(null);
+
+		// Start in a promise chain so synchronous preview/test seams roll back too.
+		const save = Promise.resolve().then(async () => {
+			if (persistChannelPreferences) {
+				await persistChannelPreferences(nextPreferences);
+				return;
+			}
+			if (preferences) {
+				await preferences.saveSettings({ channels: nextPreferences });
+			}
+		});
+
+		void save
+			.catch((failure: unknown) => {
+				// Keep the visible state honest when persistence cannot complete.
+				console.error("[watch] failed to persist channel favorite", failure);
+				setFavoriteIds(previousFavorites);
+				setFavoriteError(
+					"Could not save this favorite. Check your connection and try again."
+				);
+			})
+			.finally(() => {
+				favoriteSavingRef.current = false;
+				setFavoriteSaving(false);
+			});
+	}, [
+		channelPreferences,
+		currentChannel,
+		favoriteIds,
+		favoriteSaving,
+		persistChannelPreferences,
+		preferences
+	]);
+
 	const channelName = currentChannel?.name ?? "Channel";
 	const channelNumber = currentChannel?.number ?? "";
 
@@ -408,7 +472,7 @@ export function WatchPage(props: WatchPageProps) {
 	const switcher = (
 		<ChannelSwitcher
 			channels={ordered}
-			favorites={favoritesSet}
+			favorites={favoriteIds}
 			currentId={currentChannelId}
 			onSelect={goToChannel}
 			onChannelUp={() => stepBy(-1)}
@@ -420,6 +484,9 @@ export function WatchPage(props: WatchPageProps) {
 		<NowNextPanel
 			channelName={channelName}
 			channelNumber={channelNumber}
+			isFavorite={favoriteIds.has(currentChannelId)}
+			favoritePending={favoriteSaving}
+			onToggleFavorite={handleToggleFavorite}
 			now={nowProgram}
 			next={nextProgram}
 			use24Hour={use24Hour}
@@ -478,6 +545,16 @@ export function WatchPage(props: WatchPageProps) {
 					className="rounded-md border border-danger bg-surface px-3 py-2 text-sm text-danger"
 				>
 					{recordingError.message}
+				</p>
+			) : null}
+
+			{favoriteError ? (
+				<p
+					role="alert"
+					data-testid="watch-favorite-error"
+					className="rounded-md border border-danger bg-surface px-3 py-2 text-sm text-danger"
+				>
+					{favoriteError}
 				</p>
 			) : null}
 
