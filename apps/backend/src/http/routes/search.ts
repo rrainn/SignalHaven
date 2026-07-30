@@ -24,6 +24,9 @@ export function createSearchRouter(service: SearchService): Router {
 		validate({ query: searchQuerySchema }),
 		async (req, res, next) => {
 			try {
+				// Guide refreshes can remove results at any time, so intermediaries must
+				// not reuse a response after its underlying program has disappeared.
+				res.setHeader("Cache-Control", "no-store");
 				const query = req.query as unknown as SearchQuery;
 				const result = await service.search({
 					q: query.q,

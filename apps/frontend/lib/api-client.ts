@@ -852,6 +852,11 @@ export function searchAll(
 	return apiRequest(
 		`/api/v1/search?${search.toString()}`,
 		searchResponseSchema,
-		init
+		{
+			...init,
+			// Search reflects a mutable guide snapshot; a cached response can point
+			// at a program that a subsequent refresh has already removed.
+			cache: "no-store"
+		}
 	);
 }
