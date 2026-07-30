@@ -20,22 +20,23 @@ normal `next build` stays fast.
 
 ### Largest dependencies (gzipped)
 
-| Dependency               |                   gz size | Justified?                                                                                        |
-| ------------------------ | ------------------------: | ------------------------------------------------------------------------------------------------- |
-| `next` runtime + chunks  |                   ~134 KB | Yes — framework baseline.                                                                         |
-| `react-dom`              |                    ~36 KB | Yes — required.                                                                                   |
-| `hls.js`                 |                   ~150 KB | Yes — only loaded inside `useHls` after `<Player>` mounts; never on Safari (native HLS).          |
-| `lucide-react` icons     | < 5 KB on any single page | Yes — per-icon imports tree-shake; we never bulk-import the index.                                |
-| `@radix-ui/*` primitives |       ~20 KB across pages | Yes — only the components actually used (Dialog/Select/Slider/Switch/Tabs/Toast/Tooltip).         |
-| `framer-motion`          |                         — | **Removed in U12-perf.** Was a transitive carry-over from an earlier prototype with zero imports. |
+| Dependency               |                   gz size | Justified?                                                                                           |
+| ------------------------ | ------------------------: | ---------------------------------------------------------------------------------------------------- |
+| `next` runtime + chunks  |                   ~134 KB | Yes — framework baseline.                                                                            |
+| `react-dom`              |                    ~36 KB | Yes — required.                                                                                      |
+| `hls.js`                 |                   ~150 KB | Yes — only loaded inside `useHls` after `<Player>` mounts; preferred over native HLS when supported. |
+| `lucide-react` icons     | < 5 KB on any single page | Yes — per-icon imports tree-shake; we never bulk-import the index.                                   |
+| `@radix-ui/*` primitives |       ~20 KB across pages | Yes — only the components actually used (Dialog/Select/Slider/Switch/Tabs/Toast/Tooltip).            |
+| `framer-motion`          |                         — | **Removed in U12-perf.** Was a transitive carry-over from an earlier prototype with zero imports.    |
 
 The single dependency over the 100 KB-gz threshold is `hls.js`. It is
 explicitly justified because:
 
 1. It is **dynamically imported** in `app/_player/useHls.ts` and only
    when a `<Player>` actually mounts.
-2. It is **not loaded at all on Safari**, where we fall back to the
-   browser's native HLS support (`canPlayType('application/vnd.apple.mpegurl')`).
+2. It is preferred on Safari versions with Media Source support because its
+   transmuxer accepts source streams that Safari's native decoder can reject.
+   Native HLS remains the fallback on older Apple platforms.
 3. It is therefore **not part of any non-watch route's critical path**
    — the guide, channels, scheduler, recordings library, and settings
    pages never request the chunk.
@@ -62,8 +63,8 @@ Route (app)
   per route, so the recordings library, scheduler, and settings code
   ships only when a user actually navigates to those screens.
 - `app/_player/useHls.ts` dynamically imports `hls.js` (~150 KB gz)
-  inside an effect, gated on a `canPlayType` feature check so Safari
-  never loads it.
+  inside an effect after the player mounts. The module stays out of every
+  non-playback route while remaining the preferred playback engine.
 - Storybook (`@ladle/react`) is in `devDependencies` only and serves
   out of `pnpm --filter @signalhaven/frontend ladle` — it is never bundled into production.
 - "Admin"-only screens (the Tuners / EPG / Storage / Transcoding

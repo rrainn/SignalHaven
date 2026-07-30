@@ -7,12 +7,11 @@ import { useEffect, useRef, useState } from "react";
  *
  * The `~100 KB gz` of HLS.js is **only** dynamically `import()`-ed once a
  * `<Player>` component actually mounts (rrainn/SignalHaven#U6-player perf
- * requirement). On Safari we skip the load entirely and rely on the
- * browser's native HLS support.
+ * requirement). The player prefers HLS.js when it is supported because its
+ * transmuxer accepts streams that Safari's native HLS decoder can reject.
  *
  * The hook returns:
- *   * `Hls`         — the dynamically-loaded class, or `null` if we should
- *                     use native HLS (Safari) or while still loading.
+ *   * `Hls`         — the dynamically-loaded class, or `null` while loading.
  *   * `nativeHls`   — `true` when the browser can play `.m3u8` natively.
  *   * `loadError`   — surface for retry UX if the chunk fetch fails.
  */
@@ -36,13 +35,10 @@ export function detectNativeHls(): boolean {
 }
 
 /**
- * Load hls.js when native HLS is unavailable or a native playback attempt
- * failed. The recovery flag keeps the normal Safari path bundle-free.
+ * Load hls.js after the player mounts. Callers use the module's capability
+ * check before falling back to native HLS on older Apple platforms.
  */
-export function useHls(
-	enabled: boolean = true,
-	forceLoad: boolean = false
-): UseHlsState {
+export function useHls(enabled: boolean = true): UseHlsState {
 	const [Hls, setHls] = useState<HlsModule | null>(null);
 	const [loadError, setLoadError] = useState<Error | null>(null);
 	const [attempt, setAttempt] = useState(0);
@@ -52,9 +48,6 @@ export function useHls(
 
 	useEffect(() => {
 		if (!enabled) return;
-		// Native HLS remains the lightweight default until playback proves it
-		// cannot decode a particular stream.
-		if (nativeHls && !forceLoad) return;
 		let cancelled = false;
 		setLoadError(null);
 		import("hls.js")
@@ -69,7 +62,7 @@ export function useHls(
 		return () => {
 			cancelled = true;
 		};
-	}, [enabled, nativeHls, forceLoad, attempt]);
+	}, [enabled, attempt]);
 
 	return {
 		Hls,

@@ -34,6 +34,7 @@ import type { HlsModule } from "../../app/_player/useHls";
 
 class FakeHls {
 	static Events = { ERROR: "hlsError", MANIFEST_PARSED: "hlsManifestParsed" };
+	static isSupported = () => true;
 	attachMedia = vi.fn();
 	loadSource = vi.fn();
 	stopLoad = vi.fn();
@@ -114,9 +115,7 @@ function renderPage(overrides: {
 	const recording = overrides.recording ?? REC;
 	const patchProgress =
 		overrides.patchProgress ?? vi.fn().mockResolvedValue(undefined);
-	// The Player needs an HLS ctor override or it'll try to dynamically
-	// import hls.js — wire one through a stub on window so the inner
-	// <Player>'s `useHls` resolves the fake.
+	// The mocked dynamic import keeps the nested player independent from MSE.
 	return {
 		patchProgress,
 		...render(
@@ -126,12 +125,7 @@ function renderPage(overrides: {
 				initialChannel={CHANNEL}
 				initialPlayerSettings={SETTINGS}
 				patchProgress={patchProgress}
-				// The Player is mounted inside RecordingPlayerPage; we can't
-				// pass hlsCtorOverride directly, so fall back to the Player's
-				// src behaviour: set forceHlsJs and rely on the dynamic import
-				// returning the fake. To simplify, we just verify the page
-				// renders and lifecycle effects fire — the actual stream load
-				// is covered by Player.test.
+				// Player.test covers actual stream attachment and recovery behavior.
 			/>
 		)
 	};
