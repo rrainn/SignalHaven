@@ -122,6 +122,7 @@ jobs:
           # networking makes its loopback listener reachable by the sidecar.
           docker run --detach \
             --name signalhaven-ci-tls-proxy \
+            --user 0:0 \
             --network host \
             --read-only \
             --cap-drop ALL \
@@ -132,6 +133,25 @@ jobs:
             --entrypoint node \
             signalhaven-bonjour:ci \
             /signalhaven-ci/bonjour-smoke-proxy.mjs
+
+          # The image defaults to a non-root user, so verify the restricted
+          # proxy can read its root-only key and bind HTTPS before Compose runs.
+          proxy_ready=false
+          for i in $(seq 1 10); do
+            if docker logs signalhaven-ci-tls-proxy 2>&1 | grep -q '^proxy-ready '; then
+              proxy_ready=true
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' signalhaven-ci-tls-proxy)" != "true" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$proxy_ready" != "true" ]; then
+            echo "HTTPS smoke-test proxy did not become ready"
+            docker logs signalhaven-ci-tls-proxy
+            exit 1
+          fi
 
       - name: Compose smoke test
         run: |
