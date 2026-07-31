@@ -103,6 +103,11 @@ test("the release smoke test reaches SignalHaven through trusted HTTPS", async (
 	assert.match(workflow, /export PUBLIC_URL=https:\/\/127\.0\.0\.1/);
 	assert.match(workflow, /bonjour-smoke-proxy\.mjs/);
 	assert.match(workflow, /compose\.bonjour-smoke\.yml/);
+	assert.match(
+		workflow,
+		/--name signalhaven-ci-tls-proxy[\s\S]*--user 0:0[\s\S]*signalhaven-bonjour:ci/
+	);
+	assert.match(workflow, /proxy-ready/);
 	assert.match(smokeCompose, /NODE_EXTRA_CA_CERTS:/);
 	assert.match(smokeCompose, /signalhaven-bonjour-tls\/ca\.crt/);
 });
