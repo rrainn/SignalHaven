@@ -108,6 +108,17 @@ test("the release smoke test reaches SignalHaven through trusted HTTPS", async (
 		/--name signalhaven-ci-tls-proxy[\s\S]*--user 0:0[\s\S]*signalhaven-bonjour:ci/
 	);
 	assert.match(workflow, /proxy-ready/);
+	assert.match(workflow, /chmod 0444 "\$tls_directory\/server\.key"/);
+	assert.match(workflow, /Expected pre-Compose 502/);
+	assert.match(
+		workflow,
+		/bonjour_volume=.*signalhaven-bonjour[\s\S]*chown 10001:10001 \/state/
+	);
+	assert.match(
+		workflow,
+		/SIGNALHAVEN_BONJOUR_INTERFACES=.*ip -4 route show default/
+	);
+	assert.match(workflow, /SIGNALHAVEN_BONJOUR_DISABLE_IPV6=true/);
 	assert.match(smokeCompose, /NODE_EXTRA_CA_CERTS:/);
 	assert.match(smokeCompose, /signalhaven-bonjour-tls\/ca\.crt/);
 });
