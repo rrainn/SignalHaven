@@ -117,6 +117,9 @@ jobs:
               "keyUsage=critical,digitalSignature,keyEncipherment" \
               "extendedKeyUsage=serverAuth") \
             -out "$tls_directory/server.crt"
+          # The proxy drops DAC override, so its root user needs ordinary read
+          # permission on this ephemeral key after the Linux bind mount.
+          chmod 0444 "$tls_directory/server.key"
 
           # Reuse the image under test as a minimal Node.js TLS proxy. Host
           # networking makes its loopback listener reachable by the sidecar.
@@ -134,8 +137,8 @@ jobs:
             signalhaven-bonjour:ci \
             /signalhaven-ci/bonjour-smoke-proxy.mjs
 
-          # The image defaults to a non-root user, so verify the restricted
-          # proxy can read its root-only key and bind HTTPS before Compose runs.
+          # Verify the restricted proxy can read its mounted key and bind HTTPS
+          # before Compose runs.
           proxy_ready=false
           for i in $(seq 1 10); do
             if docker logs signalhaven-ci-tls-proxy 2>&1 | grep -q '^proxy-ready '; then
@@ -153,6 +156,19 @@ jobs:
             exit 1
           fi
 
+          # Prove a second host-networked container can reach the proxy and
+          # validate its certificate with the same CA used by the sidecar.
+          docker run --rm \
+            --network host \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --mount "type=bind,src=$tls_directory/ca.crt,dst=/etc/signalhaven-ci/ca.crt,readonly" \
+            --env NODE_EXTRA_CA_CERTS=/etc/signalhaven-ci/ca.crt \
+            --entrypoint node \
+            signalhaven-bonjour:ci \
+            -e 'fetch("https://127.0.0.1/api/v1/health").then((response) => { if (response.status !== 502) throw new Error("Expected pre-Compose 502, received " + response.status); }).catch((error) => { console.error(error); process.exit(1); })'
+
       - name: Compose smoke test
         run: |
           cp .env.example .env
@@ -161,6 +177,15 @@ jobs:
           export SIGNALHAVEN_IMAGE=signalhaven:ci
           export SIGNALHAVEN_BONJOUR_IMAGE=signalhaven-bonjour:ci
           export PUBLIC_URL=https://127.0.0.1
+          # Exercise the runner's routable interface without probing Docker's
+          # unrelated bridge devices, which cannot represent LAN discovery.
+          SIGNALHAVEN_BONJOUR_INTERFACES=$(ip -4 route show default | awk '{ print $5; exit }')
+          if [ -z "$SIGNALHAVEN_BONJOUR_INTERFACES" ]; then
+            echo "Could not identify the runner's default IPv4 interface"
+            exit 1
+          fi
+          export SIGNALHAVEN_BONJOUR_INTERFACES
+          export SIGNALHAVEN_BONJOUR_DISABLE_IPV6=true
           compose=(docker compose --file docker-compose.yml --file .github/compose.bonjour-smoke.yml)
           # Pre-seed a root-owned volume so Docker does not copy image ownership.
           recordings_volume="${COMPOSE_PROJECT_NAME}_signalhaven-recordings"
@@ -168,6 +193,16 @@ jobs:
           docker run --rm --user 0 --entrypoint sh \
             -v "$recordings_volume:/recordings" signalhaven:ci \
             -c 'mkdir -p /recordings/.signalhaven-ci-volume-seed; chown root:root /recordings; chmod 0755 /recordings'
+          # Initialize sidecar state explicitly instead of relying on Docker's
+          # volume copy-up behavior to preserve the image directory owner.
+          bonjour_volume="${COMPOSE_PROJECT_NAME}_signalhaven-bonjour"
+          docker volume create "$bonjour_volume"
+          docker run --rm --user 0 --entrypoint sh \
+            -v "$bonjour_volume:/state" signalhaven-bonjour:ci \
+            -c 'chown 10001:10001 /state; chmod 0700 /state'
+          docker run --rm --user 10001:10001 --entrypoint sh \
+            -v "$bonjour_volume:/state" signalhaven-bonjour:ci \
+            -c 'probe=/state/.signalhaven-ci-write-probe; : > "$probe"; rm -f "$probe"'
           "${compose[@]}" --profile bonjour up -d
           # Wait up to ~60s for SignalHaven to become healthy.
           for i in $(seq 1 30); do
@@ -195,14 +230,25 @@ jobs:
 
           # The host-networked sidecar should bind multicast and publish only
           # after the same host endpoint becomes healthy.
+          advertised=false
           for i in $(seq 1 30); do
-            if "${compose[@]}" --profile bonjour logs signalhaven-bonjour | grep -q '"event":"advertised"'; then
-              echo "Bonjour sidecar advertised SignalHaven"
-              exit 0
+            bonjour_logs=$("${compose[@]}" --profile bonjour logs --no-color signalhaven-bonjour)
+            if [[ "$bonjour_logs" == *'"event":"advertised"'* ]]; then
+              advertised=true
+              break
+            fi
+            if [[ "$bonjour_logs" == *'"event":"fatal"'* ]]; then
+              echo "Bonjour sidecar exited with a fatal error"
+              echo "$bonjour_logs"
+              exit 1
             fi
             echo "Waiting for Bonjour advertisement ($i)..."
             sleep 2
           done
+          if [ "$advertised" = "true" ]; then
+            echo "Bonjour sidecar advertised SignalHaven"
+            exit 0
+          fi
           echo "Bonjour sidecar did not advertise in time"
           "${compose[@]}" --profile bonjour logs signalhaven-bonjour
           docker logs signalhaven-ci-tls-proxy
