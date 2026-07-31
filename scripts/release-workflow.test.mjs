@@ -5,6 +5,10 @@ import test from "node:test";
 const workflowUrl = new URL("../.github/workflows/docker.yml", import.meta.url);
 const dockerfileUrl = new URL("../Dockerfile", import.meta.url);
 const bonjourDockerfileUrl = new URL("../Dockerfile.bonjour", import.meta.url);
+const bonjourSmokeComposeUrl = new URL(
+	"../.github/compose.bonjour-smoke.yml",
+	import.meta.url
+);
 
 test("Docker publishing runs only when a GitHub release is published", async () => {
 	const workflow = await readFile(workflowUrl, "utf8");
@@ -87,6 +91,20 @@ test("the Bonjour image is non-root and includes Linux interface discovery", asy
 	assert.match(dockerfile, /USER signalhaven/);
 	assert.match(dockerfile, /VOLUME \["\/var\/lib\/signalhaven-bonjour"\]/);
 	assert.doesNotMatch(dockerfile, /EXPOSE 5353/);
+});
+
+test("the release smoke test reaches SignalHaven through trusted HTTPS", async () => {
+	const [workflow, smokeCompose] = await Promise.all([
+		readFile(workflowUrl, "utf8"),
+		readFile(bonjourSmokeComposeUrl, "utf8")
+	]);
+
+	// The release must exercise the same HTTPS boundary that Bonjour advertises.
+	assert.match(workflow, /export PUBLIC_URL=https:\/\/127\.0\.0\.1/);
+	assert.match(workflow, /bonjour-smoke-proxy\.mjs/);
+	assert.match(workflow, /compose\.bonjour-smoke\.yml/);
+	assert.match(smokeCompose, /NODE_EXTRA_CA_CERTS:/);
+	assert.match(smokeCompose, /signalhaven-bonjour-tls\/ca\.crt/);
 });
 
 test("FFmpeg uses immutable checksum-verified artifacts with licensing material", async () => {
