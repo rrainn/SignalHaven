@@ -236,7 +236,7 @@ interface SubtitleTrackInfo {
 /**
  * Build the master playlist URL for a channel; respects the optional
  * `quality` pin by appending `?profile=<profile>`. `auto` (or absent) uses
- * no profile override so the backend can honor its configured default.
+ * `original-quality` so broadcast codecs are converted for browser playback.
  */
 function buildSrc(
 	channelId: string,
@@ -244,15 +244,14 @@ function buildSrc(
 	viewerId?: string
 ): string {
 	const base = `/api/v1/stream/${encodeURIComponent(channelId)}/master.m3u8`;
-	const search = new URLSearchParams();
-	if (quality && quality !== "auto") {
-		search.set("profile", quality);
-	}
+	// The backend's legacy default is direct remuxing, which can expose MPEG-2
+	// video from an antenna even though browsers only decode its audio track.
+	const profile = !quality || quality === "auto" ? "original-quality" : quality;
+	const search = new URLSearchParams({ profile });
 	if (viewerId) {
 		search.set("viewerId", viewerId);
 	}
-	const query = search.toString();
-	return query ? `${base}?${query}` : base;
+	return `${base}?${search.toString()}`;
 }
 
 /** Create the stable id that joins one player's short HLS requests together. */
@@ -266,12 +265,9 @@ function buildViewerReleaseUrl(
 	quality: PlayerQuality,
 	viewerId: string
 ): string {
-	const query = new URLSearchParams();
-	if (quality !== "auto") {
-		query.set("profile", quality);
-	}
-	const suffix = query.size > 0 ? `?${query.toString()}` : "";
-	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release${suffix}`;
+	const profile = quality === "auto" ? "original-quality" : quality;
+	const query = new URLSearchParams({ profile });
+	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release?${query.toString()}`;
 }
 
 /**
