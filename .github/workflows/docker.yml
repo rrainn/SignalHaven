@@ -87,7 +87,8 @@ jobs:
       - name: Verify bundled media tools are present in the image
         run: |
           docker run --rm signalhaven:ci ffmpeg -version
-          docker run --rm signalhaven:ci comskip --help
+          # Debian's Comskip reports successful help output with status 2.
+          docker run --rm signalhaven:ci comskip --help >/dev/null 2>&1 || [ "$?" -eq 2 ]
 
       - name: Compose smoke test
         run: |
