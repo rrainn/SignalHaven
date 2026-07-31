@@ -50,6 +50,34 @@ services:
       retries: 5
       start_period: 20s
 
+  # Optional Linux-only DNS-SD advertiser. Host networking is required so
+  # multicast packets and advertised addresses belong to the physical host.
+  signalhaven-bonjour:
+    image: ${SIGNALHAVEN_BONJOUR_IMAGE:-ghcr.io/rrainn/signalhaven-bonjour:latest}
+    container_name: signalhaven-bonjour
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SIGNALHAVEN_HTTP_PORT: ${SIGNALHAVEN_HTTP_PORT:-3000}
+      SIGNALHAVEN_SERVICE_NAME: ${SIGNALHAVEN_SERVICE_NAME:-SignalHaven}
+      SIGNALHAVEN_SERVER_ID: ${SIGNALHAVEN_SERVER_ID:-}
+      SIGNALHAVEN_BONJOUR_INTERFACES: ${SIGNALHAVEN_BONJOUR_INTERFACES:-}
+      SIGNALHAVEN_BONJOUR_DISABLE_IPV6: ${SIGNALHAVEN_BONJOUR_DISABLE_IPV6:-false}
+    volumes:
+      - signalhaven-bonjour:/var/lib/signalhaven-bonjour
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      signalhaven:
+        condition: service_healthy
+    profiles:
+      - bonjour
+
   postgres:
     image: postgres:16-alpine
     container_name: signalhaven-postgres
@@ -72,3 +100,4 @@ services:
 volumes:
   signalhaven-pgdata:
   signalhaven-recordings:
+  signalhaven-bonjour:

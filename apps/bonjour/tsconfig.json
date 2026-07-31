@@ -1,0 +1,15 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"rootDir": ".",
+		"outDir": "dist",
+		"esModuleInterop": true,
+		"types": ["node"],
+		"composite": true,
+		"tsBuildInfoFile": "../../node_modules/.cache/tsc/bonjour.tsbuildinfo"
+	},
+	"include": ["src/**/*.ts", "tests/**/*.ts"]
+}

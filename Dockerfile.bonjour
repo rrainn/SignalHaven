@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+
+# Install the monorepo dependency graph once so the sidecar builds reproducibly.
+FROM node:22-bookworm-slim AS development-dependencies
+
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json ./
+COPY apps/backend/package.json ./apps/backend/package.json
+COPY apps/bonjour/package.json ./apps/bonjour/package.json
+COPY apps/frontend/package.json ./apps/frontend/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+
+RUN corepack enable
+
+RUN --mount=type=cache,id=signalhaven-bonjour-pnpm,target=/pnpm/store,sharing=shared \
+    pnpm --config.node-linker=isolated install --filter @signalhaven/bonjour \
+        --frozen-lockfile --ignore-scripts --store-dir=/pnpm/store
+
+# Compile only the advertiser workspace; it has no dependency on the main app bundle.
+FROM development-dependencies AS build
+
+COPY apps/bonjour ./apps/bonjour
+
+RUN pnpm --filter @signalhaven/bonjour build
+
+# Retain only runtime dependencies for the final image.
+FROM node:22-bookworm-slim AS production-dependencies
+
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/backend/package.json ./apps/backend/package.json
+COPY apps/bonjour/package.json ./apps/bonjour/package.json
+COPY apps/frontend/package.json ./apps/frontend/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+
+RUN corepack enable
+
+RUN --mount=type=cache,id=signalhaven-bonjour-pnpm-production,target=/pnpm/store,sharing=shared \
+    pnpm --config.node-linker=isolated install --prod --filter @signalhaven/bonjour \
+        --frozen-lockfile --ignore-scripts --store-dir=/pnpm/store
+
+# iproute2 gives the responder reliable Linux interface discovery; Alpine keeps
+# this pure-JavaScript sidecar substantially smaller than the media server image.
+FROM node:22-alpine AS runtime
+
+ENV NODE_ENV=production \
+    SIGNALHAVEN_BONJOUR_STATE_DIR=/var/lib/signalhaven-bonjour
+
+RUN apk add --no-cache \
+        ca-certificates \
+        iproute2 \
+        tini
+
+RUN addgroup --system --gid 10001 signalhaven \
+    && adduser --system --uid 10001 --ingroup signalhaven \
+        --home /app --shell /sbin/nologin signalhaven \
+    && mkdir -p "${SIGNALHAVEN_BONJOUR_STATE_DIR}" \
+    && chown signalhaven:signalhaven "${SIGNALHAVEN_BONJOUR_STATE_DIR}"
+
+WORKDIR /app
+
+COPY --from=production-dependencies --chown=signalhaven:signalhaven /app/node_modules ./node_modules
+COPY --from=production-dependencies --chown=signalhaven:signalhaven /app/apps/bonjour/node_modules ./apps/bonjour/node_modules
+COPY --from=build --chown=signalhaven:signalhaven /app/apps/bonjour/package.json ./apps/bonjour/package.json
+COPY --from=build --chown=signalhaven:signalhaven /app/apps/bonjour/dist/src ./apps/bonjour/dist/src
+
+# Release metadata stays in the last layer so version tags retain build cache hits.
+ARG SIGNALHAVEN_VERSION=0.0.0
+ARG SIGNALHAVEN_GIT_SHA=unknown
+ENV SIGNALHAVEN_VERSION=${SIGNALHAVEN_VERSION} \
+    SIGNALHAVEN_GIT_SHA=${SIGNALHAVEN_GIT_SHA}
+
+USER signalhaven
+
+VOLUME ["/var/lib/signalhaven-bonjour"]
+
+# Ciao opens UDP 5353 directly on host interfaces, so no Docker port is exposed.
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "/app/apps/bonjour/dist/src/index.js"]
