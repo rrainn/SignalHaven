@@ -20,8 +20,8 @@ import {
  * runtime with a duck-typed stub so jsdom doesn't have to handle MSE,
  * and we drive the `<video>` element through synthesized events. The
  * tests focus on:
- *   - Custom controls wiring (play/pause, mute, captions, quality, PiP,
- *     fullscreen).
+ *   - Custom controls wiring (play/pause, mute, captions, quality, AirPlay,
+ *     PiP, fullscreen).
  *   - Keyboard shortcuts.
  *   - Persistence of volume / mute / captions / quality back through
  *     the `onPersist` hook.
@@ -515,6 +515,61 @@ describe("Player", () => {
 	it("hides the captions button when no subtitle tracks are advertised", () => {
 		renderPlayer();
 		expect(screen.queryByTestId("player-captions")).not.toBeInTheDocument();
+	});
+
+	it("opens Safari's AirPlay picker and reflects target state", async () => {
+		const user = userEvent.setup();
+		const showPlaybackTargetPicker = vi.fn();
+		Object.defineProperty(
+			HTMLMediaElement.prototype,
+			"webkitShowPlaybackTargetPicker",
+			{
+				configurable: true,
+				value: showPlaybackTargetPicker
+			}
+		);
+
+		try {
+			renderPlayer();
+			const video = screen.getByTestId("player-video") as HTMLVideoElement;
+			const airPlay = screen.getByTestId("player-airplay");
+
+			expect(video).toHaveAttribute("x-webkit-airplay", "allow");
+			await user.click(airPlay);
+			expect(showPlaybackTargetPicker).toHaveBeenCalledOnce();
+
+			fireEvent(
+				video,
+				Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
+					availability: "not-available"
+				})
+			);
+			expect(airPlay).toBeDisabled();
+			fireEvent(
+				video,
+				Object.assign(new Event("webkitplaybacktargetavailabilitychanged"), {
+					availability: "available"
+				})
+			);
+			expect(airPlay).toBeEnabled();
+
+			Object.defineProperty(video, "webkitCurrentPlaybackTargetIsWireless", {
+				configurable: true,
+				value: true
+			});
+			fireEvent(
+				video,
+				new Event("webkitcurrentplaybacktargetiswirelesschanged")
+			);
+			expect(airPlay).toHaveAttribute("aria-pressed", "true");
+			expect(airPlay).toHaveAttribute("aria-label", "AirPlay connected");
+		} finally {
+			delete (
+				HTMLMediaElement.prototype as HTMLMediaElement & {
+					webkitShowPlaybackTargetPicker?: () => void;
+				}
+			).webkitShowPlaybackTargetPicker;
+		}
 	});
 
 	it("space bar toggles play/pause via keyboard shortcut", () => {
