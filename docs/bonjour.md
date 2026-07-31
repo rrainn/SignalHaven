@@ -1,138 +1,160 @@
-# Local discovery with Bonjour
+# HTTPS service discovery with Bonjour
 
-SignalHaven provides an optional DNS-SD sidecar image for automatic discovery
-on trusted home networks. The sidecar advertises the host-published HTTP
-endpoint as `_signalhaven._tcp.local.`; it does not proxy application traffic.
+SignalHaven provides an optional DNS-SD sidecar for discovery on trusted home
+networks. Bonjour discovers a stable server identity and canonical URL; it does
+not carry application traffic and its generated `.local` host name is never a
+client API endpoint.
 
-## Requirements and support
+## Network contract
 
-The container integration supports Docker Engine on Linux. It requires host
-networking because mDNS uses link-local multicast and must publish addresses
-from the physical host rather than a private Compose bridge.
+The sidecar publishes `_signalhaven._tcp.local.` on HTTPS port 443 with these
+TXT fields:
 
-Before enabling it, confirm that:
+| Field         | Meaning                                          |
+| ------------- | ------------------------------------------------ |
+| `txtvers=2`   | Version 2 of the DNS-SD TXT schema.              |
+| `protovers=2` | Version 2 of the SignalHaven discovery contract. |
+| `url=<https>` | Canonical, externally reachable HTTPS base URL.  |
+| `id=<uuid>`   | Stable, non-secret server selection identity.    |
 
-- UDP port 5353 is permitted by the host firewall.
-- The server and client are on the same multicast-capable LAN or VLAN.
-- Wireless client isolation is disabled between the iOS device and server.
-- No network policy blocks multicast address `224.0.0.251` or `ff02::fb`.
+TXT and SRV records are untrusted network input. Clients must require both
+version fields, parse `id` as a UUID, and strictly validate `url`. The URL must
+be absolute HTTPS, have a host, and contain no credentials, query, or fragment.
+Clients append API and media paths to this canonical URL rather than constructing
+a URL from the Bonjour SRV host or port.
 
-Docker Desktop uses a virtualized network and is not supported for the sidecar.
-For macOS development, use the host-native command in
-[Host-native development](#host-native-development).
+Before showing a server, clients request `<url>/api/v1/health` and require HTTP 200. The sidecar checks the same reverse-proxied endpoint before advertising and
+withdraws the record after it becomes unhealthy.
 
-## Enable the sidecar
+## HTTPS deployment example
 
-Copy `.env.example` to `.env`, configure the main SignalHaven stack, and start
-the optional profile:
+Copy `.env.example` to `.env` and configure at least:
+
+```dotenv
+# This host must resolve to the reverse proxy from every client LAN.
+PUBLIC_URL=https://signalhaven.example.com
+
+# Plaintext traffic is available only on the proxy host.
+SIGNALHAVEN_HTTP_PORT=3000
+```
+
+Then start the application and optional Linux Bonjour sidecar:
 
 ```bash
 docker compose --profile bonjour up -d
 ```
 
-The sidecar waits for `http://127.0.0.1:$SIGNALHAVEN_HTTP_PORT/api/v1/health`
-to return HTTP 200 before advertising. It withdraws the advertisement when the
-health check fails, restores it after recovery, and sends a DNS-SD goodbye on
-graceful shutdown.
+The Compose example binds the application and PostgreSQL ports to loopback.
+Configure a reverse proxy on the same host to listen on TCP 443, terminate TLS
+for the `PUBLIC_URL` host, and forward to `http://127.0.0.1:3000`. Do not change
+the application mapping to a wildcard or LAN address.
 
-The generated server UUID is stored in the `signalhaven-bonjour` volume. Keep
-that volume when updating or recreating the stack so clients continue to
-recognize the same server.
+The reverse proxy must:
 
-## Configuration
+- preserve `Host` or set the equivalent forwarded host;
+- set the forwarded protocol to `https`;
+- support HTTP/1.1 connection upgrades for WebSockets;
+- stream response bodies without whole-response buffering; and
+- preserve request cancellation and long-lived streaming connections.
+
+The [nginx example](examples/signalhaven-nginx.conf) shows these settings while
+exposing only HTTPS port 443. Replace its host and certificate paths before use.
+
+When `PUBLIC_URL` contains a path such as
+`https://signalhaven.example.com/tv`, route that prefix to SignalHaven without
+dropping or duplicating it. The sidecar normalizes trailing slashes and checks
+`https://signalhaven.example.com/tv/api/v1/health`.
+
+Create a local DNS record for the canonical host that resolves to the reverse
+proxy's LAN address. Verify the certificate chain and host name from an actual
+client device; Bonjour cannot fix split-DNS or certificate problems.
+
+## Sidecar configuration
 
 | Variable                           | Default                                     | Purpose                                                                  |
 | ---------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------ |
+| `PUBLIC_URL`                       | _required_                                  | Canonical HTTPS base URL placed in TXT and used for health checks.       |
 | `SIGNALHAVEN_BONJOUR_IMAGE`        | `ghcr.io/rrainn/signalhaven-bonjour:latest` | Separately published advertiser image.                                   |
-| `SIGNALHAVEN_HTTP_PORT`            | `3000`                                      | Host port placed in the DNS-SD SRV record and used for health checks.    |
 | `SIGNALHAVEN_SERVICE_NAME`         | `SignalHaven`                               | Human-readable service instance name.                                    |
 | `SIGNALHAVEN_SERVER_ID`            | Generated and persisted                     | Optional UUID override for deployments with externally managed identity. |
 | `SIGNALHAVEN_BONJOUR_INTERFACES`   | All eligible interfaces                     | Optional comma-separated interface names or IP addresses.                |
 | `SIGNALHAVEN_BONJOUR_DISABLE_IPV6` | `false`                                     | Disables AAAA advertisements when set to `true`.                         |
-| `SIGNALHAVEN_HEALTH_URL`           | `http://127.0.0.1:PORT/api/v1/health`       | Direct sidecar-only override for custom deployments.                     |
-| `SIGNALHAVEN_HEALTH_INTERVAL_MS`   | `5000`                                      | Delay between health probes.                                             |
+| `SIGNALHAVEN_HEALTH_INTERVAL_MS`   | `5000`                                      | Delay between HTTPS health probes.                                       |
 | `SIGNALHAVEN_HEALTH_TIMEOUT_MS`    | `3000`                                      | Maximum duration of each health probe.                                   |
 | `SIGNALHAVEN_BONJOUR_STATE_DIR`    | `/var/lib/signalhaven-bonjour`              | Directory containing the persisted server ID.                            |
 
-The Compose file exposes the commonly needed settings. Advanced settings can
-be added to a local Compose override without modifying the published file.
+`PUBLIC_URL` is validated before multicast sockets are opened. HTTP URLs,
+credentials, nonstandard ports, malformed URLs, unsupported schemes, queries,
+fragments, and TXT values too large for DNS-SD fail startup with an actionable
+error.
+`SIGNALHAVEN_HEALTH_URL` is no longer accepted because a direct backend probe
+could advertise a reverse proxy that clients cannot actually reach.
 
-## Discovery contract
+The generated UUID is stored in the `signalhaven-bonjour` volume. Keep that
+volume across updates so saved selections retain the same identity.
 
-The sidecar publishes `_signalhaven._tcp` with these TXT fields:
+## Requirements and support
 
-| Field         | Meaning                                    |
-| ------------- | ------------------------------------------ |
-| `txtvers=1`   | Version of the TXT record schema.          |
-| `protovers=1` | Version of the SignalHaven discovery API.  |
-| `path=/`      | Base HTTP path on the advertised endpoint. |
-| `id=<uuid>`   | Stable, non-secret server identity.        |
+The container integration supports Docker Engine on Linux and requires host
+networking so mDNS publishes addresses from the physical host. Before enabling
+it, confirm that:
 
-Clients must treat Bonjour records as untrusted network input. After resolving
-a service, verify the HTTP response from `/api/v1/health` before presenting it
-as a usable SignalHaven server. Bonjour provides discovery, not authentication
-or transport security.
+- UDP port 5353 is permitted by the host firewall;
+- the server and client share a multicast-capable LAN or VLAN;
+- wireless client isolation is disabled; and
+- multicast `224.0.0.251` and `ff02::fb` are not blocked.
 
-An iOS target that browses this service should include:
-
-```xml
-<!-- Explain why the app scans the user's local network. -->
-<key>NSLocalNetworkUsageDescription</key>
-<string>SignalHaven discovers your television server on the local network.</string>
-
-<!-- Declare the only Bonjour service type used by the app. -->
-<key>NSBonjourServices</key>
-<array>
-	<string>_signalhaven._tcp</string>
-</array>
-
-<!-- Permit HTTP connections to local host names and addresses. -->
-<key>NSAppTransportSecurity</key>
-<dict>
-	<key>NSAllowsLocalNetworking</key>
-	<true/>
-</dict>
-```
-
-Use Network framework discovery (`NWBrowser` or the current `NetworkBrowser`
-API for the deployment target) and browse the default domain rather than
-hard-coding `local.`.
+Docker Desktop uses a virtualized network and is not supported for the sidecar.
+For macOS development, use the host-native command below.
 
 ## Diagnostics
 
-Follow the sidecar's structured logs:
+Follow structured sidecar events:
 
 ```bash
 docker compose --profile bonjour logs -f signalhaven-bonjour
 ```
 
-On Linux with Avahi tools installed, browse the service with:
+Startup logs include the normalized `publicUrl` and advertised port. An
+`advertised` event occurs only after the canonical HTTPS health request returns
+200; `health-changed` followed by `withdrawn` confirms removal after a failure.
+
+Inspect the DNS-SD record on Linux:
 
 ```bash
 avahi-browse --resolve --terminate _signalhaven._tcp
 ```
 
-On macOS, browse with:
+Or on macOS:
 
 ```bash
 dns-sd -B _signalhaven._tcp
+dns-sd -L "SignalHaven" _signalhaven._tcp local.
 ```
 
-If the sidecar repeatedly reports health failures, verify that the configured
-host port is reachable at `http://127.0.0.1:$SIGNALHAVEN_HTTP_PORT` on the
-Docker host. If it advertises but clients cannot discover it, check firewall,
-VLAN, and wireless multicast settings before changing the container network.
+If health checks fail, request `${PUBLIC_URL}/api/v1/health` from the sidecar
+host and a client device. Check local DNS, the TLS chain, reverse-proxy routing,
+and forwarded headers before investigating multicast.
 
 ## Host-native development
 
-Docker Desktop is unnecessary for local advertisement testing. With the main
-stack already publishing port 3000, run this foreground command on macOS:
+Use a test certificate trusted by the client device and a stable UUID:
 
 ```bash
-# This development advertisement ends when the command is stopped.
-dns-sd -R "SignalHaven Development" _signalhaven._tcp local. 3000 \
-  txtvers=1 protovers=1 path=/
+# Replace both values; the advertisement ends when this command is stopped.
+dns-sd -R "SignalHaven Development" _signalhaven._tcp local. 443 \
+  txtvers=2 protovers=2 \
+  id=f22b18a0-f7f1-40fd-9225-2da245803a47 \
+  url=https://signalhaven.test
 ```
 
-This command intentionally omits a persisted ID. Use the Linux sidecar or a
-host launch agent when testing identity-sensitive behavior across restarts.
+## Migration from version 1
+
+Version-1 records exposed a plaintext SRV host, port, and `path`. Version-2
+clients intentionally reject those records and show an update message; there is
+no insecure fallback. Upgrade and configure the sidecar before rolling out a
+version-2-only client, preserve its identity volume or `SIGNALHAVEN_SERVER_ID`,
+and confirm HTTPS health before asking users to select the server again.
+
+See [Bonjour discovery version 2 migration](migrations/bonjour-v2.md) for the
+operator checklist and rollback considerations.

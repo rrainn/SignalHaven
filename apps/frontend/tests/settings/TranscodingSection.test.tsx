@@ -115,16 +115,12 @@ describe("TranscodingSection", () => {
 
 		// A large lineup must not mount every interactive profile picker at once.
 		expect(
-			await screen.findAllByRole("combobox", { name: /profile override for/i })
-		).toHaveLength(100);
-		expect(
-			screen.getByTestId("transcoding-channels-summary")
+			await screen.findByTestId("transcoding-channels-summary")
 		).toHaveTextContent(/100.*125/);
+		expect(screen.getAllByLabelText(/profile override for/i)).toHaveLength(100);
 
 		await user.click(screen.getByTestId("transcoding-channels-load-more"));
 
-		expect(
-			screen.getAllByRole("combobox", { name: /profile override for/i })
-		).toHaveLength(125);
+		expect(screen.getAllByLabelText(/profile override for/i)).toHaveLength(125);
 	});
 });

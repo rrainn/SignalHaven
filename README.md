@@ -91,14 +91,15 @@ docker compose --profile bonjour up -d
 ```
 
 The sidecar is published separately, uses host networking for link-local
-multicast, and advertises the configured `SIGNALHAVEN_HTTP_PORT`. See
-[Local discovery with Bonjour](docs/bonjour.md) for platform support,
-configuration, and iOS integration details.
+multicast, and advertises the required canonical `PUBLIC_URL`. Configure its
+HTTPS reverse proxy and local DNS before enabling the profile. See
+[HTTPS service discovery with Bonjour](docs/bonjour.md) for the deployment and
+migration contract.
 
 Your database and recordings persist in Docker volumes. To use an existing PostgreSQL server or change storage and playback behavior, see the [configuration reference](docs/configuration.md).
 
 > [!IMPORTANT]
-> SignalHaven is designed for a trusted home network. If you make it reachable from the internet, place it behind an HTTPS reverse proxy with authentication and appropriate network controls.
+> SignalHaven is designed for a trusted home network. Bonjour clients still require an HTTPS reverse proxy, but HTTPS alone does not make an internet-facing deployment safe; add authentication and appropriate network controls before exposing it outside the trusted network.
 
 ### Update
 
