@@ -204,10 +204,11 @@ validated millisecond marker intervals in PostgreSQL.
 Set `SIGNALHAVEN_COMSKIP_PATH` only when a custom Comskip binary is mounted at a
 different in-container path. SignalHaven runs at most one commercial detector at
 a time. Recording and playback success do not depend on detector success, and a
-failed analysis can be retried from the recording detail page. Completed
-same-version analysis is not duplicated across requests or restarts. Change
-`detectorVersion` when updating Comskip or its configuration to queue safe
-regeneration for completed recordings.
+recording detail page can run Comskip for older media, retry a failure, or rerun
+a completed analysis. Active work remains idempotent, so repeated requests do
+not create concurrent jobs for the same recording. Change `detectorVersion`
+when updating Comskip or its configuration to queue safe regeneration for
+completed recordings automatically.
 
 If analysis reports that no EDL was produced, verify that the bundled configuration
 is present and that the SignalHaven process can execute Comskip. For an exit-code
