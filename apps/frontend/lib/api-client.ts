@@ -692,7 +692,7 @@ export function getRecording(
 	);
 }
 
-/** Queue a safe, idempotent retry of post-recording commercial analysis. */
+/** Queue a safe, idempotent Comskip run for completed recording media. */
 export function retryCommercialAnalysis(
 	id: string,
 	init?: ApiRequestInit

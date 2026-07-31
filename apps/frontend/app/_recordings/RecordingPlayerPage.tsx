@@ -613,6 +613,9 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 			: null;
 	const viewState = getRecordingViewState(recording);
 	const recordedAt = recording.actualStart ?? recording.scheduledStart;
+	const analysisActionLabel = commercialAnalysisActionLabel(
+		recording.commercialAnalysis
+	);
 
 	return (
 		<section
@@ -695,15 +698,14 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 						</p>
 					) : null}
 				</div>
-				{recording.status === "completed" &&
-				recording.commercialAnalysis.status === "failed" ? (
+				{recording.status === "completed" && analysisActionLabel ? (
 					<Button
 						variant="outline"
 						size="sm"
 						disabled={analysisRetryPending}
 						onClick={() => void retryAnalysis()}
 					>
-						{analysisRetryPending ? "Retrying…" : "Retry analysis"}
+						{analysisRetryPending ? "Queuing…" : analysisActionLabel}
 					</Button>
 				) : null}
 			</section>
@@ -906,7 +908,7 @@ function describeCommercialAnalysis(
 ): string {
 	switch (analysis.status) {
 		case "not_requested":
-			return "Not requested. Enable and configure Comskip in DVR settings.";
+			return "Not analyzed. Run Comskip if commercial detection is enabled.";
 		case "queued":
 			return "Queued behind other background DVR work.";
 		case "running":
@@ -917,8 +919,28 @@ function describeCommercialAnalysis(
 				: `Complete — ${analysis.markers.length} commercial region${analysis.markers.length === 1 ? "" : "s"} found.`;
 		case "failed":
 			return (
-				analysis.diagnosticMessage ?? "Analysis failed. You can retry safely."
+				analysis.diagnosticMessage ?? "Analysis failed. You can retry Comskip."
 			);
+	}
+}
+
+/**
+ * Offer manual Comskip work only while no job owns the recording. Distinct
+ * labels make it clear whether existing marker output will be replaced.
+ */
+function commercialAnalysisActionLabel(
+	analysis: RecordingDetail["commercialAnalysis"]
+): string | null {
+	switch (analysis.status) {
+		case "not_requested":
+			return "Run Comskip";
+		case "completed":
+			return "Rerun Comskip";
+		case "failed":
+			return "Retry Comskip";
+		case "queued":
+		case "running":
+			return null;
 	}
 }
 

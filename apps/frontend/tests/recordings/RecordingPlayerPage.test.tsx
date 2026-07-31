@@ -112,6 +112,7 @@ beforeEach(() => {
 function renderPage(overrides: {
 	recording?: RecordingDetail;
 	patchProgress?: ReturnType<typeof vi.fn>;
+	retryAnalysis?: ReturnType<typeof vi.fn>;
 }) {
 	const recording = overrides.recording ?? REC;
 	const patchProgress =
@@ -126,6 +127,7 @@ function renderPage(overrides: {
 				initialChannel={CHANNEL}
 				initialPlayerSettings={SETTINGS}
 				patchProgress={patchProgress}
+				retryAnalysis={overrides.retryAnalysis}
 				// Player.test covers actual stream attachment and recovery behavior.
 			/>
 		)
@@ -213,6 +215,42 @@ describe("RecordingPlayerPage", () => {
 		expect(screen.getByTestId("player-commercial-markers")).toBeInTheDocument();
 	});
 
+	it("reruns completed Comskip analysis for an existing recording", async () => {
+		const retryAnalysis = vi.fn().mockResolvedValue({
+			...REC.commercialAnalysis,
+			status: "queued",
+			queuedAt: "2026-01-01T00:00:00Z"
+		});
+		renderPage({
+			recording: {
+				...REC,
+				commercialAnalysis: {
+					...REC.commercialAnalysis,
+					status: "completed",
+					completedAt: "2025-12-31T23:00:00Z",
+					detectorVersion: "comskip-edl-v1",
+					markers: [{ startMs: 600_000, endMs: 660_000 }]
+				}
+			},
+			retryAnalysis
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Rerun Comskip" }));
+
+		await waitFor(() => expect(retryAnalysis).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("commercial-analysis-state")).toHaveTextContent(
+			"Queued"
+		);
+	});
+
+	it("offers Comskip for an older recording that has not been analyzed", () => {
+		renderPage({});
+
+		expect(
+			screen.getByRole("button", { name: "Run Comskip" })
+		).toBeInTheDocument();
+	});
+
 	it("shows failed analysis diagnostics and retries manually", async () => {
 		const retryAnalysis = vi.fn().mockResolvedValue({
 			...REC.commercialAnalysis,
@@ -239,7 +277,7 @@ describe("RecordingPlayerPage", () => {
 		expect(screen.getByTestId("commercial-analysis-state")).toHaveTextContent(
 			"Comskip exited 1"
 		);
-		fireEvent.click(screen.getByRole("button", { name: "Retry analysis" }));
+		fireEvent.click(screen.getByRole("button", { name: "Retry Comskip" }));
 
 		await waitFor(() => expect(retryAnalysis).toHaveBeenCalledTimes(1));
 		expect(screen.getByTestId("commercial-analysis-state")).toHaveTextContent(

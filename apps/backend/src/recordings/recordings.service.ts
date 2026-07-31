@@ -564,7 +564,7 @@ export class RecordingsService {
 		return { record, metadata, commercialAnalysis };
 	}
 
-	/** Re-run failed or stale commercial detection without changing playback state. */
+	/** Re-run commercial detection for completed media without changing playback. */
 	async retryCommercialAnalysis(id: string): Promise<CommercialAnalysis> {
 		await this.getById(id);
 		if (!this.commercialAnalysis) {
