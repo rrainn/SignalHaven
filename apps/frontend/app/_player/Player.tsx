@@ -6,6 +6,7 @@ import type {
 	TranscodeProfile
 } from "@signalhaven/shared";
 import {
+	Airplay,
 	Captions,
 	CaptionsOff,
 	Maximize,
@@ -233,6 +234,24 @@ interface SubtitleTrackInfo {
 	index: number;
 }
 
+/** Safari's vendor-prefixed AirPlay surface is not included in TypeScript's DOM types. */
+interface AirPlayVideoElement extends HTMLVideoElement {
+	readonly webkitCurrentPlaybackTargetIsWireless?: boolean;
+	webkitShowPlaybackTargetPicker?: () => void;
+}
+
+/** AirPlay target discovery distinguishes initial detection from a known empty list. */
+type AirPlayAvailability =
+	| "unsupported"
+	| "unknown"
+	| "available"
+	| "not-available";
+
+/** Safari supplies target availability on its vendor-prefixed media event. */
+interface AirPlayAvailabilityEvent extends Event {
+	readonly availability?: "available" | "not-available";
+}
+
 /**
  * Build the master playlist URL for a channel; respects the optional
  * `quality` pin by appending `?profile=<profile>`. `auto` (or absent) uses
@@ -361,6 +380,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
 		const [isFullscreen, setIsFullscreen] = useState(false);
 		const [isPip, setIsPip] = useState(false);
+		const [airPlayAvailability, setAirPlayAvailability] =
+			useState<AirPlayAvailability>("unsupported");
+		const [isAirPlaying, setIsAirPlaying] = useState(false);
 		const [controlsVisible, setControlsVisible] = useState(true);
 		const [loading, setLoading] = useState(true);
 		const [error, setError] = useState<string | null>(null);
@@ -904,6 +926,17 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			}
 		}, []);
 
+		const showAirPlayPicker = useCallback(() => {
+			const video = videoRef.current as AirPlayVideoElement | null;
+			if (!video?.webkitShowPlaybackTargetPicker) return;
+			try {
+				// Safari requires this native picker call to remain inside a user gesture.
+				video.webkitShowPlaybackTargetPicker();
+			} catch {
+				/* Safari can reject the picker while the media source is changing. */
+			}
+		}, []);
+
 		const seekRecordingTo = useCallback(
 			(requestedSeconds: number) => {
 				const v = videoRef.current;
@@ -1107,6 +1140,42 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				v.removeEventListener("leavepictureinpicture", onLeavePip);
 			};
 		}, [isRecording, useNativeHls]);
+
+		// Safari exposes AirPlay through vendor-prefixed media events. Registering
+		// only when the picker exists avoids target discovery work in other browsers.
+		useEffect(() => {
+			const video = videoRef.current as AirPlayVideoElement | null;
+			if (!video?.webkitShowPlaybackTargetPicker) return;
+
+			setAirPlayAvailability("unknown");
+			const onAvailabilityChanged = (event: Event) => {
+				const availability = (event as AirPlayAvailabilityEvent).availability;
+				if (availability) setAirPlayAvailability(availability);
+			};
+			const onWirelessTargetChanged = () => {
+				setIsAirPlaying(Boolean(video.webkitCurrentPlaybackTargetIsWireless));
+			};
+			video.addEventListener(
+				"webkitplaybacktargetavailabilitychanged",
+				onAvailabilityChanged
+			);
+			video.addEventListener(
+				"webkitcurrentplaybacktargetiswirelesschanged",
+				onWirelessTargetChanged
+			);
+			onWirelessTargetChanged();
+
+			return () => {
+				video.removeEventListener(
+					"webkitplaybacktargetavailabilitychanged",
+					onAvailabilityChanged
+				);
+				video.removeEventListener(
+					"webkitcurrentplaybacktargetiswirelesschanged",
+					onWirelessTargetChanged
+				);
+			};
+		}, []);
 
 		// Track fullscreen changes initiated externally (Esc key, etc.).
 		useEffect(() => {
@@ -1338,6 +1407,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					playsInline
 					crossOrigin="anonymous"
 					preload="auto"
+					{...{ "x-webkit-airplay": "allow" }}
 				/>
 
 				{extraStats && playbackStats ? (
@@ -1666,6 +1736,22 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 									))}
 								</SelectContent>
 							</Select>
+
+							{airPlayAvailability !== "unsupported" ? (
+								<IconButton
+									data-testid="player-airplay"
+									aria-label={
+										isAirPlaying ? "AirPlay connected" : "Choose AirPlay device"
+									}
+									aria-pressed={isAirPlaying}
+									disabled={
+										airPlayAvailability === "not-available" && !isAirPlaying
+									}
+									onClick={showAirPlayPicker}
+								>
+									<Airplay aria-hidden="true" className="h-5 w-5" />
+								</IconButton>
+							) : null}
 
 							<IconButton
 								data-testid="player-pip"
