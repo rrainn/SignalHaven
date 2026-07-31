@@ -1,0 +1,8 @@
+services:
+  signalhaven-bonjour:
+    environment:
+      # Trust only the short-lived CA generated for the release smoke test.
+      NODE_EXTRA_CA_CERTS: /etc/signalhaven-ci/ca.crt
+    volumes:
+      # Keep test-only trust material out of the production Compose contract.
+      - "${RUNNER_TEMP:?RUNNER_TEMP must be set}/signalhaven-bonjour-tls/ca.crt:/etc/signalhaven-ci/ca.crt:ro"

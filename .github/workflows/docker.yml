@@ -90,6 +90,49 @@ jobs:
           # Debian's Comskip reports successful help output with status 2.
           docker run --rm signalhaven:ci comskip --help >/dev/null 2>&1 || [ "$?" -eq 2 ]
 
+      - name: Prepare HTTPS smoke-test endpoint
+        run: |
+          # Build a one-run trust chain so Bonjour exercises canonical HTTPS
+          # without depending on external DNS, certificates, or services.
+          tls_directory="$RUNNER_TEMP/signalhaven-bonjour-tls"
+          mkdir -p "$tls_directory"
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
+            -subj "/CN=SignalHaven CI Root CA" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -keyout "$tls_directory/ca.key" \
+            -out "$tls_directory/ca.crt"
+          openssl req -newkey rsa:2048 -sha256 -nodes \
+            -subj "/CN=127.0.0.1" \
+            -keyout "$tls_directory/server.key" \
+            -out "$tls_directory/server.csr"
+          openssl x509 -req -sha256 -days 1 \
+            -in "$tls_directory/server.csr" \
+            -CA "$tls_directory/ca.crt" \
+            -CAkey "$tls_directory/ca.key" \
+            -CAcreateserial \
+            -extfile <(printf '%s\n' \
+              "subjectAltName=IP:127.0.0.1" \
+              "basicConstraints=critical,CA:FALSE" \
+              "keyUsage=critical,digitalSignature,keyEncipherment" \
+              "extendedKeyUsage=serverAuth") \
+            -out "$tls_directory/server.crt"
+
+          # Reuse the image under test as a minimal Node.js TLS proxy. Host
+          # networking makes its loopback listener reachable by the sidecar.
+          docker run --detach \
+            --name signalhaven-ci-tls-proxy \
+            --network host \
+            --read-only \
+            --cap-drop ALL \
+            --cap-add NET_BIND_SERVICE \
+            --security-opt no-new-privileges:true \
+            --mount "type=bind,src=$tls_directory,dst=/etc/signalhaven-ci,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/.github/scripts/bonjour-smoke-proxy.mjs,dst=/signalhaven-ci/bonjour-smoke-proxy.mjs,readonly" \
+            --entrypoint node \
+            signalhaven-bonjour:ci \
+            /signalhaven-ci/bonjour-smoke-proxy.mjs
+
       - name: Compose smoke test
         run: |
           cp .env.example .env
@@ -97,13 +140,15 @@ jobs:
           # the registry during CI.
           export SIGNALHAVEN_IMAGE=signalhaven:ci
           export SIGNALHAVEN_BONJOUR_IMAGE=signalhaven-bonjour:ci
+          export PUBLIC_URL=https://127.0.0.1
+          compose=(docker compose --file docker-compose.yml --file .github/compose.bonjour-smoke.yml)
           # Pre-seed a root-owned volume so Docker does not copy image ownership.
           recordings_volume="${COMPOSE_PROJECT_NAME}_signalhaven-recordings"
           docker volume create "$recordings_volume"
           docker run --rm --user 0 --entrypoint sh \
             -v "$recordings_volume:/recordings" signalhaven:ci \
             -c 'mkdir -p /recordings/.signalhaven-ci-volume-seed; chown root:root /recordings; chmod 0755 /recordings'
-          docker compose --profile bonjour up -d
+          "${compose[@]}" --profile bonjour up -d
           # Wait up to ~60s for SignalHaven to become healthy.
           for i in $(seq 1 30); do
             status=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:3000/api/v1/health || true)
@@ -115,7 +160,7 @@ jobs:
                 exit 1
               fi
               # Verify the application UID can create DVR output on the mount.
-              docker compose exec -T --user 10001:10001 signalhaven \
+              "${compose[@]}" exec -T --user 10001:10001 signalhaven \
                 sh -c 'probe=/var/lib/signalhaven/recordings/.signalhaven-ci-write-probe; : > "$probe"; rm -f "$probe"'
               break
             fi
@@ -124,14 +169,14 @@ jobs:
           done
           if [ "$status" != "200" ]; then
             echo "SignalHaven did not become healthy in time"
-            docker compose logs
+            "${compose[@]}" logs
             exit 1
           fi
 
           # The host-networked sidecar should bind multicast and publish only
           # after the same host endpoint becomes healthy.
           for i in $(seq 1 30); do
-            if docker compose --profile bonjour logs signalhaven-bonjour | grep -q '"event":"advertised"'; then
+            if "${compose[@]}" --profile bonjour logs signalhaven-bonjour | grep -q '"event":"advertised"'; then
               echo "Bonjour sidecar advertised SignalHaven"
               exit 0
             fi
@@ -139,12 +184,16 @@ jobs:
             sleep 2
           done
           echo "Bonjour sidecar did not advertise in time"
-          docker compose --profile bonjour logs signalhaven-bonjour
+          "${compose[@]}" --profile bonjour logs signalhaven-bonjour
+          docker logs signalhaven-ci-tls-proxy
           exit 1
 
       - name: Tear down compose stack
         if: always()
-        run: docker compose --profile bonjour down -v || true
+        run: |
+          # Remove both the application stack and the host-networked TLS proxy.
+          docker compose --file docker-compose.yml --file .github/compose.bonjour-smoke.yml --profile bonjour down -v || true
+          docker rm --force signalhaven-ci-tls-proxy || true
 
   # Build each architecture on matching hardware after the amd64 smoke test.
   publish_platform:
