@@ -9,6 +9,19 @@ import type { BonjourConfig } from "./config";
 import { logEvent } from "./logger";
 import type { AdvertisementRegistration } from "./supervisor";
 
+/** Builds the versioned, security-sensitive discovery data clients validate. */
+export function createTxtRecord(
+	config: BonjourConfig,
+	serverId: string
+): Record<string, string> {
+	return {
+		txtvers: "2",
+		protovers: "2",
+		url: config.publicUrl,
+		id: serverId
+	};
+}
+
 /** Publishes SignalHaven through one shared, interface-aware mDNS responder. */
 export class BonjourPublisher {
 	private readonly responder: Responder;
@@ -42,6 +55,7 @@ export class BonjourPublisher {
 			fqdn: service.getFQDN(),
 			hostname: service.getHostname(),
 			port: this.config.port,
+			publicUrl: this.config.publicUrl,
 			serverId: this.serverId
 		});
 
@@ -71,12 +85,7 @@ export class BonjourPublisher {
 			type: "signalhaven",
 			protocol: Protocol.TCP,
 			port: this.config.port,
-			txt: {
-				txtvers: "1",
-				protovers: "1",
-				path: "/",
-				id: this.serverId
-			},
+			txt: createTxtRecord(this.config, this.serverId),
 			...(this.config.restrictedAddresses
 				? { restrictedAddresses: this.config.restrictedAddresses }
 				: {}),

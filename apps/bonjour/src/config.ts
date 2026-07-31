@@ -1,13 +1,14 @@
 import { isUuid } from "./uuid";
 
-const DEFAULT_PORT = 3000;
 const DEFAULT_HEALTH_INTERVAL_MS = 5_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 3_000;
 const MAX_DNS_LABEL_BYTES = 63;
+const MAX_TXT_VALUE_BYTES = 251;
 
 /** Runtime settings for publishing the host-visible SignalHaven endpoint. */
 export interface BonjourConfig {
 	port: number;
+	publicUrl: string;
 	healthUrl: URL;
 	healthIntervalMs: number;
 	healthTimeoutMs: number;
@@ -16,6 +17,51 @@ export interface BonjourConfig {
 	serverId?: string;
 	restrictedAddresses?: string[];
 	disabledIpv6: boolean;
+}
+
+/** Canonicalizes the trusted deployment setting before it is exposed to clients. */
+export function normalizePublicUrl(rawValue: string | undefined): string {
+	const raw = rawValue?.trim();
+	if (!raw) {
+		throw new Error(
+			"PUBLIC_URL is required and must be an absolute https:// URL"
+		);
+	}
+	if (!/^https:\/\/[^/]/i.test(raw)) {
+		throw new Error("PUBLIC_URL must be an absolute https:// URL");
+	}
+
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw new Error("PUBLIC_URL must be an absolute https:// URL");
+	}
+
+	if (url.protocol !== "https:") {
+		throw new Error("PUBLIC_URL must use https://");
+	}
+	if (url.port) {
+		throw new Error("PUBLIC_URL must use the standard HTTPS port 443");
+	}
+	if (url.username || url.password) {
+		throw new Error("PUBLIC_URL must not contain credentials");
+	}
+	if (url.search) {
+		throw new Error("PUBLIC_URL must not contain a query string");
+	}
+	if (url.hash) {
+		throw new Error("PUBLIC_URL must not contain a fragment");
+	}
+
+	// A base URL never needs trailing separators; callers append paths explicitly.
+	url.pathname = url.pathname.replace(/\/+$/, "");
+	const normalized = url.href.replace(/\/$/, "");
+	if (Buffer.byteLength(normalized, "utf8") > MAX_TXT_VALUE_BYTES) {
+		throw new Error("PUBLIC_URL is too long for a DNS-SD TXT field");
+	}
+
+	return normalized;
 }
 
 /** Parses a bounded integer so invalid deployment values fail before mDNS starts. */
@@ -63,24 +109,19 @@ function parseBoolean(
 
 /** Loads and validates all configuration consumed by the Bonjour sidecar. */
 export function loadConfig(env: NodeJS.ProcessEnv): BonjourConfig {
-	const port = parseInteger(
-		env,
-		"SIGNALHAVEN_HTTP_PORT",
-		DEFAULT_PORT,
-		1,
-		65_535
-	);
+	const publicUrl = normalizePublicUrl(env.PUBLIC_URL);
+	const port = 443;
 	const serviceName = env.SIGNALHAVEN_SERVICE_NAME?.trim() || "SignalHaven";
 	if (Buffer.byteLength(serviceName, "utf8") > MAX_DNS_LABEL_BYTES) {
 		throw new Error("SIGNALHAVEN_SERVICE_NAME must be at most 63 UTF-8 bytes");
 	}
 
-	const healthUrl = new URL(
-		env.SIGNALHAVEN_HEALTH_URL || `http://127.0.0.1:${port}/api/v1/health`
-	);
-	if (!["http:", "https:"].includes(healthUrl.protocol)) {
-		throw new Error("SIGNALHAVEN_HEALTH_URL must use http or https");
+	if (env.SIGNALHAVEN_HEALTH_URL?.trim()) {
+		throw new Error(
+			"SIGNALHAVEN_HEALTH_URL is no longer supported; health checks use PUBLIC_URL"
+		);
 	}
+	const healthUrl = new URL(`${publicUrl}/api/v1/health`);
 
 	const serverId = env.SIGNALHAVEN_SERVER_ID?.trim();
 	if (serverId && !isUuid(serverId)) {
@@ -93,6 +134,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): BonjourConfig {
 
 	return {
 		port,
+		publicUrl,
 		healthUrl,
 		healthIntervalMs: parseInteger(
 			env,

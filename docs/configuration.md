@@ -60,13 +60,14 @@ the official Postgres image.
 | Variable                                 | Default                                     | Description                                                  |
 | ---------------------------------------- | ------------------------------------------- | ------------------------------------------------------------ |
 | `PGHOST`                                 | `localhost`                                 | Database host used by local backend scripts.                 |
-| `PGPORT`                                 | `5432`                                      | Database port used locally and published by Compose.         |
+| `PGPORT`                                 | `5432`                                      | Database port used locally and bound to loopback by Compose. |
 | `PGDATABASE`                             | `signalhaven`                               | Database name for the backend and bundled Postgres service.  |
 | `PGUSER`                                 | `signalhaven`                               | Database user for the backend and bundled Postgres service.  |
 | `PGPASSWORD`                             | `change-me`                                 | Database password for the backend and bundled Postgres.      |
 | `SIGNALHAVEN_IMAGE`                      | `ghcr.io/rrainn/signalhaven:latest`         | Container image reference used by the `signalhaven` service. |
 | `SIGNALHAVEN_BONJOUR_IMAGE`              | `ghcr.io/rrainn/signalhaven-bonjour:latest` | Optional Linux DNS-SD sidecar image.                         |
-| `SIGNALHAVEN_HTTP_PORT`                  | `3000`                                      | Host port mapped to container port `3000`.                   |
+| `SIGNALHAVEN_HTTP_PORT`                  | `3000`                                      | Loopback-only host port used by the HTTPS reverse proxy.     |
+| `PUBLIC_URL`                             | _required for Bonjour_                      | Canonical HTTPS base URL advertised to discovered clients.   |
 | `SIGNALHAVEN_SERVICE_NAME`               | `SignalHaven`                               | Human-readable Bonjour service name.                         |
 | `SIGNALHAVEN_SERVER_ID`                  | _generated_                                 | Optional stable Bonjour UUID override.                       |
 | `SIGNALHAVEN_BONJOUR_INTERFACES`         | _all eligible_                              | Optional comma-separated Linux interfaces or addresses.      |

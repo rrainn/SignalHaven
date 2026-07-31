@@ -5,7 +5,7 @@ import { errorMessage, logEvent } from "./logger";
 import { BonjourPublisher } from "./publisher";
 import { AdvertisementSupervisor } from "./supervisor";
 
-/** Starts discovery and keeps it aligned with the host-published HTTP endpoint. */
+/** Starts discovery and keeps it aligned with the canonical HTTPS endpoint. */
 async function main(): Promise<void> {
 	const config = loadConfig(process.env);
 	const serverId =
@@ -23,6 +23,7 @@ async function main(): Promise<void> {
 
 	logEvent("started", {
 		port: config.port,
+		publicUrl: config.publicUrl,
 		serviceName: config.serviceName,
 		serverId
 	});

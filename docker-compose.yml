@@ -30,8 +30,9 @@ services:
       SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED: ${SIGNALHAVEN_EXTERNAL_IP_LOOKUP_ENABLED:-false}
       # NVIDIA_VISIBLE_DEVICES: all
       # NVIDIA_DRIVER_CAPABILITIES: video,compute,utility
+    # Keep plaintext HTTP host-local so LAN clients must use the HTTPS proxy.
     ports:
-      - "${SIGNALHAVEN_HTTP_PORT:-3000}:3000"
+      - "127.0.0.1:${SIGNALHAVEN_HTTP_PORT:-3000}:3000"
     volumes:
       - signalhaven-recordings:/var/lib/signalhaven/recordings
     depends_on:
@@ -63,7 +64,8 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      SIGNALHAVEN_HTTP_PORT: ${SIGNALHAVEN_HTTP_PORT:-3000}
+      # The sidecar fails clearly at startup when this required value is empty.
+      PUBLIC_URL: ${PUBLIC_URL:-}
       SIGNALHAVEN_SERVICE_NAME: ${SIGNALHAVEN_SERVICE_NAME:-SignalHaven}
       SIGNALHAVEN_SERVER_ID: ${SIGNALHAVEN_SERVER_ID:-}
       SIGNALHAVEN_BONJOUR_INTERFACES: ${SIGNALHAVEN_BONJOUR_INTERFACES:-}
@@ -87,8 +89,9 @@ services:
       POSTGRES_DB: ${PGDATABASE}
       POSTGRES_USER: ${PGUSER}
       POSTGRES_PASSWORD: ${PGPASSWORD}
+    # Local administration remains possible without publishing Postgres to the LAN.
     ports:
-      - "${PGPORT:-5432}:5432"
+      - "127.0.0.1:${PGPORT:-5432}:5432"
     volumes:
       - signalhaven-pgdata:/var/lib/postgresql/data
     healthcheck:
