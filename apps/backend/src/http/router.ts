@@ -3,6 +3,7 @@ import { serve, setup } from "swagger-ui-express";
 import type { Pool } from "pg";
 
 import type { EpgService } from "../epg/epg.service";
+import type { CommercialAnalysisService } from "../commercials/commercial-analysis.service";
 import type { EpgGridService } from "../epg/epg-grid.service";
 import type { EpgMatcherService } from "../epg/epg-matcher.service";
 import type { RecordingsService } from "../recordings/recordings.service";
@@ -47,6 +48,7 @@ export interface ApiV1Dependencies {
 	epgMatcherService: EpgMatcherService;
 	streamingService?: StreamingService | undefined;
 	recordingsService?: RecordingsService | undefined;
+	commercialAnalysisService?: CommercialAnalysisService | undefined;
 	seriesRulesService?: SeriesRulesService | undefined;
 	searchService?: SearchService | undefined;
 	metrics?: MetricsCollector | undefined;
@@ -90,6 +92,7 @@ export function createApiV1Router(deps: ApiV1Dependencies): Router {
 		createAdvancedRouter({
 			streaming: deps.streamingService,
 			recordings: deps.recordingsService,
+			commercialAnalysis: deps.commercialAnalysisService,
 			env: deps.env
 		})
 	);

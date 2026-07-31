@@ -1,12 +1,13 @@
 "use client";
 
-import type { FfmpegWorkItem } from "@signalhaven/shared";
+import type { ComskipWorkItem, FfmpegWorkItem } from "@signalhaven/shared";
 import { CircleStop, RefreshCw, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
 	formatClientError,
 	getExternalIp,
+	listComskipWork,
 	listFfmpegWork,
 	stopFfmpegWork
 } from "../../lib/api-client";
@@ -17,12 +18,14 @@ import { PageHeader } from "../_ui/PageHeader";
 import { Spinner } from "../_ui/Spinner";
 import { useAdvancedMode } from "./AdvancedModeProvider";
 
-/** Operator-only view of FFmpeg work owned by this SignalHaven process. */
+/** Operator-only view of active media-processing work on this server. */
 export function AdvancedPage() {
 	const advanced = useAdvancedMode();
-	const [items, setItems] = useState<FfmpegWorkItem[]>([]);
+	const [ffmpegItems, setFfmpegItems] = useState<FfmpegWorkItem[]>([]);
+	const [comskipItems, setComskipItems] = useState<ComskipWorkItem[]>([]);
 	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
+	const [ffmpegError, setFfmpegError] = useState<string | null>(null);
+	const [comskipError, setComskipError] = useState<string | null>(null);
 	const [stopping, setStopping] = useState<string | null>(null);
 	const [externalIp, setExternalIp] = useState<string | null>(null);
 	const [externalIpLoading, setExternalIpLoading] = useState(true);
@@ -30,12 +33,33 @@ export function AdvancedPage() {
 
 	const refreshWork = useCallback(async () => {
 		if (!advanced.enabled) return;
-		setError(null);
-		try {
-			const result = await listFfmpegWork();
-			setItems(result.items);
-		} catch (failure) {
-			setError(formatClientError(failure, "Could not load FFmpeg work.", true));
+		setFfmpegError(null);
+		setComskipError(null);
+		const [ffmpegResult, comskipResult] = await Promise.allSettled([
+			listFfmpegWork(),
+			listComskipWork()
+		]);
+		if (ffmpegResult.status === "fulfilled") {
+			setFfmpegItems(ffmpegResult.value.items);
+		} else {
+			setFfmpegError(
+				formatClientError(
+					ffmpegResult.reason,
+					"Could not load FFmpeg jobs.",
+					true
+				)
+			);
+		}
+		if (comskipResult.status === "fulfilled") {
+			setComskipItems(comskipResult.value.items);
+		} else {
+			setComskipError(
+				formatClientError(
+					comskipResult.reason,
+					"Could not load Comskip jobs.",
+					true
+				)
+			);
 		}
 		setLoading(false);
 	}, [advanced.enabled]);
@@ -65,7 +89,7 @@ export function AdvancedPage() {
 
 	useEffect(() => {
 		void refreshAll();
-		// FFmpeg work is volatile, while the privacy-sensitive IP lookup is one-shot.
+		// Active work is volatile, while the privacy-sensitive IP lookup is one-shot.
 		const timer = window.setInterval(() => void refreshWork(), 3_000);
 		return () => window.clearInterval(timer);
 	}, [refreshAll, refreshWork]);
@@ -81,18 +105,18 @@ export function AdvancedPage() {
 				<EmptyState
 					icon={<Wrench aria-hidden="true" />}
 					title="Advanced mode is off"
-					description="Enable Advanced mode in Settings → Appearance to inspect FFmpeg work."
+					description="Enable Advanced mode in Settings → Appearance to inspect server tasks."
 				/>
 			</section>
 		);
 	}
 
 	return (
-		<section className="space-y-4" aria-labelledby="advanced-heading">
+		<section className="space-y-6" aria-labelledby="advanced-heading">
 			<PageHeader
 				headingId="advanced-heading"
-				title="FFmpeg work"
-				description="Active live streams and recordings in this server process."
+				title="Active tasks"
+				description="FFmpeg and Comskip jobs currently running in this server process."
 				actions={
 					<Button
 						variant="secondary"
@@ -121,17 +145,70 @@ export function AdvancedPage() {
 				</CardContent>
 			</Card>
 
+			{loading ? (
+				<Spinner label="Loading active tasks…" />
+			) : (
+				<>
+					<FfmpegJobsSection
+						items={ffmpegItems}
+						error={ffmpegError}
+						stopping={stopping}
+						onStop={async (item) => {
+							setStopping(item.id);
+							try {
+								await stopFfmpegWork(item.id);
+								await refreshWork();
+							} catch (failure) {
+								setFfmpegError(
+									formatClientError(
+										failure,
+										"Could not stop FFmpeg work.",
+										true
+									)
+								);
+							} finally {
+								setStopping(null);
+							}
+						}}
+					/>
+					<ComskipJobsSection items={comskipItems} error={comskipError} />
+				</>
+			)}
+		</section>
+	);
+}
+
+/** Render active FFmpeg jobs with the existing graceful-stop control. */
+function FfmpegJobsSection({
+	items,
+	error,
+	stopping,
+	onStop
+}: {
+	items: FfmpegWorkItem[];
+	error: string | null;
+	stopping: string | null;
+	onStop: (item: FfmpegWorkItem) => Promise<void>;
+}) {
+	return (
+		<section className="space-y-3" aria-labelledby="ffmpeg-jobs-heading">
+			<div>
+				<h2 id="ffmpeg-jobs-heading" className="text-lg font-semibold">
+					FFmpeg jobs
+				</h2>
+				<p className="text-sm text-secondary">
+					Live streams, recordings, and recording playback.
+				</p>
+			</div>
 			{error ? (
 				<p role="alert" className="text-sm text-danger">
 					{error}
 				</p>
 			) : null}
-			{loading ? (
-				<Spinner label="Loading FFmpeg work…" />
-			) : items.length === 0 ? (
+			{items.length === 0 ? (
 				<EmptyState
 					icon={<Wrench aria-hidden="true" />}
-					title="No active FFmpeg work"
+					title="No active FFmpeg jobs"
 					description="Live streams and in-progress recordings will appear here."
 				/>
 			) : (
@@ -145,13 +222,7 @@ export function AdvancedPage() {
 								<CardContent className="flex flex-wrap items-end justify-between gap-4">
 									<dl className="grid grid-cols-2 gap-x-5 gap-y-1 text-sm">
 										<dt className="text-secondary">Type</dt>
-										<dd>
-											{item.kind === "live-stream"
-												? "Live stream"
-												: item.kind === "recording"
-													? "Recording"
-													: "Recording playback"}
-										</dd>
+										<dd>{formatFfmpegKind(item.kind)}</dd>
 										<dt className="text-secondary">State</dt>
 										<dd>{item.state}</dd>
 										<dt className="text-secondary">Started</dt>
@@ -178,23 +249,7 @@ export function AdvancedPage() {
 									<Button
 										variant="danger"
 										disabled={stopping === item.id}
-										onClick={async () => {
-											setStopping(item.id);
-											try {
-												await stopFfmpegWork(item.id);
-												await refreshWork();
-											} catch (failure) {
-												setError(
-													formatClientError(
-														failure,
-														"Could not stop FFmpeg work.",
-														true
-													)
-												);
-											} finally {
-												setStopping(null);
-											}
-										}}
+										onClick={() => void onStop(item)}
 									>
 										<CircleStop aria-hidden="true" className="h-4 w-4" />
 										{stopping === item.id ? "Stopping…" : "Stop"}
@@ -207,4 +262,67 @@ export function AdvancedPage() {
 			)}
 		</section>
 	);
+}
+
+/** Render Comskip work as read-only because cancellation belongs to recordings. */
+function ComskipJobsSection({
+	items,
+	error
+}: {
+	items: ComskipWorkItem[];
+	error: string | null;
+}) {
+	return (
+		<section className="space-y-3" aria-labelledby="comskip-jobs-heading">
+			<div>
+				<h2 id="comskip-jobs-heading" className="text-lg font-semibold">
+					Comskip jobs
+				</h2>
+				<p className="text-sm text-secondary">
+					Commercial detection running against completed recordings.
+				</p>
+			</div>
+			{error ? (
+				<p role="alert" className="text-sm text-danger">
+					{error}
+				</p>
+			) : null}
+			{items.length === 0 ? (
+				<EmptyState
+					icon={<Wrench aria-hidden="true" />}
+					title="No active Comskip jobs"
+					description="Commercial detection tasks will appear here while they run."
+				/>
+			) : (
+				<ul className="grid gap-3">
+					{items.map((item) => (
+						<li key={item.id}>
+							<Card>
+								<CardHeader>
+									<CardTitle>{item.label}</CardTitle>
+								</CardHeader>
+								<CardContent>
+									<dl className="grid grid-cols-2 gap-x-5 gap-y-1 text-sm sm:max-w-md">
+										<dt className="text-secondary">Type</dt>
+										<dd>Commercial detection</dd>
+										<dt className="text-secondary">State</dt>
+										<dd>{item.state}</dd>
+										<dt className="text-secondary">Started</dt>
+										<dd>{new Date(item.startedAt).toLocaleString()}</dd>
+									</dl>
+								</CardContent>
+							</Card>
+						</li>
+					))}
+				</ul>
+			)}
+		</section>
+	);
+}
+
+/** Convert stable API job kinds into operator-friendly labels. */
+function formatFfmpegKind(kind: FfmpegWorkItem["kind"]): string {
+	if (kind === "live-stream") return "Live stream";
+	if (kind === "recording") return "Recording";
+	return "Recording playback";
 }

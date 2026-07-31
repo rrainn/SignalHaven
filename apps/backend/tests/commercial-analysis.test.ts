@@ -151,6 +151,54 @@ test("concurrent manual retries create only one active detector job", async () =
 	assert.equal(repository.analysis?.status, "queued");
 });
 
+test("active work is visible only while Comskip is running", async () => {
+	const recording = completedRecording();
+	const repository = new FakeCommercialsRepository();
+	const scheduler = new FakeScheduler();
+	let finishDetection: (() => void) | undefined;
+	const detectionFinished = new Promise<void>((resolve) => {
+		finishDetection = resolve;
+	});
+	let detectionStarted: (() => void) | undefined;
+	const detectorStarted = new Promise<void>((resolve) => {
+		detectionStarted = resolve;
+	});
+	const service = new CommercialAnalysisService({
+		repository,
+		recordings: { getById: async () => recording },
+		scheduler,
+		resolveConfig: async () => ({
+			enabled: true,
+			executablePath: "/usr/bin/comskip",
+			detectorVersion: "test-v1"
+		}),
+		createDetector: () => ({
+			detect: async () => {
+				detectionStarted?.();
+				await detectionFinished;
+				return [];
+			}
+		})
+	});
+
+	await service.enqueueCompleted(recording);
+	const running = scheduler.run(recording.id);
+	await detectorStarted;
+
+	assert.deepEqual(service.getActiveWork(), [
+		{
+			recordingId: recording.id,
+			label: recording.title,
+			state: "running",
+			startedAt: new Date(0).toISOString()
+		}
+	]);
+
+	finishDetection?.();
+	await running;
+	assert.deepEqual(service.getActiveWork(), []);
+});
+
 class FakeScheduler {
 	handler: JobHandler | null = null;
 
@@ -207,7 +255,10 @@ class FakeCommercialsRepository {
 
 	async markRunning(recordingId: string) {
 		if (!this.analysis) return null;
-		this.analysis = analysisRecord(recordingId, "running");
+		this.analysis = {
+			...analysisRecord(recordingId, "running"),
+			startedAt: new Date(0)
+		};
 		return this.analysis;
 	}
 
