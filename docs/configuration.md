@@ -17,7 +17,8 @@ When enabled, the UI adds:
   and network-rate measurements on the Channels page (measurements are
   available only while the requested channel is actively tuned);
 - a video context-menu action named **Show Extra Stats**, with bitrate,
-  resolution, FPS, dropped frames, buffer health, latency, transcode profile,
+  resolution, FPS, dropped frames, buffer health, buffering event count and
+  average/minimum/maximum durations, latency, transcode profile,
   hardware acceleration, and server session information; and
 - server error codes, request IDs, HTTP status, and playback diagnostics in
   client-facing errors.

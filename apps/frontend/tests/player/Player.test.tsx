@@ -413,6 +413,49 @@ describe("Player", () => {
 		}
 	});
 
+	it("summarizes completed buffering events in extra stats", () => {
+		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
+		vi.useFakeTimers();
+		try {
+			render(
+				<AdvancedModeProvider>
+					<Player
+						channelId={CHANNEL_ID}
+						isRecording
+						hlsCtorOverride={FakeHlsCtor}
+					/>
+				</AdvancedModeProvider>
+			);
+			const video = screen.getByTestId("player-video");
+
+			// Startup waiting is load time, while duplicate waiting events belong
+			// to the same continuous playback interruption.
+			fireEvent.waiting(video);
+			fireEvent.playing(video);
+			fireEvent.waiting(video);
+			fireEvent.waiting(video);
+			act(() => vi.advanceTimersByTime(1_000));
+			fireEvent.playing(video);
+			fireEvent.waiting(video);
+			act(() => vi.advanceTimersByTime(3_000));
+			fireEvent.playing(video);
+
+			fireEvent.contextMenu(screen.getByTestId("player"), {
+				clientX: 20,
+				clientY: 20
+			});
+			fireEvent.click(
+				screen.getByRole("menuitem", { name: "Show Extra Stats" })
+			);
+
+			const stats = screen.getByTestId("player-extra-stats");
+			expect(stats).toHaveTextContent("Buffer events");
+			expect(stats).toHaveTextContent("2 · Avg 2.0 s · Min 1.0 s · Max 3.0 s");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("swaps the playlist URL on quality change without re-creating the Hls instance", async () => {
 		const user = userEvent.setup();
 		renderPlayer();

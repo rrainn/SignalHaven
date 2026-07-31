@@ -86,6 +86,7 @@ interface PlaybackStats {
 	resolution: string;
 	fps: number | null;
 	bufferedSeconds: number;
+	bufferEvents: BufferEventSummary;
 	latencySeconds: number | null;
 	droppedFrames: number | null;
 	totalFrames: number | null;
@@ -105,6 +106,24 @@ interface PlaybackStats {
 		windowSeconds: number;
 		bufferBytes: number;
 	} | null;
+}
+
+/** Completed playback interruptions caused by depleted media buffers. */
+interface BufferEventSummary {
+	count: number;
+	averageDurationSeconds: number | null;
+	minimumDurationSeconds: number | null;
+	maximumDurationSeconds: number | null;
+}
+
+/** Mutable buffering telemetry kept outside React's render cycle. */
+interface BufferEventAccumulator {
+	playbackStarted: boolean;
+	activeStartedAt: number | null;
+	count: number;
+	totalDurationMs: number;
+	minimumDurationMs: number | null;
+	maximumDurationMs: number | null;
 }
 
 const QUALITY_LABELS: Record<PlayerQuality, string> = {
@@ -259,6 +278,39 @@ function createViewerId(): string {
 	return crypto.randomUUID();
 }
 
+/** Create empty per-source telemetry so quality and channel changes do not mix. */
+function createBufferEventAccumulator(): BufferEventAccumulator {
+	return {
+		playbackStarted: false,
+		activeStartedAt: null,
+		count: 0,
+		totalDurationMs: 0,
+		minimumDurationMs: null,
+		maximumDurationMs: null
+	};
+}
+
+/** Convert mutable millisecond totals into the seconds shown by the overlay. */
+function summarizeBufferEvents(
+	accumulator: BufferEventAccumulator
+): BufferEventSummary {
+	return {
+		count: accumulator.count,
+		averageDurationSeconds:
+			accumulator.count === 0
+				? null
+				: accumulator.totalDurationMs / accumulator.count / 1_000,
+		minimumDurationSeconds:
+			accumulator.minimumDurationMs === null
+				? null
+				: accumulator.minimumDurationMs / 1_000,
+		maximumDurationSeconds:
+			accumulator.maximumDurationMs === null
+				? null
+				: accumulator.maximumDurationMs / 1_000
+	};
+}
+
 /** Build the beacon URL that releases one logical browser viewer. */
 function buildViewerReleaseUrl(
 	channelId: string,
@@ -318,6 +370,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			at: number;
 			fps: number | null;
 		} | null>(null);
+		const bufferEventAccumulatorRef = useRef<BufferEventAccumulator>(
+			createBufferEventAccumulator()
+		);
 		const statusRequestInFlightRef = useRef(false);
 		const lastTapRef = useRef<{ at: number; side: "left" | "right" | null }>({
 			at: 0,
@@ -451,6 +506,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			// A new source starts under automatic live-edge management.
 			setAdaptiveLivePosition(null);
 			setNativeTimeShifted(false);
+			bufferEventAccumulatorRef.current = createBufferEventAccumulator();
 		}, [effectiveSrc]);
 
 		// ── HLS setup ─────────────────────────────────────────────────────────
@@ -663,6 +719,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								: "Unknown",
 					fps,
 					bufferedSeconds: Math.max(0, bufferedEnd - video.currentTime),
+					bufferEvents: summarizeBufferEvents(
+						bufferEventAccumulatorRef.current
+					),
 					latencySeconds: isRecording
 						? null
 						: Number.isFinite(hls?.latency)
@@ -1057,8 +1116,37 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			};
 			const onTime = () => updateTimeline();
 			const onDur = () => updateTimeline();
-			const onWaiting = () => setLoading(true);
+			const onWaiting = () => {
+				setLoading(true);
+				const accumulator = bufferEventAccumulatorRef.current;
+				// Initial startup delay is load time, not interrupted playback.
+				if (
+					accumulator.playbackStarted &&
+					accumulator.activeStartedAt === null
+				) {
+					accumulator.activeStartedAt = performance.now();
+				}
+			};
 			const onPlaying = () => {
+				const accumulator = bufferEventAccumulatorRef.current;
+				if (accumulator.activeStartedAt !== null) {
+					const durationMs = Math.max(
+						0,
+						performance.now() - accumulator.activeStartedAt
+					);
+					accumulator.count += 1;
+					accumulator.totalDurationMs += durationMs;
+					accumulator.minimumDurationMs = Math.min(
+						accumulator.minimumDurationMs ?? durationMs,
+						durationMs
+					);
+					accumulator.maximumDurationMs = Math.max(
+						accumulator.maximumDurationMs ?? durationMs,
+						durationMs
+					);
+					accumulator.activeStartedAt = null;
+				}
+				accumulator.playbackStarted = true;
 				setLoading(false);
 				hlsMediaRecoveryAttemptsRef.current = 0;
 				lastFatalHlsErrorWasMediaRef.current = false;
@@ -1367,6 +1455,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						</dd>
 						<dt>Buffer ahead</dt>
 						<dd>{playbackStats.bufferedSeconds.toFixed(1)} s</dd>
+						<dt>Buffer events</dt>
+						<dd>{formatBufferEvents(playbackStats.bufferEvents)}</dd>
 						<dt>Behind live</dt>
 						<dd>
 							{playbackStats.latencySeconds === null
@@ -1747,6 +1837,18 @@ function formatDroppedFrames(
 	if (droppedFrames === null || totalFrames === null) return "Unknown";
 	if (totalFrames <= 0) return `${droppedFrames} / ${totalFrames}`;
 	return `${droppedFrames} / ${totalFrames} (${((droppedFrames / totalFrames) * 100).toFixed(1)}%)`;
+}
+
+/** Format buffer interruption telemetry compactly for the operator overlay. */
+function formatBufferEvents(summary: BufferEventSummary): string {
+	if (
+		summary.averageDurationSeconds === null ||
+		summary.minimumDurationSeconds === null ||
+		summary.maximumDurationSeconds === null
+	) {
+		return "0 · Avg N/A · Min N/A · Max N/A";
+	}
+	return `${summary.count} · Avg ${summary.averageDurationSeconds.toFixed(1)} s · Min ${summary.minimumDurationSeconds.toFixed(1)} s · Max ${summary.maximumDurationSeconds.toFixed(1)} s`;
 }
 
 /** Translate internal stream lifecycle states into operator-friendly language. */
