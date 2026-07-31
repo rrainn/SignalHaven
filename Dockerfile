@@ -177,7 +177,8 @@ COPY LICENSE /usr/share/doc/signalhaven/LICENSE.txt
 # Sanity-check: the binary runs and reports the expected codecs. The amd64
 # image supports both VAAPI and NVIDIA hosts; BtbN's arm64 GPL builds disable
 # some of these backends, so the hardware capability checks remain amd64-only.
-RUN comskip --help >/dev/null \
+# Debian's Comskip reports successful help output with status 2.
+RUN (comskip --help >/dev/null 2>&1 || [ "$?" -eq 2 ]) \
 	&& ffmpeg -version \
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -E '(libx264|libx265| aac )' >/dev/null \
     && if [ "$TARGETARCH" = "amd64" ]; then \

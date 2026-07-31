@@ -124,6 +124,12 @@ test("the runtime image bundles Comskip with SignalHaven's EDL configuration", a
 		dockerfile,
 		/COPY config\/comskip\.ini \/etc\/signalhaven\/comskip\.ini/
 	);
-	assert.match(dockerfile, /comskip --help/);
-	assert.match(workflow, /docker run --rm signalhaven:ci comskip --help/);
+	assert.match(
+		dockerfile,
+		/\(comskip --help >\/dev\/null 2>&1 \|\| \[ "\$\?" -eq 2 \]\)/
+	);
+	assert.match(
+		workflow,
+		/docker run --rm signalhaven:ci comskip --help >\/dev\/null 2>&1 \|\| \[ "\$\?" -eq 2 \]/
+	);
 });
