@@ -110,7 +110,7 @@ beforeEach(() => {
 });
 
 describe("Player", () => {
-	it("uses the server-selected profile in Auto mode and releases it on unmount", () => {
+	it("uses a browser-safe profile in Auto mode and releases it on unmount", () => {
 		const sendBeacon = vi.fn(() => true);
 		Object.defineProperty(navigator, "sendBeacon", {
 			configurable: true,
@@ -121,15 +121,11 @@ describe("Player", () => {
 		const instance = fakeInstances[0]!;
 		expect(instance.attachMedia).toHaveBeenCalled();
 		const source = instance.loadSource.mock.calls[0]?.[0] as string;
-		const sourceUrl = new URL(source, "http://localhost");
-		expect(sourceUrl.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
-		expect(sourceUrl.searchParams.has("profile")).toBe(false);
-		const viewerId = sourceUrl.searchParams.get("viewerId");
-		expect(viewerId).toMatch(/^[0-9a-f-]{36}$/i);
+		const viewerId = expectLiveSource(source, CHANNEL_ID, "original-quality");
 
 		unmount();
 		expect(sendBeacon).toHaveBeenCalledWith(
-			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release`
+			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release?profile=original-quality`
 		);
 	});
 
@@ -154,12 +150,11 @@ describe("Player", () => {
 		await waitFor(() => expect(fakeInstances).toHaveLength(1));
 		expect(FakeHls.isSupported).toHaveBeenCalled();
 		expect(fakeInstances[0]?.attachMedia).toHaveBeenCalledWith(video);
-		const source = new URL(
+		expectLiveSource(
 			fakeInstances[0]?.loadSource.mock.calls[0]?.[0] as string,
-			"http://localhost"
+			CHANNEL_ID,
+			"original-quality"
 		);
-		expect(source.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
-		expect(source.searchParams.has("profile")).toBe(false);
 		expect(screen.queryByTestId("player-error")).not.toBeInTheDocument();
 	});
 
@@ -175,9 +170,7 @@ describe("Player", () => {
 
 		await waitFor(() => expect(FakeHls.isSupported).toHaveBeenCalled());
 		expect(fakeInstances).toHaveLength(0);
-		const source = new URL(video.src);
-		expect(source.pathname).toBe(`/api/v1/stream/${CHANNEL_ID}/master.m3u8`);
-		expect(source.searchParams.has("profile")).toBe(false);
+		expectLiveSource(video.src, CHANNEL_ID, "original-quality");
 	});
 
 	it("explains when neither HLS playback engine is supported", async () => {
@@ -456,7 +449,7 @@ describe("Player", () => {
 				instance.loadSource.mock.calls.length - 1
 			]?.[0] as string,
 			"00000000-0000-4000-8000-000000000002",
-			null
+			"original-quality"
 		);
 	});
 
