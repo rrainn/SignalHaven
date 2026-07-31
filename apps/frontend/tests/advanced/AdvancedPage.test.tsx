@@ -9,6 +9,7 @@ import {
 } from "../../app/_advanced/AdvancedModeProvider";
 import {
 	getExternalIp,
+	listComskipWork,
 	listFfmpegWork,
 	stopFfmpegWork
 } from "../../lib/api-client";
@@ -16,19 +17,23 @@ import {
 vi.mock("../../lib/api-client", () => ({
 	formatClientError: (_error: unknown, fallback: string) => fallback,
 	listFfmpegWork: vi.fn(),
+	listComskipWork: vi.fn(),
 	getExternalIp: vi.fn(),
 	stopFfmpegWork: vi.fn()
 }));
 
 const listMock = vi.mocked(listFfmpegWork);
+const listComskipMock = vi.mocked(listComskipWork);
 const externalIpMock = vi.mocked(getExternalIp);
 const stopMock = vi.mocked(stopFfmpegWork);
 
 beforeEach(() => {
 	localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
 	listMock.mockReset();
+	listComskipMock.mockReset();
 	externalIpMock.mockReset();
 	stopMock.mockReset();
+	listComskipMock.mockResolvedValue({ items: [] });
 });
 
 describe("AdvancedPage", () => {
@@ -63,13 +68,48 @@ describe("AdvancedPage", () => {
 
 		expect(stopMock).toHaveBeenCalledWith("live:channel-1");
 		expect(
-			await screen.findByText("No active FFmpeg work")
+			await screen.findByText("No active FFmpeg jobs")
 		).toBeInTheDocument();
+	});
+
+	it("shows active FFmpeg and Comskip jobs in separate task groups", async () => {
+		listMock.mockResolvedValue({ items: [] });
+		listComskipMock.mockResolvedValue({
+			items: [
+				{
+					id: "commercial:recording-1",
+					recordingId: "recording-1",
+					label: "Evening News",
+					state: "running",
+					startedAt: "2026-07-20T12:00:00.000Z"
+				}
+			]
+		});
+		externalIpMock.mockResolvedValue({ ip: "203.0.113.42" });
+
+		render(
+			<AdvancedModeProvider>
+				<AdvancedPage />
+			</AdvancedModeProvider>
+		);
+
+		expect(
+			await screen.findByRole("heading", { name: "Active tasks" })
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { name: "FFmpeg jobs" })
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { name: "Comskip jobs" })
+		).toBeInTheDocument();
+		expect(screen.getByText("Evening News")).toBeInTheDocument();
+		expect(screen.getByText("No active FFmpeg jobs")).toBeInTheDocument();
 	});
 
 	it("does not repeatedly send the server address to the external lookup", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		listMock.mockResolvedValue({ items: [] });
+		listComskipMock.mockResolvedValue({ items: [] });
 		externalIpMock.mockResolvedValue({ ip: "203.0.113.42" });
 
 		try {
@@ -86,6 +126,7 @@ describe("AdvancedPage", () => {
 				await vi.advanceTimersByTimeAsync(3_000);
 			});
 			await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+			expect(listComskipMock).toHaveBeenCalledTimes(2);
 			expect(externalIpMock).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.useRealTimers();

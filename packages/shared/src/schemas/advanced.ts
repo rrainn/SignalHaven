@@ -23,6 +23,22 @@ export const ffmpegWorkListSchema = z.object({
 export type FfmpegWorkItem = z.infer<typeof ffmpegWorkItemSchema>;
 export type FfmpegWorkList = z.infer<typeof ffmpegWorkListSchema>;
 
+/** One active Comskip commercial-analysis process visible to operators. */
+export const comskipWorkItemSchema = z.object({
+	id: z.string().min(1),
+	recordingId: z.string().min(1),
+	label: z.string().min(1),
+	state: z.literal("running"),
+	startedAt: z.string()
+});
+
+export const comskipWorkListSchema = z.object({
+	items: z.array(comskipWorkItemSchema)
+});
+
+export type ComskipWorkItem = z.infer<typeof comskipWorkItemSchema>;
+export type ComskipWorkList = z.infer<typeof comskipWorkListSchema>;
+
 /** External address reported by the SignalHaven server's IP lookup. */
 export const externalIpResponseSchema = z.object({
 	ip: z.string().min(1)

@@ -1,4 +1,5 @@
 import {
+	comskipWorkListSchema,
 	externalIpResponseSchema,
 	ffmpegWorkListSchema
 } from "@signalhaven/shared";
@@ -11,6 +12,7 @@ import {
 	type RecordingsService
 } from "../../recordings/recordings.service";
 import type { StreamingService } from "../../streaming/streaming.service";
+import type { CommercialAnalysisService } from "../../commercials/commercial-analysis.service";
 import { HttpError } from "../middleware/errors";
 import { validate } from "../middleware/validate";
 
@@ -56,6 +58,9 @@ function parseExternalIp(body: string): string | null {
 export function createAdvancedRouter(deps: {
 	streaming?: StreamingService | undefined;
 	recordings?: RecordingsService | undefined;
+	commercialAnalysis?:
+		| Pick<CommercialAnalysisService, "getActiveWork">
+		| undefined;
 	fetch?: typeof fetch | undefined;
 	env?: NodeJS.ProcessEnv | undefined;
 }): Router {
@@ -140,6 +145,17 @@ export function createAdvancedRouter(deps: {
 		} catch (error) {
 			next(error);
 		}
+	});
+
+	router.get("/advanced/comskip", (_req, res) => {
+		const items = (deps.commercialAnalysis?.getActiveWork() ?? []).map(
+			(work) => ({
+				id: `commercial:${work.recordingId}`,
+				...work
+			})
+		);
+		res.setHeader("Cache-Control", "no-store");
+		res.json(comskipWorkListSchema.parse({ items }));
 	});
 
 	router.delete(

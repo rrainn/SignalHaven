@@ -52,6 +52,14 @@ export interface CommercialAnalysisServiceOptions {
 	createDetector?: (executable: string) => CommercialDetector;
 }
 
+/** Sanitized snapshot of one detector process owned by this service. */
+export interface ActiveCommercialAnalysisWork {
+	recordingId: string;
+	label: string;
+	state: "running";
+	startedAt: string;
+}
+
 export class CommercialAnalysisNotAvailableError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -67,6 +75,7 @@ export class CommercialAnalysisService {
 	private readonly resolveConfig: () => Promise<CommercialAnalysisConfig>;
 	private readonly bus: EventBus | undefined;
 	private readonly createDetector: (executable: string) => CommercialDetector;
+	private readonly activeWork = new Map<string, ActiveCommercialAnalysisWork>();
 
 	constructor(options: CommercialAnalysisServiceOptions) {
 		this.repository = options.repository;
@@ -85,6 +94,13 @@ export class CommercialAnalysisService {
 	/** Return the stable API shape even when analysis was never requested. */
 	async get(recordingId: string): Promise<CommercialAnalysis> {
 		return toPublicAnalysis(await this.repository.get(recordingId));
+	}
+
+	/** Return stable, path-free snapshots for the Advanced tasks page. */
+	getActiveWork(): ActiveCommercialAnalysisWork[] {
+		return [...this.activeWork.values()]
+			.map((work) => ({ ...work }))
+			.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 	}
 
 	/** Queue completed media once unless settings or detector version changed. */
@@ -183,6 +199,12 @@ export class CommercialAnalysisService {
 		const workingDirectory = await mkdtemp(
 			join(tmpdir(), "signalhaven-commercials-")
 		);
+		this.activeWork.set(recordingId, {
+			recordingId,
+			label: recording.title,
+			state: "running",
+			startedAt: analysis.startedAt?.toISOString() ?? new Date().toISOString()
+		});
 		try {
 			const detector = this.createDetector(config.executablePath);
 			const detectorMarkers = await detector.detect({
@@ -203,6 +225,8 @@ export class CommercialAnalysisService {
 				publicDiagnostic(error, recording.filePath, config.executablePath)
 			);
 		} finally {
+			// Remove the snapshot before cleanup so completed work disappears promptly.
+			this.activeWork.delete(recordingId);
 			// Raw Comskip files are disposable; normalized DB markers are authoritative.
 			await rm(workingDirectory, { recursive: true, force: true }).catch(
 				() => undefined

@@ -2,6 +2,7 @@ import {
 	channelListSchema,
 	channelMergeSchema,
 	channelQualitySchema,
+	comskipWorkListSchema,
 	epgGridSchema,
 	epgProgramDetailsSchema,
 	epgRefreshResultSchema,
@@ -41,6 +42,7 @@ import {
 	type ChannelList,
 	type ChannelMerge,
 	type ChannelQuality,
+	type ComskipWorkList,
 	type EpgGrid,
 	type EpgProgramDetails,
 	type EpgRefreshResult,
@@ -310,6 +312,13 @@ export function getChannelQuality(
 /** Active FFmpeg processes shown by the advanced operations page. */
 export function listFfmpegWork(init?: ApiRequestInit): Promise<FfmpegWorkList> {
 	return apiRequest("/api/v1/advanced/ffmpeg", ffmpegWorkListSchema, init);
+}
+
+/** Active Comskip detector processes shown by the advanced operations page. */
+export function listComskipWork(
+	init?: ApiRequestInit
+): Promise<ComskipWorkList> {
+	return apiRequest("/api/v1/advanced/comskip", comskipWorkListSchema, init);
 }
 
 /** Get the public IP address observed from the SignalHaven server. */

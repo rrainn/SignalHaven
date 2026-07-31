@@ -429,6 +429,7 @@ export function createAppWithServices(
 			epgMatcherService,
 			streamingService,
 			recordingsService,
+			commercialAnalysisService: commercialAnalysis,
 			seriesRulesService,
 			searchService,
 			metrics,

@@ -70,3 +70,38 @@ test("advanced external IP route accepts the lookup's JSON response", async () =
 	assert.equal(response.status, 200);
 	assert.deepEqual(response.body, { ip: "2001:db8::42" });
 });
+
+test("advanced Comskip route returns active commercial-analysis work", async () => {
+	const app = express();
+	app.use(
+		"/api/v1",
+		createAdvancedRouter({
+			commercialAnalysis: {
+				getActiveWork: () => [
+					{
+						recordingId: "recording-1",
+						label: "Evening News",
+						state: "running",
+						startedAt: "2026-07-20T12:00:00.000Z"
+					}
+				]
+			}
+		})
+	);
+
+	const response = await request(app).get("/api/v1/advanced/comskip");
+
+	assert.equal(response.status, 200);
+	assert.deepEqual(response.body, {
+		items: [
+			{
+				id: "commercial:recording-1",
+				recordingId: "recording-1",
+				label: "Evening News",
+				state: "running",
+				startedAt: "2026-07-20T12:00:00.000Z"
+			}
+		]
+	});
+	assert.equal(response.headers["cache-control"], "no-store");
+});
