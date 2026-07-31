@@ -3,6 +3,7 @@
 	"references": [
 		{ "path": "packages/shared" },
 		{ "path": "apps/backend" },
+		{ "path": "apps/bonjour" },
 		{ "path": "apps/frontend" }
 	]
 }

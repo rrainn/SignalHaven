@@ -16,7 +16,7 @@ env:
   DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
 
 jobs:
-  # Validate the exact release image on amd64 before publishing either platform.
+  # Validate both release images on amd64 before publishing either platform.
   build-and-test:
     name: Build & smoke test
     runs-on: ubuntu-latest
@@ -69,6 +69,21 @@ jobs:
           # A stable per-platform scope lets every release advance the same cache.
           cache-to: type=gha,scope=signalhaven-linux-amd64,mode=max
 
+      - name: Build Bonjour image (load into local docker)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.bonjour
+          load: true
+          platforms: linux/amd64
+          tags: signalhaven-bonjour:ci
+          build-args: |
+            SIGNALHAVEN_VERSION=${{ github.event.release.tag_name }}
+            SIGNALHAVEN_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=signalhaven-bonjour-linux-amd64
+          # Keep the small sidecar cache independent of the media-heavy image.
+          cache-to: type=gha,scope=signalhaven-bonjour-linux-amd64,mode=max
+
       - name: Verify bundled media tools are present in the image
         run: |
           docker run --rm signalhaven:ci ffmpeg -version
@@ -80,13 +95,14 @@ jobs:
           # Point compose at the locally-built image so we don't pull from
           # the registry during CI.
           export SIGNALHAVEN_IMAGE=signalhaven:ci
+          export SIGNALHAVEN_BONJOUR_IMAGE=signalhaven-bonjour:ci
           # Pre-seed a root-owned volume so Docker does not copy image ownership.
           recordings_volume="${COMPOSE_PROJECT_NAME}_signalhaven-recordings"
           docker volume create "$recordings_volume"
           docker run --rm --user 0 --entrypoint sh \
             -v "$recordings_volume:/recordings" signalhaven:ci \
             -c 'mkdir -p /recordings/.signalhaven-ci-volume-seed; chown root:root /recordings; chmod 0755 /recordings'
-          docker compose up -d
+          docker compose --profile bonjour up -d
           # Wait up to ~60s for SignalHaven to become healthy.
           for i in $(seq 1 30); do
             status=$(curl -s -o /tmp/health.json -w '%{http_code}' http://127.0.0.1:3000/api/v1/health || true)
@@ -100,22 +116,38 @@ jobs:
               # Verify the application UID can create DVR output on the mount.
               docker compose exec -T --user 10001:10001 signalhaven \
                 sh -c 'probe=/var/lib/signalhaven/recordings/.signalhaven-ci-write-probe; : > "$probe"; rm -f "$probe"'
-              exit 0
+              break
             fi
             echo "Waiting for SignalHaven health ($i)..."
             sleep 2
           done
-          echo "SignalHaven did not become healthy in time"
-          docker compose logs
+          if [ "$status" != "200" ]; then
+            echo "SignalHaven did not become healthy in time"
+            docker compose logs
+            exit 1
+          fi
+
+          # The host-networked sidecar should bind multicast and publish only
+          # after the same host endpoint becomes healthy.
+          for i in $(seq 1 30); do
+            if docker compose --profile bonjour logs signalhaven-bonjour | grep -q '"event":"advertised"'; then
+              echo "Bonjour sidecar advertised SignalHaven"
+              exit 0
+            fi
+            echo "Waiting for Bonjour advertisement ($i)..."
+            sleep 2
+          done
+          echo "Bonjour sidecar did not advertise in time"
+          docker compose --profile bonjour logs signalhaven-bonjour
           exit 1
 
       - name: Tear down compose stack
         if: always()
-        run: docker compose down -v || true
+        run: docker compose --profile bonjour down -v || true
 
   # Build each architecture on matching hardware after the amd64 smoke test.
   publish_platform:
-    name: Build & push ${{ matrix.platform }}
+    name: Build & push ${{ matrix.component }} ${{ matrix.platform }}
     needs: build-and-test
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -125,14 +157,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux/amd64
+          - component: signalhaven
+            dockerfile: Dockerfile
+            image_suffix: ""
+            platform: linux/amd64
             runner: ubuntu-24.04
-            artifact: amd64
+            artifact: signalhaven-amd64
             cache_scope: signalhaven-linux-amd64
-          - platform: linux/arm64
+          - component: signalhaven
+            dockerfile: Dockerfile
+            image_suffix: ""
+            platform: linux/arm64
             runner: ubuntu-24.04-arm
-            artifact: arm64
+            artifact: signalhaven-arm64
             cache_scope: signalhaven-linux-arm64
+          - component: bonjour
+            dockerfile: Dockerfile.bonjour
+            image_suffix: -bonjour
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            artifact: bonjour-amd64
+            cache_scope: signalhaven-bonjour-linux-amd64
+          - component: bonjour
+            dockerfile: Dockerfile.bonjour
+            image_suffix: -bonjour
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact: bonjour-arm64
+            cache_scope: signalhaven-bonjour-linux-arm64
 
     steps:
       - name: Check out repository
@@ -153,7 +205,7 @@ jobs:
       - name: Normalize image name
         id: image
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}
         run: |
           # OCI repository names are lowercase even when the GitHub repo is not.
           echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
@@ -179,6 +231,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           tags: ${{ steps.image.outputs.name }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -210,20 +263,30 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Assemble the native platform images only after both digest pushes succeed.
+  # Assemble each native-platform image after every digest push succeeds.
   publish_manifest:
-    name: Publish multi-arch manifest
+    name: Publish ${{ matrix.component }} multi-arch manifest
     needs: publish_platform
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: signalhaven
+            image_suffix: ""
+            artifact_pattern: signalhaven
+          - component: bonjour
+            image_suffix: -bonjour
+            artifact_pattern: bonjour
 
     steps:
       - name: Download platform digests
         uses: actions/download-artifact@v4
         with:
-          pattern: digest-*
+          pattern: digest-${{ matrix.artifact_pattern }}-*
           path: ${{ runner.temp }}/digests
           merge-multiple: true
 
@@ -240,7 +303,7 @@ jobs:
       - name: Normalize image name
         id: image
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.image_suffix }}
         run: |
           # Match the normalized name used by each platform build.
           echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"

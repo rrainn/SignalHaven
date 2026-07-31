@@ -4,6 +4,7 @@ import test from "node:test";
 
 const workflowUrl = new URL("../.github/workflows/docker.yml", import.meta.url);
 const dockerfileUrl = new URL("../Dockerfile", import.meta.url);
+const bonjourDockerfileUrl = new URL("../Dockerfile.bonjour", import.meta.url);
 
 test("Docker publishing runs only when a GitHub release is published", async () => {
 	const workflow = await readFile(workflowUrl, "utf8");
@@ -36,9 +37,10 @@ test("prereleases publish to their moving channel without advancing latest", asy
 });
 
 test("release metadata reaches the image without changing stable cache scopes", async () => {
-	const [workflow, dockerfile] = await Promise.all([
+	const [workflow, dockerfile, bonjourDockerfile] = await Promise.all([
 		readFile(workflowUrl, "utf8"),
-		readFile(dockerfileUrl, "utf8")
+		readFile(dockerfileUrl, "utf8"),
+		readFile(bonjourDockerfileUrl, "utf8")
 	]);
 
 	assert.match(workflow, /SIGNALHAVEN_VERSION=\$\{\{[^\n]+\}\}/);
@@ -58,6 +60,33 @@ test("release metadata reaches the image without changing stable cache scopes", 
 		dockerfile.slice(metadataArg),
 		/ENV SIGNALHAVEN_VERSION=\$\{SIGNALHAVEN_VERSION\}/
 	);
+	assert.match(bonjourDockerfile, /ARG SIGNALHAVEN_VERSION/);
+	assert.match(
+		bonjourDockerfile,
+		/ENV SIGNALHAVEN_VERSION=\$\{SIGNALHAVEN_VERSION\}/
+	);
+});
+
+test("releases publish the Bonjour sidecar for both native architectures", async () => {
+	const workflow = await readFile(workflowUrl, "utf8");
+
+	assert.match(workflow, /file: Dockerfile\.bonjour/);
+	assert.match(workflow, /tags: signalhaven-bonjour:ci/);
+	assert.equal(workflow.match(/dockerfile: Dockerfile\.bonjour/g)?.length, 2);
+	assert.equal(workflow.match(/image_suffix: -bonjour/g)?.length, 3);
+	assert.match(
+		workflow,
+		/pattern: digest-\$\{\{ matrix\.artifact_pattern \}\}-\*/
+	);
+});
+
+test("the Bonjour image is non-root and includes Linux interface discovery", async () => {
+	const dockerfile = await readFile(bonjourDockerfileUrl, "utf8");
+
+	assert.match(dockerfile, /iproute2/);
+	assert.match(dockerfile, /USER signalhaven/);
+	assert.match(dockerfile, /VOLUME \["\/var\/lib\/signalhaven-bonjour"\]/);
+	assert.doesNotMatch(dockerfile, /EXPOSE 5353/);
 });
 
 test("FFmpeg uses immutable checksum-verified artifacts with licensing material", async () => {

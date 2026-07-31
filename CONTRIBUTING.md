@@ -97,6 +97,7 @@ committing.
 ## Project layout
 
 - `apps/backend` — Express backend, DB migrations, streaming/recording services
+- `apps/bonjour` — optional Linux DNS-SD advertiser sidecar
 - `apps/frontend` — Next.js UI
 - `packages/shared` — shared schemas/types
 

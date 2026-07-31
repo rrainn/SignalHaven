@@ -83,6 +83,18 @@ docker compose up -d
 
 Open [http://localhost:3000](http://localhost:3000). The first-run wizard will help you add a tuner, connect guide data, choose a recordings folder, and review channel mapping.
 
+On a Linux Docker host, enable automatic iOS and macOS discovery with the
+optional Bonjour sidecar:
+
+```bash
+docker compose --profile bonjour up -d
+```
+
+The sidecar is published separately, uses host networking for link-local
+multicast, and advertises the configured `SIGNALHAVEN_HTTP_PORT`. See
+[Local discovery with Bonjour](docs/bonjour.md) for platform support,
+configuration, and iOS integration details.
+
 Your database and recordings persist in Docker volumes. To use an existing PostgreSQL server or change storage and playback behavior, see the [configuration reference](docs/configuration.md).
 
 > [!IMPORTANT]
@@ -99,10 +111,12 @@ docker compose up -d
 
 For reproducible deployments, set `SIGNALHAVEN_IMAGE` in `.env` to a numbered release instead of `latest`.
 
+The main and Bonjour images are published under matching release tags.
 Prerelease images are published under both their exact version and a moving
 channel tag. For example, `v0.2.0-beta.2` publishes
 `ghcr.io/rrainn/signalhaven:0.2.0-beta.2` and
-`ghcr.io/rrainn/signalhaven:beta`; alpha versions similarly update `:alpha`.
+`ghcr.io/rrainn/signalhaven:beta`, with the same tags under
+`ghcr.io/rrainn/signalhaven-bonjour`; alpha versions similarly update `:alpha`.
 These images do not update `:latest` or stable major/minor tags. Mark the GitHub
 Release as a prerelease when publishing it, then set `SIGNALHAVEN_IMAGE` to the
 exact version or channel tag to test it.
