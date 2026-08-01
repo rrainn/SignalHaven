@@ -682,6 +682,7 @@ describe("RecordingsPage", () => {
 
 	it("preserves prior pages and retries a failed later page", async () => {
 		const user = userEvent.setup();
+		const initialPage = deferred<RecordingList>();
 		let laterAttempts = 0;
 		const beyond = rec({
 			id: "99999999-9999-4999-8999-999999999999",
@@ -689,10 +690,7 @@ describe("RecordingsPage", () => {
 		});
 		const loadRecordings = vi.fn(async (query: Partial<RecordingListQuery>) => {
 			if (!query.cursor) {
-				return page([FIXTURE[0]!], {
-					total: 25,
-					nextCursor: "page-two"
-				});
+				return initialPage.promise;
 			}
 			laterAttempts += 1;
 			if (laterAttempts === 1) throw new Error("Later page failed");
@@ -705,6 +703,15 @@ describe("RecordingsPage", () => {
 				enableWebSocket={false}
 			/>
 		);
+		// Resolve inside act so CI load cannot race the initial-page assertion.
+		await act(async () => {
+			initialPage.resolve(
+				page([FIXTURE[0]!], {
+					total: 25,
+					nextCursor: "page-two"
+				})
+			);
+		});
 		expect(await screen.findByText("Sherlock S01E01")).toBeInTheDocument();
 		await user.click(screen.getByTestId("recordings-load-more"));
 
