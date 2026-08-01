@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import { errorHandler } from "../src/http/middleware/errors";
 import { createAdvancedRouter } from "../src/http/routes/advanced";
+import type { RecordingsService } from "../src/recordings/recordings.service";
 
 test("advanced external IP route is disabled unless explicitly enabled", async () => {
 	const app = express();
@@ -104,4 +105,52 @@ test("advanced Comskip route returns active commercial-analysis work", async () 
 		]
 	});
 	assert.equal(response.headers["cache-control"], "no-store");
+});
+
+test("advanced FFmpeg controls address exact recording playback sessions", async () => {
+	const stopped: string[] = [];
+	const recordings = {
+		getActiveFfmpegWork: async () => [
+			{
+				recordingId: "recording-1",
+				playbackSessionId: "playback-session-1",
+				title: "Evening News",
+				kind: "recording-playback" as const,
+				state: "ready",
+				startedAt: "2026-07-20T12:00:00.000Z",
+				profile: "original-quality",
+				hwaccel: null,
+				clientCount: 2
+			}
+		],
+		stopPlayback: (id: string) => {
+			stopped.push(id);
+			return true;
+		}
+	} as unknown as RecordingsService;
+	const app = express();
+	app.use("/api/v1", createAdvancedRouter({ recordings }));
+	app.use(errorHandler());
+
+	const list = await request(app).get("/api/v1/advanced/ffmpeg");
+	assert.equal(list.status, 200);
+	assert.deepEqual(list.body.items, [
+		{
+			id: "playback:playback-session-1",
+			kind: "recording-playback",
+			label: "Evening News",
+			recordingId: "recording-1",
+			state: "ready",
+			startedAt: "2026-07-20T12:00:00.000Z",
+			profile: "original-quality",
+			hwaccel: null,
+			clientCount: 2
+		}
+	]);
+
+	const removed = await request(app).delete(
+		"/api/v1/advanced/ffmpeg/playback:playback-session-1"
+	);
+	assert.equal(removed.status, 204);
+	assert.deepEqual(stopped, ["playback-session-1"]);
 });

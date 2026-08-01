@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildChannelLogoUrl,
 	buildRecordingArtworkUrl,
+	buildRecordingPlaybackReleaseUrl,
 	buildRecordingPlaybackUrl,
 	deleteRecording,
 	listAllRecordings,
@@ -56,6 +57,16 @@ describe("buildRecordingPlaybackUrl", () => {
 		);
 		expect(buildRecordingPlaybackUrl("recording/id", 0)).toBe(
 			"/api/v1/recordings/recording%2Fid/stream.m3u8"
+		);
+	});
+
+	it("carries a managed viewer through playback and release URLs", () => {
+		const viewerId = "33333333-3333-4333-8333-333333333333";
+		expect(buildRecordingPlaybackUrl("recording/id", 42, viewerId)).toBe(
+			`/api/v1/recordings/recording%2Fid/stream.m3u8?start=42&viewerId=${viewerId}`
+		);
+		expect(buildRecordingPlaybackReleaseUrl("recording/id", viewerId)).toBe(
+			`/api/v1/recordings/recording%2Fid/viewers/${viewerId}/release`
 		);
 	});
 });

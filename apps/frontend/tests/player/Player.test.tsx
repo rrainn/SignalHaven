@@ -496,6 +496,84 @@ describe("Player", () => {
 		);
 	});
 
+	it("keeps a paused recording paused when a seek swaps its source", () => {
+		const play = vi
+			.spyOn(HTMLMediaElement.prototype, "play")
+			.mockResolvedValue();
+		const { rerender } = renderPlayer({
+			isRecording: true,
+			recordingDurationSeconds: 3_000,
+			recordingStartSeconds: 0,
+			src: "/recording-first.m3u8"
+		});
+		const instance = fakeInstances[0]!;
+		const manifestHandler = instance.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.MANIFEST_PARSED
+		)?.[1] as (() => void) | undefined;
+		expect(manifestHandler).toBeDefined();
+		act(() => manifestHandler?.());
+		expect(play).toHaveBeenCalledOnce();
+		play.mockClear();
+
+		rerender(
+			<Player
+				channelId={CHANNEL_ID}
+				hlsCtorOverride={FakeHlsCtor}
+				isRecording
+				recordingDurationSeconds={3_000}
+				recordingStartSeconds={1_800}
+				src="/recording-second.m3u8"
+			/>
+		);
+		act(() => manifestHandler?.());
+
+		expect(instance.loadSource).toHaveBeenLastCalledWith(
+			"/recording-second.m3u8"
+		);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("resumes a playing recording after a seek swaps its source", () => {
+		let paused = true;
+		const play = vi
+			.spyOn(HTMLMediaElement.prototype, "play")
+			.mockImplementation(() => {
+				paused = false;
+				return Promise.resolve();
+			});
+		const { rerender } = renderPlayer({
+			isRecording: true,
+			recordingDurationSeconds: 3_000,
+			recordingStartSeconds: 0,
+			src: "/recording-first.m3u8"
+		});
+		const video = screen.getByTestId("player-video") as HTMLVideoElement;
+		Object.defineProperty(video, "paused", {
+			configurable: true,
+			get: () => paused
+		});
+		const instance = fakeInstances[0]!;
+		const manifestHandler = instance.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.MANIFEST_PARSED
+		)?.[1] as (() => void) | undefined;
+		act(() => manifestHandler?.());
+		expect(play).toHaveBeenCalledOnce();
+
+		rerender(
+			<Player
+				channelId={CHANNEL_ID}
+				hlsCtorOverride={FakeHlsCtor}
+				isRecording
+				recordingDurationSeconds={3_000}
+				recordingStartSeconds={1_800}
+				src="/recording-second.m3u8"
+			/>
+		);
+		act(() => manifestHandler?.());
+
+		expect(play).toHaveBeenCalledTimes(2);
+	});
+
 	it("keeps Source as an explicit direct-stream opt-in", async () => {
 		const user = userEvent.setup();
 		renderPlayer();
@@ -743,6 +821,21 @@ describe("Player", () => {
 		expect(screen.getByTestId("player-time")).toHaveTextContent(
 			"10:05 / 50:00"
 		);
+	});
+
+	it("commits one recording-window seek for a slider adjustment", () => {
+		const onRecordingSeek = vi.fn();
+		renderPlayer({
+			isRecording: true,
+			recordingDurationSeconds: 3_000,
+			recordingStartSeconds: 600,
+			onRecordingSeek
+		});
+		const slider = screen.getByRole("slider", { name: "Seek" });
+		fireEvent.keyDown(slider, { key: "End" });
+		fireEvent.keyUp(slider, { key: "End" });
+
+		expect(onRecordingSeek).toHaveBeenCalledTimes(1);
 	});
 
 	it("seeks within the retained live window and returns to the live edge", async () => {

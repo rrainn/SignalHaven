@@ -29,6 +29,7 @@ import {
 import {
 	ApiError,
 	buildRecordingArtworkUrl,
+	buildRecordingPlaybackReleaseUrl,
 	buildRecordingPlaybackUrl,
 	getRecording,
 	listChannels,
@@ -134,6 +135,8 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 	const preferencesRef = useRef(preferences);
 	preferencesRef.current = preferences;
 	const use24Hour = use24HourClock();
+	// One stable UUID lets the backend distinguish this tab from HLS requests.
+	const viewerId = useMemo(() => crypto.randomUUID(), [props.recordingId]);
 	const [recording, setRecording] = useState<RecordingDetail | null>(
 		props.initialRecording ?? null
 	);
@@ -250,7 +253,12 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 					const prepare =
 						props.preparePlayback ??
 						((startSeconds: number) =>
-							prepareRecordingPlayback(props.recordingId, startSeconds));
+							prepareRecordingPlayback(
+								props.recordingId,
+								startSeconds,
+								{},
+								viewerId
+							));
 					await prepare(playbackStart);
 				}
 				if (cancelled) return;
@@ -281,8 +289,40 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 		props.initialPlayerSettings,
 		props.loadChannels,
 		props.preparePlayback,
+		viewerId,
 		preferences?.status
 	]);
+
+	// Release survives client-side navigation and tab closure, matching live TV.
+	useEffect(() => {
+		const releaseUrl = buildRecordingPlaybackReleaseUrl(
+			props.recordingId,
+			viewerId
+		);
+		let released = false;
+		const release = (): void => {
+			if (released) return;
+			released = true;
+			try {
+				if (navigator.sendBeacon?.(releaseUrl)) return;
+			} catch {
+				// Keepalive remains available when a browser rejects the beacon.
+			}
+			void fetch(releaseUrl, { method: "POST", keepalive: true }).catch(
+				() => undefined
+			);
+		};
+		const restore = (event: PageTransitionEvent): void => {
+			if (event.persisted) released = false;
+		};
+		window.addEventListener("pagehide", release);
+		window.addEventListener("pageshow", restore);
+		return () => {
+			window.removeEventListener("pagehide", release);
+			window.removeEventListener("pageshow", restore);
+			release();
+		};
+	}, [props.recordingId, viewerId]);
 
 	// Route reuse should never carry a prior recording's seeded seek state.
 	useEffect(() => {
@@ -602,7 +642,8 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 
 	const playbackUrl = buildRecordingPlaybackUrl(
 		recording.id,
-		playbackStartSeconds
+		playbackStartSeconds,
+		viewerId
 	);
 	const episodeLabel = recording.metadata
 		? formatEpisodeLabel(recording.metadata)
@@ -641,7 +682,10 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 					onRecordingSeek={(positionSeconds) => {
 						// Changing the URL causes the backend to replace the old lazy
 						// FFmpeg window and begin producing segments at this timestamp.
-						setPlaybackStartSeconds(Math.floor(positionSeconds));
+						const next = Math.floor(positionSeconds);
+						setPlaybackStartSeconds((current) =>
+							current === next ? current : next
+						);
 					}}
 					commercialMarkers={recording.commercialAnalysis.markers}
 					src={playbackUrl}

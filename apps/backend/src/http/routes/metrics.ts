@@ -39,7 +39,7 @@ export function createMetricsRouter(deps: MetricsRouteDependencies): Router {
 			const activeRecordings = recordingsService.getActiveRecordingCount();
 			collector.setGauge("recordings_active", activeRecordings);
 			ffmpegProcesses +=
-				activeRecordings + recordingsService.getActivePlaybackSessionCount();
+				activeRecordings + recordingsService.getRunningPlaybackProcessCount();
 		}
 		collector.setGauge("ffmpeg_processes_total", ffmpegProcesses);
 

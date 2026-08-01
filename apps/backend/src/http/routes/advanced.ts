@@ -128,7 +128,11 @@ export function createAdvancedRouter(deps: {
 					clientCount: session.clientCount
 				})),
 				...recordings.map((recording) => ({
-					id: `${recording.kind === "recording" ? "recording" : "playback"}:${recording.recordingId}`,
+					id: `${recording.kind === "recording" ? "recording" : "playback"}:${
+						recording.kind === "recording"
+							? recording.recordingId
+							: recording.playbackSessionId
+					}`,
 					kind: recording.kind,
 					label: recording.title,
 					recordingId: recording.recordingId,
@@ -137,6 +141,9 @@ export function createAdvancedRouter(deps: {
 					...(recording.profile ? { profile: recording.profile } : {}),
 					...(recording.hwaccel !== undefined
 						? { hwaccel: recording.hwaccel }
+						: {}),
+					...(recording.clientCount !== undefined
+						? { clientCount: recording.clientCount }
 						: {})
 				}))
 			];
@@ -175,7 +182,9 @@ export function createAdvancedRouter(deps: {
 				} else if (id.startsWith("playback:")) {
 					if (!deps.recordings)
 						throw new HttpError(404, "not_found", "FFmpeg work not found");
-					await deps.recordings.stopPlayback(id.slice(9));
+					const stopped = deps.recordings.stopPlayback(id.slice(9));
+					if (!stopped)
+						throw new HttpError(404, "not_found", "FFmpeg work not found");
 				} else {
 					throw new HttpError(404, "not_found", "FFmpeg work not found");
 				}

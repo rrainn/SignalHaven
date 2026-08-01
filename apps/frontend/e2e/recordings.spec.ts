@@ -101,7 +101,10 @@ interface BackendState {
 	patches: Array<Record<string, unknown>>;
 	manifestRequests: number;
 	manifestStartRequests: Array<number | null>;
+	manifestViewerRequests: Array<string | null>;
 	segmentRequests: number;
+	segmentViewerRequests: Array<string | null>;
+	releaseViewerRequests: string[];
 }
 
 async function mockBackend(page: Page): Promise<BackendState> {
@@ -110,7 +113,10 @@ async function mockBackend(page: Page): Promise<BackendState> {
 		patches: [],
 		manifestRequests: 0,
 		manifestStartRequests: [],
-		segmentRequests: 0
+		manifestViewerRequests: [],
+		segmentRequests: 0,
+		segmentViewerRequests: [],
+		releaseViewerRequests: []
 	};
 
 	await page.route("**/api/v1/system/status", (route) =>
@@ -163,6 +169,18 @@ async function mockBackend(page: Page): Promise<BackendState> {
 		const url = new URL(route.request().url());
 		const path = url.pathname;
 		const method = route.request().method();
+
+		// Viewer release is idempotent because pagehide and unmount may race.
+		const releaseMatch = path.match(
+			/\/api\/v1\/recordings\/[^/]+\/viewers\/([^/]+)\/release$/
+		);
+		if (releaseMatch && method === "POST") {
+			state.releaseViewerRequests.push(
+				decodeURIComponent(releaseMatch[1] ?? "")
+			);
+			await route.fulfill({ status: 204, body: "" });
+			return;
+		}
 
 		// PATCH /api/v1/recordings/:id — record progress writes
 		const patchMatch = path.match(/\/api\/v1\/recordings\/([^/]+)$/);
@@ -334,6 +352,11 @@ async function mockBackend(page: Page): Promise<BackendState> {
 			state.manifestStartRequests.push(
 				requestedStart === null ? null : Number(requestedStart)
 			);
+			const viewerId = url.searchParams.get("viewerId");
+			state.manifestViewerRequests.push(viewerId);
+			const viewerQuery = viewerId
+				? `&viewerId=${encodeURIComponent(viewerId)}`
+				: "";
 			await route.fulfill({
 				status: 200,
 				contentType: "application/vnd.apple.mpegurl",
@@ -344,7 +367,7 @@ async function mockBackend(page: Page): Promise<BackendState> {
 					"#EXT-X-TARGETDURATION:6",
 					"#EXT-X-MEDIA-SEQUENCE:0",
 					"#EXTINF:6.0,",
-					`segments/seg-00000.ts?session=${PLAYBACK_SESSION_ID}`,
+					`segments/seg-00000.ts?session=${PLAYBACK_SESSION_ID}${viewerQuery}`,
 					"#EXT-X-ENDLIST",
 					""
 				].join("\n")
@@ -354,6 +377,7 @@ async function mockBackend(page: Page): Promise<BackendState> {
 
 		if (path.endsWith("/segments/seg-00000.ts")) {
 			state.segmentRequests += 1;
+			state.segmentViewerRequests.push(url.searchParams.get("viewerId"));
 			await route.fulfill({
 				status: 200,
 				contentType: "video/mp2t",
@@ -374,7 +398,9 @@ test.describe("Recordings library + playback (U8)", () => {
 		await mockBackend(page);
 		await page.goto("/recordings");
 
-		await expect(page.getByTestId("recordings-page")).toBeVisible();
+		await expect(
+			page.locator("#main-content").getByTestId("recordings-page")
+		).toBeVisible();
 		await expect(
 			page.getByTestId(`recording-card-${RECORDING_ID}`)
 		).toBeVisible();
@@ -515,6 +541,12 @@ test.describe("Recordings library + playback (U8)", () => {
 			"Sherlock S01E01"
 		);
 		await expect.poll(() => state.manifestRequests).toBeGreaterThan(0);
+		const initialViewerId = state.manifestViewerRequests.find(
+			(viewerId): viewerId is string => viewerId !== null
+		);
+		expect(initialViewerId).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+		);
 
 		// Drive media events after the contract-faithful HLS request so the
 		// rendered player enters its playing state and persists a seek.
@@ -544,6 +576,15 @@ test.describe("Recordings library + playback (U8)", () => {
 		// Segment activity and the persisted seek below verify playback without
 		// depending on the controls overlay's intentionally transient visibility.
 		await expect.poll(() => state.segmentRequests).toBeGreaterThan(0);
+		// Preflight, manifest, and segment requests share one page-owned viewer.
+		expect(
+			new Set(
+				[
+					...state.manifestViewerRequests,
+					...state.segmentViewerRequests
+				].filter((viewerId): viewerId is string => viewerId !== null)
+			)
+		).toEqual(new Set([initialViewerId]));
 
 		// Wait for the PATCH to land.
 		await expect
@@ -559,9 +600,13 @@ test.describe("Recordings library + playback (U8)", () => {
 		// Sanity: the recording's persisted state now reflects the resume.
 		expect(state.recordings[0]?.resumePositionSeconds).toBe(612);
 
-		// Reload the real detail route, then verify the player requests a lazy HLS
-		// window at the server-provided absolute resume position.
-		await page.reload();
+		// Client-side navigation must release this viewer before a later visit
+		// creates a fresh owner at the persisted absolute resume position.
+		await page.getByRole("button", { name: "Back to library" }).click();
+		await expect
+			.poll(() => state.releaseViewerRequests.includes(initialViewerId ?? ""))
+			.toBe(true);
+		await page.getByTestId(`recording-play-${RECORDING_ID}`).click();
 		await expect(page.getByTestId("recording-player-page")).toBeVisible();
 		await expect
 			.poll(
