@@ -61,10 +61,20 @@ channel for history and manual recovery through the merge UI.
 Completed recordings are exposed as VOD HLS through
 `/api/v1/recordings/:id/stream.m3u8`. The backend probes the stored media,
 stream-copies browser-compatible H.264/AAC streams, and selectively transcodes
-only incompatible tracks. Concurrent requests for one recording share a single
-opaque playback session. Generated playlists and segments live in a temporary
-session directory, expire after inactivity, and are removed immediately when
-the recording is deleted or the backend shuts down.
+only incompatible tracks. Playback windows are keyed by recording and seek
+offset: viewers at the same offset share work, while independent tabs can seek
+without replacing each other. A stable browser `viewerId` follows playlist and
+segment requests; navigation sends an idempotent release beacon so the final
+viewer stops FFmpeg immediately. A heartbeat timeout covers lost beacons, while
+older clients without viewer IDs retain bounded idle cleanup. Generated files
+remain in a temporary session directory and are also removed when the recording
+is deleted or the backend shuts down.
+
+Dragging the recording timeline previews the target locally and commits one
+seek when the gesture ends. Distant seeks use FFmpeg input seeking to avoid
+processing skipped media. Advanced-mode termination addresses one opaque
+playback session and installs a short quiet barrier so automatic HLS retries
+cannot recreate operator-stopped work.
 
 ## Recording recovery
 

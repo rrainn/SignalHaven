@@ -106,6 +106,8 @@ Their terminal record includes the initiating request ID when available, the
 recording and playback-session IDs, the selected profile and hardware mode,
 and the classified FFmpeg exit details. Recoverable hardware attempts that
 successfully fall back to software do not produce a terminal error record.
+The Advanced FFmpeg list reports viewer counts per opaque playback session;
+stopping one session does not interrupt viewers using a different seek window.
 
 ### Frontend runtime
 

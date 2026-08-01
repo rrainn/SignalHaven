@@ -157,23 +157,27 @@ test("GET /recordings/:id/stream.m3u8 exposes a recording manifest", async () =>
 	const app = express();
 	let requestContext: { requestId?: string } | undefined;
 	let requestedStartSeconds: number | undefined;
+	let requestedViewerId: string | undefined;
 	app.use(requestId());
 	app.use(
 		createRecordingsRouter({
 			getPlaybackManifest: async (
 				_id: string,
 				context: { requestId?: string },
-				startSeconds?: number
+				startSeconds?: number,
+				viewerId?: string
 			) => {
 				requestContext = context;
 				requestedStartSeconds = startSeconds;
+				requestedViewerId = viewerId;
 				return "#EXTM3U\n";
 			}
 		} as unknown as RecordingsService)
 	);
 
+	const viewerId = randomUUID();
 	const response = await request(app).get(
-		`/recordings/${randomUUID()}/stream.m3u8?start=1800`
+		`/recordings/${randomUUID()}/stream.m3u8?start=1800&viewerId=${viewerId}`
 	);
 
 	assert.equal(response.status, 200);
@@ -182,9 +186,33 @@ test("GET /recordings/:id/stream.m3u8 exposes a recording manifest", async () =>
 	assert.match(response.text, /^#EXTM3U/);
 	assert.equal(requestContext?.requestId, response.headers["x-request-id"]);
 	assert.equal(requestedStartSeconds, 1800);
+	assert.equal(requestedViewerId, viewerId);
 });
 
-test("seeking replaces the active FFmpeg session and starts input at the requested offset", async (t) => {
+test("POST /recordings/:id/viewers/:viewerId/release is idempotent", async () => {
+	const app = express();
+	const recordingId = randomUUID();
+	const viewerId = randomUUID();
+	const releases: Array<[string, string]> = [];
+	app.use(
+		createRecordingsRouter({
+			releasePlaybackViewer: (id: string, viewer: string) => {
+				releases.push([id, viewer]);
+				return releases.length === 1;
+			}
+		} as unknown as RecordingsService)
+	);
+
+	const path = `/recordings/${recordingId}/viewers/${viewerId}/release`;
+	assert.equal((await request(app).post(path)).status, 204);
+	assert.equal((await request(app).post(path)).status, 204);
+	assert.deepEqual(releases, [
+		[recordingId, viewerId],
+		[recordingId, viewerId]
+	]);
+});
+
+test("a viewer seek replaces only its playback window and uses input seeking", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-seek-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -200,9 +228,10 @@ test("seeking replaces the active FFmpeg session and starts input at the request
 	});
 	t.after(async () => playback.stopAll());
 
-	const first = await playback.getManifest(row.id, {}, 0);
+	const viewerId = randomUUID();
+	const first = await playback.getManifest(row.id, {}, 0, viewerId);
 	const firstSession = playback.getSession(row.id);
-	const second = await playback.getManifest(row.id, {}, 1_800);
+	const second = await playback.getManifest(row.id, {}, 1_800, viewerId);
 
 	assert.equal(attempts.length, 2);
 	const seekIndex = attempts[1]?.indexOf("-ss") ?? -1;
@@ -210,7 +239,185 @@ test("seeking replaces the active FFmpeg session and starts input at the request
 	assert.deepEqual(attempts[1]?.slice(seekIndex, inputIndex), ["-ss", "1800"]);
 	assert.notEqual(first, second);
 	assert.equal(firstSession?.getState(), "stopped");
-	assert.equal(playback.getSession(row.id)?.startSeconds, 1_800);
+	assert.equal(playback.getSession(row.id, 1_800)?.startSeconds, 1_800);
+});
+
+test("independent viewers share matching offsets without clobbering seeks", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-viewers-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input, durationSeconds: 3_000 });
+	repository.rows.set(row.id, row);
+	let spawnCount = 0;
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner(() => {
+			spawnCount += 1;
+		})
+	});
+	t.after(async () => playback.stopAll());
+	const firstViewer = randomUUID();
+	const secondViewer = randomUUID();
+
+	await Promise.all([
+		playback.getManifest(row.id, {}, 0, firstViewer),
+		playback.getManifest(row.id, {}, 0, secondViewer)
+	]);
+	const shared = playback.getSession(row.id, 0);
+	assert.equal(spawnCount, 1);
+	assert.equal(shared?.getViewerCount(), 2);
+
+	await playback.getManifest(row.id, {}, 1_800, firstViewer);
+	assert.equal(spawnCount, 2);
+	assert.equal(shared?.getState(), "ready");
+	assert.equal(shared?.getViewerCount(), 1);
+	assert.equal(playback.getSession(row.id, 1_800)?.getViewerCount(), 1);
+});
+
+test("the final viewer release stops FFmpeg and duplicate beacons are harmless", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-release-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner()
+	});
+	const firstViewer = randomUUID();
+	const secondViewer = randomUUID();
+	await playback.getManifest(row.id, {}, 0, firstViewer);
+	await playback.getManifest(row.id, {}, 0, secondViewer);
+	const session = playback.getSession(row.id, 0);
+
+	assert.equal(playback.releaseViewer(row.id, firstViewer), true);
+	assert.equal(playback.releaseViewer(row.id, firstViewer), false);
+	assert.equal(session?.getState(), "ready");
+	assert.equal(playback.releaseViewer(row.id, secondViewer), true);
+	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
+	assert.equal(session?.getState(), "stopped");
+});
+
+test("viewer heartbeat timeout cleans up when an unload beacon is lost", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-timeout-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		idleMs: 5_000,
+		viewerTimeoutMs: 30,
+		runner: createFakeRunner()
+	});
+
+	await playback.getManifest(row.id, {}, 0, randomUUID());
+	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
+	assert.equal(playback.getRunningProcessCount(), 0);
+});
+
+test("legacy activity keeps a shared window after its managed viewer leaves", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-legacy-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		idleMs: 100,
+		viewerTimeoutMs: 20,
+		runner: createFakeRunner()
+	});
+	const viewerId = randomUUID();
+	await playback.getManifest(row.id);
+	await playback.getManifest(row.id, {}, 0, viewerId);
+	const session = playback.getSession(row.id, 0);
+
+	assert.equal(playback.releaseViewer(row.id, viewerId), true);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.equal(session?.getState(), "ready");
+	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
+});
+
+test("stale segment requests cannot follow a viewer to its new seek window", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-stale-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input, durationSeconds: 3_000 });
+	repository.rows.set(row.id, row);
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner()
+	});
+	t.after(async () => playback.stopAll());
+	const viewerId = randomUUID();
+	const manifest = await playback.getManifest(row.id, {}, 0, viewerId);
+	const uri = manifest
+		.split(/\r?\n/)
+		.find((line) => line.startsWith("segments/"));
+	assert.ok(uri);
+	const parsed = new URL(uri, "http://localhost/recordings/id/stream.m3u8");
+	await playback.getManifest(row.id, {}, 1_800, viewerId);
+
+	await assert.rejects(
+		playback.getSegment(
+			row.id,
+			parsed.searchParams.get("session") ?? "",
+			parsed.pathname.split("/").pop() ?? "",
+			viewerId
+		),
+		/playback session expired/i
+	);
+});
+
+test("operator stop blocks automatic playlist recreation until requests go quiet", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-operator-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	let spawnCount = 0;
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		operatorStopQuietMs: 100,
+		runner: createFakeRunner(() => {
+			spawnCount += 1;
+		})
+	});
+	t.after(async () => playback.stopAll());
+	const viewerId = randomUUID();
+	await playback.getManifest(row.id, {}, 0, viewerId);
+	const session = playback.getSession(row.id, 0);
+	assert.ok(session);
+	assert.equal(playback.stopSession(session.sessionId), true);
+	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
+
+	await assert.rejects(
+		playback.getManifest(row.id, {}, 0, viewerId),
+		/stopped by an operator/i
+	);
+	assert.equal(spawnCount, 1);
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	await playback.getManifest(row.id, {}, 0, viewerId);
+	assert.equal(spawnCount, 2);
 });
 
 test("concurrent manifest requests share one FFmpeg session and stable segments", async (t) => {
@@ -807,6 +1014,76 @@ test("stop during session startup cancels pending work without orphan artifacts"
 		),
 		false
 	);
+});
+
+test("viewer release during startup prevents a late FFmpeg spawn", async (t) => {
+	const tmp = await mkdtemp(
+		join(tmpdir(), "signalhaven-playback-release-start-")
+	);
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	let releaseProbe: (() => void) | undefined;
+	let probeStarted = false;
+	let spawnCount = 0;
+	const probeGate = new Promise<void>((resolve) => {
+		releaseProbe = resolve;
+	});
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: {
+			probe: async () => {
+				probeStarted = true;
+				await probeGate;
+				return { videoCodec: "h264", audioCodec: "aac" };
+			},
+			spawn: (args) => {
+				spawnCount += 1;
+				return createFakeProcess(outputDirectory(args));
+			}
+		}
+	});
+	const viewerId = randomUUID();
+	const manifest = playback.getManifest(row.id, {}, 0, viewerId);
+	const rejected = assert.rejects(manifest);
+	await waitFor(() => probeStarted, 1_000);
+	assert.equal(playback.releaseViewer(row.id, viewerId), true);
+	releaseProbe?.();
+	await rejected;
+	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
+	assert.equal(spawnCount, 0);
+});
+
+test("rapid seeks keep only the latest viewer window", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-latest-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input, durationSeconds: 3_000 });
+	repository.rows.set(row.id, row);
+	let spawnCount = 0;
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner(() => {
+			spawnCount += 1;
+		})
+	});
+	t.after(async () => playback.stopAll());
+	const viewerId = randomUUID();
+	const first = playback.getManifest(row.id, {}, 600, viewerId);
+	const second = playback.getManifest(row.id, {}, 1_200, viewerId);
+	const third = playback.getManifest(row.id, {}, 1_800, viewerId);
+
+	await Promise.all([assert.rejects(first), assert.rejects(second), third]);
+	await waitFor(() => playback.getActiveSessionCount() === 1, 1_000);
+	assert.equal(playback.getSession(row.id, 1_800)?.getViewerCount(), 1);
+	assert.ok(spawnCount <= 3);
 });
 
 const mediaToolsAvailable = (() => {

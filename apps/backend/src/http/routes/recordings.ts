@@ -38,6 +38,7 @@ import {
 	RecordingPlaybackNotFoundError,
 	RecordingPlaybackSegmentNotFoundError,
 	RecordingPlaybackSessionExpiredError,
+	RecordingPlaybackStoppedByOperatorError,
 	RecordingPlaybackUnavailableError
 } from "../../recordings/recording-playback.service";
 import { MAX_RECORDING_SEGMENT_NAME_LENGTH } from "../../recordings/recording-playback-session";
@@ -54,11 +55,18 @@ const recordingPlaybackSegmentParamSchema = z.object({
 });
 
 const recordingPlaybackSessionQuerySchema = z.object({
-	session: z.string().uuid()
+	session: z.string().uuid(),
+	viewerId: z.string().uuid().optional()
 });
 
 const recordingPlaybackManifestQuerySchema = z.object({
-	start: z.coerce.number().int().min(0).optional().default(0)
+	start: z.coerce.number().int().min(0).optional().default(0),
+	viewerId: z.string().uuid().optional()
+});
+
+const recordingPlaybackViewerParamSchema = z.object({
+	id: z.string().uuid(),
+	viewerId: z.string().uuid()
 });
 
 export function createRecordingsRouter(service: RecordingsService): Router {
@@ -183,7 +191,8 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 				const body = await service.getPlaybackManifest(
 					req.params["id"] as string,
 					{ requestId: req.id },
-					req.query["start"] as unknown as number
+					req.query["start"] as unknown as number,
+					req.query["viewerId"] as string | undefined
 				);
 				applyPlaybackHeaders(res);
 				res.setHeader(
@@ -209,7 +218,8 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 				const body = await service.getPlaybackSegment(
 					req.params["id"] as string,
 					req.query["session"] as string,
-					req.params["segment"] as string
+					req.params["segment"] as string,
+					req.query["viewerId"] as string | undefined
 				);
 				applyPlaybackHeaders(res);
 				res.setHeader("Content-Type", "video/mp2t");
@@ -218,6 +228,19 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 			} catch (error) {
 				next(translate(error));
 			}
+		}
+	);
+
+	// Browser lifecycle beacons use POST so navigation cannot strand FFmpeg.
+	router.post(
+		"/recordings/:id/viewers/:viewerId/release",
+		validate({ params: recordingPlaybackViewerParamSchema }),
+		(req, res) => {
+			service.releasePlaybackViewer(
+				req.params["id"] as string,
+				req.params["viewerId"] as string
+			);
+			res.status(204).end();
 		}
 	);
 
@@ -333,6 +356,7 @@ function translate(error: unknown): unknown {
 	if (
 		error instanceof RecordingPlaybackUnavailableError ||
 		error instanceof RecordingPlaybackSessionExpiredError ||
+		error instanceof RecordingPlaybackStoppedByOperatorError ||
 		error instanceof RecordingPlaybackSegmentNotFoundError
 	) {
 		return new HttpError(
@@ -390,6 +414,6 @@ function translate(error: unknown): unknown {
 /** Recording HLS is consumable by same-origin and cross-origin web players. */
 function applyPlaybackHeaders(res: import("express").Response): void {
 	res.setHeader("Access-Control-Allow-Origin", "*");
-	res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+	res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
 	res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }

@@ -32,6 +32,8 @@ import type { HlsModule } from "../../app/_player/useHls";
  *   - Crossing the 90% mark flips the recording to watched.
  */
 
+const fakeHlsInstances: FakeHls[] = [];
+
 class FakeHls {
 	static Events = { ERROR: "hlsError", MANIFEST_PARSED: "hlsManifestParsed" };
 	static isSupported = () => true;
@@ -40,6 +42,9 @@ class FakeHls {
 	stopLoad = vi.fn();
 	destroy = vi.fn();
 	on = vi.fn();
+	constructor() {
+		fakeHlsInstances.push(this);
+	}
 }
 
 const FakeHlsCtor = FakeHls as unknown as HlsModule;
@@ -107,6 +112,7 @@ const CHANNEL: ChannelListItem = {
 
 beforeEach(() => {
 	pushMock.mockClear();
+	fakeHlsInstances.length = 0;
 });
 
 function renderPage(overrides: {
@@ -178,6 +184,75 @@ describe("RecordingPlayerPage", () => {
 		expect(screen.getByTestId("player")).toBeInTheDocument();
 		// Recording mode → the seek bar is rendered.
 		expect(screen.getByTestId("player-seek")).toBeInTheDocument();
+	});
+
+	it("reuses one viewer id and releases it when the page unmounts", async () => {
+		const original = Object.getOwnPropertyDescriptor(navigator, "sendBeacon");
+		const sendBeacon = vi.fn(() => true);
+		Object.defineProperty(navigator, "sendBeacon", {
+			configurable: true,
+			value: sendBeacon
+		});
+		try {
+			const { unmount } = renderPage({});
+			await waitFor(() =>
+				expect(fakeHlsInstances[0]?.loadSource).toHaveBeenCalled()
+			);
+			const playerSource = fakeHlsInstances[0]?.loadSource.mock
+				.calls[0]?.[0] as string | undefined;
+			const parsed = new URL(playerSource ?? "", "http://localhost");
+			const viewerId = parsed.searchParams.get("viewerId");
+			expect(viewerId).toMatch(/^[0-9a-f-]{36}$/i);
+
+			unmount();
+			expect(sendBeacon).toHaveBeenCalledWith(
+				`/api/v1/recordings/${REC.id}/viewers/${viewerId}/release`
+			);
+		} finally {
+			if (original) Object.defineProperty(navigator, "sendBeacon", original);
+			else delete (navigator as { sendBeacon?: unknown }).sendBeacon;
+		}
+	});
+
+	it("falls back to a keepalive release when sendBeacon declines the request", async () => {
+		const originalBeacon = Object.getOwnPropertyDescriptor(
+			navigator,
+			"sendBeacon"
+		);
+		const originalFetch = globalThis.fetch;
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(new Response(null, { status: 204 }));
+		Object.defineProperty(navigator, "sendBeacon", {
+			configurable: true,
+			value: vi.fn(() => false)
+		});
+		globalThis.fetch = fetchMock;
+		try {
+			const { unmount } = renderPage({});
+			await waitFor(() =>
+				expect(fakeHlsInstances[0]?.loadSource).toHaveBeenCalled()
+			);
+			const playerSource = fakeHlsInstances[0]?.loadSource.mock
+				.calls[0]?.[0] as string | undefined;
+			const viewerId = new URL(
+				playerSource ?? "",
+				"http://localhost"
+			).searchParams.get("viewerId");
+
+			unmount();
+			expect(fetchMock).toHaveBeenCalledWith(
+				`/api/v1/recordings/${REC.id}/viewers/${viewerId}/release`,
+				{ method: "POST", keepalive: true }
+			);
+		} finally {
+			globalThis.fetch = originalFetch;
+			if (originalBeacon) {
+				Object.defineProperty(navigator, "sendBeacon", originalBeacon);
+			} else {
+				delete (navigator as { sendBeacon?: unknown }).sendBeacon;
+			}
+		}
 	});
 
 	it("renders commercial regions and offers a manual skip inside one", async () => {

@@ -570,13 +570,23 @@ export function buildChannelLogoUrl(channelId: string): string {
  */
 export function buildRecordingPlaybackUrl(
 	recordingId: string,
-	startSeconds = 0
+	startSeconds = 0,
+	viewerId?: string
 ): string {
 	const path = `/api/v1/recordings/${encodeURIComponent(recordingId)}/stream.m3u8`;
-	// Keep the canonical zero-offset URL stable for caches, tests, and logs.
-	return startSeconds > 0
-		? `${path}?${new URLSearchParams({ start: String(Math.floor(startSeconds)) })}`
-		: path;
+	const query = new URLSearchParams();
+	if (startSeconds > 0) query.set("start", String(Math.floor(startSeconds)));
+	if (viewerId) query.set("viewerId", viewerId);
+	// Keep the legacy zero-offset URL stable when no managed viewer is supplied.
+	return query.size > 0 ? `${path}?${query}` : path;
+}
+
+/** Build the lifecycle endpoint used to release a recording viewer. */
+export function buildRecordingPlaybackReleaseUrl(
+	recordingId: string,
+	viewerId: string
+): string {
+	return `/api/v1/recordings/${encodeURIComponent(recordingId)}/viewers/${encodeURIComponent(viewerId)}/release`;
 }
 
 /**
@@ -587,9 +597,10 @@ export function buildRecordingPlaybackUrl(
 export async function prepareRecordingPlayback(
 	recordingId: string,
 	startSeconds = 0,
-	init: RequestInit = {}
+	init: RequestInit = {},
+	viewerId?: string
 ): Promise<void> {
-	const path = buildRecordingPlaybackUrl(recordingId, startSeconds);
+	const path = buildRecordingPlaybackUrl(recordingId, startSeconds, viewerId);
 	const headers = new Headers(init.headers);
 	headers.set("Accept", "application/vnd.apple.mpegurl");
 	const response = await fetch(buildUrl(path), { ...init, headers });

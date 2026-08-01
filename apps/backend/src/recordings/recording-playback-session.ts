@@ -12,6 +12,8 @@ import { buildFfmpegArgs, parseFfmpegLine } from "../streaming/transcoder";
 
 /** Default time without manifest or segment reads before a session expires. */
 export const DEFAULT_RECORDING_PLAYBACK_IDLE_MS = 5 * 60_000;
+/** Fallback lifetime for a browser viewer whose release beacon is lost. */
+export const DEFAULT_RECORDING_PLAYBACK_VIEWER_TIMEOUT_MS = 30_000;
 /** Maximum time to wait for FFmpeg to publish the initial media playlist. */
 export const DEFAULT_RECORDING_PLAYBACK_START_TIMEOUT_MS = 15_000;
 /** Recording HLS segments use the same bounded safe-name contract as live TV. */
@@ -37,6 +39,7 @@ export interface RecordingPlaybackSessionOptions {
 	tmpRoot?: string;
 	idleMs?: number;
 	startTimeoutMs?: number;
+	viewerTimeoutMs?: number;
 	hwaccel?: HwaccelKind | null;
 }
 
@@ -81,13 +84,17 @@ export class RecordingPlaybackSession {
 	private readonly tmpRoot: string;
 	private readonly idleMs: number;
 	private readonly startTimeoutMs: number;
+	private readonly viewerTimeoutMs: number;
 	private readonly stoppedListeners = new Set<(error?: Error) => void>();
+	/** Stable viewer heartbeats distinguish browser tabs from short HLS requests. */
+	private readonly viewerIds = new Map<string, number>();
 
 	private state: RecordingPlaybackSessionState = "starting";
 	private outDir = "";
 	private process: ChildProcess | undefined;
 	private args: string[] = [];
 	private idleTimer: NodeJS.Timeout | undefined;
+	private viewerTimer: NodeJS.Timeout | undefined;
 	private stopTimer: NodeJS.Timeout | undefined;
 	private startPromise: Promise<void> | undefined;
 	private readyPromise: Promise<void> | undefined;
@@ -97,6 +104,7 @@ export class RecordingPlaybackSession {
 	private readonly stoppedPromise: Promise<void>;
 	private finalized = false;
 	private stopRequested = false;
+	private retainedByLegacyRequests = false;
 	private lastError: Error | undefined;
 	private failureDiagnostic: RecordingPlaybackFailureDiagnostic | undefined;
 
@@ -110,6 +118,10 @@ export class RecordingPlaybackSession {
 		this.idleMs = options.idleMs ?? DEFAULT_RECORDING_PLAYBACK_IDLE_MS;
 		this.startTimeoutMs =
 			options.startTimeoutMs ?? DEFAULT_RECORDING_PLAYBACK_START_TIMEOUT_MS;
+		this.viewerTimeoutMs = Math.max(
+			1,
+			options.viewerTimeoutMs ?? DEFAULT_RECORDING_PLAYBACK_VIEWER_TIMEOUT_MS
+		);
 		this.hwaccel = options.hwaccel ?? null;
 		this.stoppedPromise = new Promise<void>((resolve) => {
 			this.resolveStopped = resolve;
@@ -138,19 +150,21 @@ export class RecordingPlaybackSession {
 	}
 
 	/** Read and rewrite the VOD playlist with this session's opaque token. */
-	async readPlaylist(): Promise<string> {
+	async readPlaylist(viewerId?: string): Promise<string> {
 		await this.start();
+		if (viewerId) this.attachViewer(viewerId);
 		this.touch();
 		const playlist = await readFile(join(this.outDir, "playlist.m3u8"), "utf8");
-		return exposeRecordingSegmentUris(playlist, this.sessionId);
+		return exposeRecordingSegmentUris(playlist, this.sessionId, viewerId);
 	}
 
 	/** Read one immutable segment while enforcing output-directory containment. */
-	async readSegment(name: string): Promise<Buffer> {
+	async readSegment(name: string, viewerId?: string): Promise<Buffer> {
 		await this.start();
 		if (!isSafeRecordingSegmentName(name)) {
 			throw new Error(`Invalid recording segment name: ${name}`);
 		}
+		if (viewerId) this.attachViewer(viewerId);
 		this.touch();
 		const safeName = basename(name);
 		const baseDir = resolve(this.outDir);
@@ -162,6 +176,42 @@ export class RecordingPlaybackSession {
 			throw new Error(`Invalid recording segment name: ${name}`);
 		}
 		return readFile(target);
+	}
+
+	/** Register or refresh one logical browser viewer. */
+	attachViewer(viewerId: string): void {
+		if (this.finalized) return;
+		this.viewerIds.set(viewerId, Date.now());
+		this.scheduleViewerExpiration();
+	}
+
+	/** Release a logical browser viewer and stop when it was the final owner. */
+	detachViewer(viewerId: string, stopWhenEmpty = true): boolean {
+		if (!this.viewerIds.delete(viewerId)) return false;
+		this.scheduleViewerExpiration();
+		if (stopWhenEmpty && this.viewerIds.size === 0 && !this.finalized) {
+			void this.stop();
+		}
+		return true;
+	}
+
+	/** Number of browser viewers currently retaining this playback window. */
+	getViewerCount(): number {
+		return this.viewerIds.size;
+	}
+
+	/** Preserve idle-based cleanup for clients that do not send viewer IDs. */
+	retainForLegacyRequests(): void {
+		this.retainedByLegacyRequests = true;
+	}
+
+	/** Whether FFmpeg is still producing media rather than serving retained files. */
+	isProcessRunning(): boolean {
+		return Boolean(
+			this.process &&
+			this.process.exitCode === null &&
+			this.process.signalCode === null
+		);
 	}
 
 	/** Stop FFmpeg, remove generated artifacts, and notify the manager. */
@@ -226,6 +276,37 @@ export class RecordingPlaybackSession {
 	/** Test-only visibility into the temp directory cleanup contract. */
 	getOutputDirectory(): string {
 		return this.outDir;
+	}
+
+	/** Re-arm cleanup from the oldest viewer heartbeat. */
+	private scheduleViewerExpiration(): void {
+		if (this.viewerTimer) clearTimeout(this.viewerTimer);
+		this.viewerTimer = undefined;
+		if (this.viewerIds.size === 0 || this.finalized) return;
+		const oldestSeenAt = Math.min(...this.viewerIds.values());
+		const delay = Math.max(0, oldestSeenAt + this.viewerTimeoutMs - Date.now());
+		this.viewerTimer = setTimeout(() => {
+			this.viewerTimer = undefined;
+			this.expireInactiveViewers();
+		}, delay);
+		this.viewerTimer.unref?.();
+	}
+
+	/** Stop orphaned sessions after every viewer heartbeat has expired. */
+	private expireInactiveViewers(): void {
+		const cutoff = Date.now() - this.viewerTimeoutMs;
+		for (const [viewerId, seenAt] of this.viewerIds) {
+			if (seenAt <= cutoff) this.viewerIds.delete(viewerId);
+		}
+		if (
+			this.viewerIds.size === 0 &&
+			!this.retainedByLegacyRequests &&
+			!this.finalized
+		) {
+			void this.stop();
+			return;
+		}
+		this.scheduleViewerExpiration();
 	}
 
 	private async startInternal(): Promise<void> {
@@ -477,9 +558,12 @@ export class RecordingPlaybackSession {
 		this.state = "stopped";
 		if (error) this.lastError = error;
 		if (this.idleTimer) clearTimeout(this.idleTimer);
+		if (this.viewerTimer) clearTimeout(this.viewerTimer);
 		if (this.stopTimer) clearTimeout(this.stopTimer);
 		this.idleTimer = undefined;
+		this.viewerTimer = undefined;
 		this.stopTimer = undefined;
+		this.viewerIds.clear();
 		if (this.readyPromise && wasStarting) {
 			this.rejectReady?.(
 				this.lastError ?? new Error("Recording playback session stopped")
@@ -539,14 +623,16 @@ export function isSafeRecordingSegmentName(name: string): boolean {
 /** Point bare FFmpeg segment names at the recording-scoped segment route. */
 export function exposeRecordingSegmentUris(
 	playlist: string,
-	sessionId: string
+	sessionId: string,
+	viewerId?: string
 ): string {
 	const lineBreak = playlist.includes("\r\n") ? "\r\n" : "\n";
-	const query = `?session=${encodeURIComponent(sessionId)}`;
+	const query = new URLSearchParams({ session: sessionId });
+	if (viewerId) query.set("viewerId", viewerId);
 	return playlist
 		.split(lineBreak)
 		.map((line) =>
-			isSafeRecordingSegmentName(line) ? `segments/${line}${query}` : line
+			isSafeRecordingSegmentName(line) ? `segments/${line}?${query}` : line
 		)
 		.join(lineBreak);
 }

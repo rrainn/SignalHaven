@@ -380,6 +380,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const hlsInstanceRef = useRef<HlsInstance | null>(null);
 		const hlsMediaRecoveryAttemptsRef = useRef(0);
 		const hlsMediaRecoveryTimerRef = useRef<number | null>(null);
+		const hasLoadedManifestRef = useRef(false);
+		const resumeAfterSourceChangeRef = useRef(true);
 		const goLiveStallTimerRef = useRef<number | null>(null);
 		const goLiveTargetTimeRef = useRef<number | null>(null);
 		const lastFatalHlsErrorWasMediaRef = useRef(false);
@@ -425,6 +427,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const [playing, setPlaying] = useState(false);
 		const [duration, setDuration] = useState(0);
 		const [currentTime, setCurrentTime] = useState(0);
+		const [scrubPosition, setScrubPosition] = useState<number | null>(null);
 		const [seekRange, setSeekRange] = useState({ start: 0, end: 0 });
 		const [adaptiveLivePosition, setAdaptiveLivePosition] = useState<
 			number | null
@@ -470,6 +473,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const absoluteCurrentTime = isRecording
 			? recordingStartSeconds + currentTime
 			: currentTime;
+		const displayedCurrentTime = scrubPosition ?? absoluteCurrentTime;
 		const activeCommercial = commercialMarkers.find(
 			(marker) =>
 				absoluteCurrentTime * 1_000 >= marker.startMs &&
@@ -560,19 +564,32 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		useEffect(() => {
 			const video = videoRef.current;
 			if (!video) return;
+			if (!hasLoadedManifestRef.current) {
+				resumeAfterSourceChangeRef.current = true;
+			}
+			const preservePlaybackIntent = (): void => {
+				// Source cleanup can pause media, so capture intent before detaching it.
+				if (hasLoadedManifestRef.current) {
+					resumeAfterSourceChangeRef.current = !video.paused;
+				}
+			};
 			setLoading(true);
 			setError(null);
 
 			if (useNativeHls) {
 				video.src = effectiveSrc;
-				// Best-effort autoplay; modern browsers gate this behind muted.
-				const playPromise = video.play();
-				if (playPromise && typeof playPromise.catch === "function") {
-					playPromise.catch(() => {
-						/* user gesture required; controls let them recover */
-					});
+				if (resumeAfterSourceChangeRef.current) {
+					// Best-effort autoplay; modern browsers gate this behind muted.
+					const playPromise = video.play();
+					if (playPromise && typeof playPromise.catch === "function") {
+						playPromise.catch(() => {
+							/* user gesture required; controls let them recover */
+						});
+					}
 				}
+				hasLoadedManifestRef.current = true;
 				return () => {
+					preservePlaybackIntent();
 					video.removeAttribute("src");
 					video.load();
 				};
@@ -660,9 +677,12 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				createdHls.on(manifestEvent, () => {
 					lastFatalHlsErrorWasMediaRef.current = false;
 					setLoading(false);
-					const playPromise = video.play();
-					if (playPromise && typeof playPromise.catch === "function") {
-						playPromise.catch(() => undefined);
+					hasLoadedManifestRef.current = true;
+					if (resumeAfterSourceChangeRef.current) {
+						const playPromise = video.play();
+						if (playPromise && typeof playPromise.catch === "function") {
+							playPromise.catch(() => undefined);
+						}
 					}
 				});
 			}
@@ -682,6 +702,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			return () => {
 				// Stop the old playlist loop before loading another channel while
 				// retaining the MediaSource instance across source swaps.
+				preservePlaybackIntent();
 				hls.stopLoad();
 			};
 		}, [effectiveSrc, HlsCtor, hlsJsSupported, useNativeHls]);
@@ -1686,7 +1707,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 							step={1}
 							value={[
 								isRecording
-									? absoluteCurrentTime
+									? displayedCurrentTime
 									: Math.max(
 											seekRange.start,
 											Math.min(seekRange.end, currentTime)
@@ -1697,13 +1718,19 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								if (!v) return;
 								const next = values[0] ?? (isRecording ? 0 : seekRange.start);
 								if (isRecording) {
-									seekRecordingTo(next);
+									setScrubPosition(next);
 									return;
 								}
 								v.currentTime = next;
 								setCurrentTime(next);
 								setNativeTimeShifted(next < seekRange.end);
 								setRecoveryMessage(null);
+							}}
+							onValueCommit={(values) => {
+								if (!isRecording) return;
+								const next = values[0] ?? displayedCurrentTime;
+								setScrubPosition(null);
+								seekRecordingTo(next);
 							}}
 							className="pointer-events-auto"
 						/>
@@ -1768,7 +1795,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								data-testid="player-time"
 								className="text-xs tabular-nums text-white/80"
 							>
-								{fmt(absoluteCurrentTime)} / {fmt(timelineDuration)}
+								{fmt(displayedCurrentTime)} / {fmt(timelineDuration)}
 							</span>
 						) : (
 							<div className="flex items-center gap-2">

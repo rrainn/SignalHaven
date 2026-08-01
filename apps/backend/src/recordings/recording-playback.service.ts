@@ -22,7 +22,8 @@ export const RECORDING_PLAYBACK_ERROR_CODE = {
 	cancelled: "recording_cancelled",
 	fileMissing: "recording_file_missing",
 	fileUnreadable: "recording_file_unreadable",
-	sessionExpired: "playback_session_expired"
+	sessionExpired: "playback_session_expired",
+	stoppedByOperator: "playback_stopped_by_operator"
 } as const;
 
 /** Requested recording row no longer exists. */
@@ -70,6 +71,17 @@ export class RecordingPlaybackSessionExpiredError extends Error {
 	}
 }
 
+/** Playlist retries cannot recreate work an operator explicitly stopped. */
+export class RecordingPlaybackStoppedByOperatorError extends Error {
+	readonly statusCode = 409;
+	readonly code = RECORDING_PLAYBACK_ERROR_CODE.stoppedByOperator;
+
+	constructor(recordingId: string) {
+		super(`Recording playback ${recordingId} was stopped by an operator.`);
+		this.name = "RecordingPlaybackStoppedByOperatorError";
+	}
+}
+
 /** Requested segment is not part of the active recording session. */
 export class RecordingPlaybackSegmentNotFoundError extends Error {
 	readonly statusCode = 404;
@@ -88,6 +100,8 @@ export interface RecordingPlaybackServiceOptions {
 	tmpRoot?: string;
 	idleMs?: number;
 	startTimeoutMs?: number;
+	viewerTimeoutMs?: number;
+	operatorStopQuietMs?: number;
 	/** Application logger used for durable, sanitized failure summaries. */
 	logger?: RecordingPlaybackLogger;
 	/** Resolve current hardware acceleration without coupling sessions to settings. */
@@ -95,9 +109,15 @@ export interface RecordingPlaybackServiceOptions {
 }
 
 interface PendingPlaybackSession {
+	key: string;
+	recordingId: string;
 	ready: Promise<RecordingPlaybackSession>;
 	session?: RecordingPlaybackSession;
 	cancelled: boolean;
+	/** Managed viewers reserve pending work before FFmpeg is ready. */
+	viewerIds: Set<string>;
+	/** Requests from older clients retain the session through idle activity. */
+	legacyOwner: boolean;
 	requestedStartSeconds: number;
 	startSeconds: number;
 }
@@ -114,9 +134,16 @@ export class RecordingPlaybackService {
 	private readonly tmpRoot: string | undefined;
 	private readonly idleMs: number | undefined;
 	private readonly startTimeoutMs: number | undefined;
+	private readonly viewerTimeoutMs: number | undefined;
+	private readonly operatorStopQuietMs: number;
 	private readonly logger: RecordingPlaybackLogger | undefined;
 	private readonly resolveHwaccel: () => Promise<HwaccelKind | null>;
 	private readonly sessions = new Map<string, PendingPlaybackSession>();
+	private readonly viewerSessions = new Map<string, PendingPlaybackSession>();
+	private readonly operatorStopBarriers = new Map<
+		string,
+		ReturnType<typeof setTimeout>
+	>();
 
 	constructor(options: RecordingPlaybackServiceOptions) {
 		this.repository = options.repository;
@@ -125,6 +152,8 @@ export class RecordingPlaybackService {
 		this.tmpRoot = options.tmpRoot;
 		this.idleMs = options.idleMs;
 		this.startTimeoutMs = options.startTimeoutMs;
+		this.viewerTimeoutMs = options.viewerTimeoutMs;
+		this.operatorStopQuietMs = options.operatorStopQuietMs ?? 10_000;
 		this.logger = options.logger;
 		this.resolveHwaccel = options.resolveHwaccel ?? (async () => null);
 	}
@@ -133,19 +162,24 @@ export class RecordingPlaybackService {
 	async getManifest(
 		recordingId: string,
 		context: RecordingPlaybackRequestContext = {},
-		startSeconds = 0
+		startSeconds = 0,
+		viewerId?: string
 	): Promise<string> {
 		const normalizedStart = normalizeStartSeconds(startSeconds);
-		const session = await this.getOrCreate(
+		const { pending, session } = await this.getOrCreate(
 			recordingId,
 			context,
-			normalizedStart
+			normalizedStart,
+			viewerId
 		);
+		if (viewerId && this.viewerSessions.get(viewerId) !== pending) {
+			throw new RecordingPlaybackSessionExpiredError();
+		}
 		if (session.getState() === "stopped") {
 			throw new RecordingPlaybackSessionExpiredError();
 		}
 		try {
-			return await session.readPlaylist();
+			return await session.readPlaylist(viewerId);
 		} catch (error) {
 			if (session.getState() === "stopped") {
 				throw new RecordingPlaybackSessionExpiredError();
@@ -158,10 +192,18 @@ export class RecordingPlaybackService {
 	async getSegment(
 		recordingId: string,
 		sessionId: string,
-		segment: string
+		segment: string,
+		viewerId?: string
 	): Promise<Buffer> {
-		const pending = this.sessions.get(recordingId);
+		const pending = [...this.sessions.values()].find(
+			(entry) =>
+				entry.recordingId === recordingId &&
+				entry.session?.sessionId === sessionId
+		);
 		if (!pending) throw new RecordingPlaybackSessionExpiredError();
+		if (viewerId && this.viewerSessions.get(viewerId) !== pending) {
+			throw new RecordingPlaybackSessionExpiredError();
+		}
 		let session: RecordingPlaybackSession;
 		try {
 			session = await pending.ready;
@@ -172,7 +214,7 @@ export class RecordingPlaybackService {
 			throw new RecordingPlaybackSessionExpiredError();
 		}
 		try {
-			return await session.readSegment(segment);
+			return await session.readSegment(segment, viewerId);
 		} catch {
 			if (session.getState() === "stopped") {
 				throw new RecordingPlaybackSessionExpiredError();
@@ -183,38 +225,84 @@ export class RecordingPlaybackService {
 
 	/** Stop and remove one recording's process and temporary artifacts. */
 	async stop(recordingId: string): Promise<void> {
-		const pending = this.sessions.get(recordingId);
-		if (!pending) return;
-		await this.stopPending(recordingId, pending);
+		const matches = [...this.sessions.values()].filter(
+			(pending) => pending.recordingId === recordingId
+		);
+		await Promise.all(matches.map((pending) => this.stopPending(pending)));
+	}
+
+	/** Release one logical browser viewer; repeated beacons are harmless. */
+	releaseViewer(recordingId: string, viewerId: string): boolean {
+		const pending = this.viewerSessions.get(viewerId);
+		if (!pending || pending.recordingId !== recordingId) return false;
+		this.viewerSessions.delete(viewerId);
+		pending.viewerIds.delete(viewerId);
+		if (pending.session) {
+			pending.session.detachViewer(viewerId, !pending.legacyOwner);
+		}
+		if (pending.viewerIds.size === 0 && !pending.legacyOwner) {
+			void this.stopPending(pending);
+		}
+		return true;
+	}
+
+	/** Stop one operator-selected playback session and block immediate retries. */
+	stopSession(sessionId: string): boolean {
+		const pending = [...this.sessions.values()].find(
+			(entry) => entry.session?.sessionId === sessionId
+		);
+		if (!pending) return false;
+		this.extendOperatorStopBarrier(pending.key);
+		void this.stopPending(pending);
+		return true;
 	}
 
 	/** Stop all playback work during graceful backend shutdown. */
 	async stopAll(): Promise<void> {
-		await Promise.all([...this.sessions.keys()].map((id) => this.stop(id)));
+		for (const timer of this.operatorStopBarriers.values()) clearTimeout(timer);
+		this.operatorStopBarriers.clear();
+		await Promise.all(
+			[...this.sessions.values()].map((pending) => this.stopPending(pending))
+		);
 	}
 
 	getActiveSessionCount(): number {
 		return this.sessions.size;
 	}
 
+	/** Count only child processes that are still alive for metrics. */
+	getRunningProcessCount(): number {
+		return [...this.sessions.values()].filter((pending) =>
+			pending.session?.isProcessRunning()
+		).length;
+	}
+
 	/** Stable snapshots for the advanced FFmpeg work surface. */
 	getActiveSessions(): Array<{
+		playbackSessionId: string;
 		recordingId: string;
 		state: string;
 		startedAt: string;
 		profile: string;
 		hwaccel: HwaccelKind | null;
+		clientCount: number;
 	}> {
-		return [...this.sessions.entries()].flatMap(([recordingId, pending]) => {
+		return [...this.sessions.values()].flatMap((pending) => {
 			const session = pending.session;
-			return session
+			return session &&
+				(session.getState() === "starting" || session.isProcessRunning())
 				? [
 						{
-							recordingId,
+							playbackSessionId: session.sessionId,
+							recordingId: pending.recordingId,
 							state: session.getState(),
 							startedAt: session.startedAt.toISOString(),
 							profile: session.profile,
-							hwaccel: session.hwaccel
+							hwaccel: session.hwaccel,
+							clientCount: Math.max(
+								session.getViewerCount(),
+								pending.viewerIds.size
+							)
 						}
 					]
 				: [];
@@ -222,56 +310,75 @@ export class RecordingPlaybackService {
 	}
 
 	/** Diagnostic lookup used by tests and future status surfaces. */
-	getSession(recordingId: string): RecordingPlaybackSession | undefined {
-		return this.sessions.get(recordingId)?.session;
+	getSession(
+		recordingId: string,
+		startSeconds?: number
+	): RecordingPlaybackSession | undefined {
+		return [...this.sessions.values()].find(
+			(pending) =>
+				pending.recordingId === recordingId &&
+				(startSeconds === undefined || pending.startSeconds === startSeconds)
+		)?.session;
 	}
 
 	private async getOrCreate(
 		recordingId: string,
 		context: RecordingPlaybackRequestContext,
-		startSeconds: number
-	): Promise<RecordingPlaybackSession> {
-		const existing = this.sessions.get(recordingId);
-		if (existing?.requestedStartSeconds === startSeconds) return existing.ready;
-		if (existing) {
-			// A far seek abandons the old progressive window before starting the
-			// replacement, keeping one FFmpeg playback process per recording.
-			await this.stopPending(recordingId, existing);
-			const replacement = this.sessions.get(recordingId);
-			if (replacement) {
-				return this.getOrCreate(recordingId, context, startSeconds);
-			}
+		startSeconds: number,
+		viewerId?: string
+	): Promise<{
+		pending: PendingPlaybackSession;
+		session: RecordingPlaybackSession;
+	}> {
+		const key = playbackKey(recordingId, startSeconds);
+		this.assertNotOperatorStopped(key, recordingId);
+		let pending = this.sessions.get(key);
+		if (!pending) {
+			pending = {
+				key,
+				recordingId,
+				cancelled: false,
+				viewerIds: new Set<string>(),
+				legacyOwner: false,
+				requestedStartSeconds: startSeconds,
+				startSeconds,
+				ready: Promise.resolve(undefined as never)
+			};
+			pending.ready = this.createSession(
+				recordingId,
+				pending,
+				context,
+				startSeconds
+			);
+			this.sessions.set(key, pending);
+		}
+		if (viewerId) this.moveViewer(viewerId, pending);
+		else {
+			pending.legacyOwner = true;
+			pending.session?.retainForLegacyRequests();
 		}
 
-		const pending: PendingPlaybackSession = {
-			cancelled: false,
-			requestedStartSeconds: startSeconds,
-			startSeconds,
-			ready: Promise.resolve(undefined as never)
-		};
-		pending.ready = this.createSession(
-			recordingId,
-			pending,
-			context,
-			startSeconds
-		);
-		this.sessions.set(recordingId, pending);
-
+		let session: RecordingPlaybackSession;
 		try {
-			return await pending.ready;
+			session = await pending.ready;
 		} catch (error) {
-			if (this.sessions.get(recordingId) === pending) {
-				this.sessions.delete(recordingId);
+			if (this.sessions.get(key) === pending) {
+				this.sessions.delete(key);
 			}
 			if (
 				error instanceof RecordingPlaybackUnavailableError ||
 				error instanceof RecordingPlaybackNotFoundError ||
-				error instanceof RecordingPlaybackSessionExpiredError
+				error instanceof RecordingPlaybackSessionExpiredError ||
+				error instanceof RecordingPlaybackStoppedByOperatorError
 			) {
 				throw error;
 			}
 			throw this.wrapPreparationError(error);
 		}
+		if (viewerId && this.viewerSessions.get(viewerId) !== pending) {
+			throw new RecordingPlaybackSessionExpiredError();
+		}
+		return { pending, session };
 	}
 
 	private async createSession(
@@ -294,6 +401,7 @@ export class RecordingPlaybackService {
 			startSeconds
 		);
 		pending.session = session;
+		if (pending.legacyOwner) session.retainForLegacyRequests();
 		try {
 			await session.start();
 		} catch (error) {
@@ -320,6 +428,7 @@ export class RecordingPlaybackService {
 				startSeconds
 			);
 			pending.session = session;
+			if (pending.legacyOwner) session.retainForLegacyRequests();
 			try {
 				await session.start();
 			} catch (error) {
@@ -340,12 +449,7 @@ export class RecordingPlaybackService {
 			throw new RecordingPlaybackSessionExpiredError();
 		}
 		session.onStopped(() => {
-			if (
-				this.sessions.get(recordingId) === pending &&
-				pending.session === session
-			) {
-				this.sessions.delete(recordingId);
-			}
+			this.cleanupPending(pending, session);
 		});
 		return session;
 	}
@@ -398,15 +502,15 @@ export class RecordingPlaybackService {
 			...(this.idleMs !== undefined ? { idleMs: this.idleMs } : {}),
 			...(this.startTimeoutMs !== undefined
 				? { startTimeoutMs: this.startTimeoutMs }
+				: {}),
+			...(this.viewerTimeoutMs !== undefined
+				? { viewerTimeoutMs: this.viewerTimeoutMs }
 				: {})
 		});
 	}
 
 	/** Stop one exact pending entry without deleting a newer replacement. */
-	private async stopPending(
-		recordingId: string,
-		pending: PendingPlaybackSession
-	): Promise<void> {
+	private async stopPending(pending: PendingPlaybackSession): Promise<void> {
 		pending.cancelled = true;
 		try {
 			await pending.session?.stop();
@@ -415,10 +519,66 @@ export class RecordingPlaybackService {
 		} catch {
 			// Failed startup and cancellation perform their own cleanup.
 		} finally {
-			if (this.sessions.get(recordingId) === pending) {
-				this.sessions.delete(recordingId);
+			this.cleanupPending(pending);
+		}
+	}
+
+	/** Move one viewer reservation without allowing tabs to replace each other. */
+	private moveViewer(viewerId: string, pending: PendingPlaybackSession): void {
+		const previous = this.viewerSessions.get(viewerId);
+		if (previous === pending) {
+			pending.session?.attachViewer(viewerId);
+			return;
+		}
+		this.viewerSessions.set(viewerId, pending);
+		pending.viewerIds.add(viewerId);
+		if (previous) {
+			previous.viewerIds.delete(viewerId);
+			if (previous.session) {
+				previous.session.detachViewer(viewerId, !previous.legacyOwner);
+			}
+			if (previous.viewerIds.size === 0 && !previous.legacyOwner) {
+				void this.stopPending(previous);
 			}
 		}
+		pending.session?.attachViewer(viewerId);
+	}
+
+	/** Remove exact indexes and viewer ownership after session cleanup. */
+	private cleanupPending(
+		pending: PendingPlaybackSession,
+		session?: RecordingPlaybackSession
+	): void {
+		if (session && pending.session !== session) return;
+		if (this.sessions.get(pending.key) === pending) {
+			this.sessions.delete(pending.key);
+		}
+		for (const viewerId of pending.viewerIds) {
+			if (this.viewerSessions.get(viewerId) === pending) {
+				this.viewerSessions.delete(viewerId);
+			}
+		}
+		pending.viewerIds.clear();
+	}
+
+	/** Reject automatic retries until requests for the stopped window go quiet. */
+	private assertNotOperatorStopped(key: string, recordingId: string): void {
+		if (!this.operatorStopBarriers.has(key)) return;
+		this.extendOperatorStopBarrier(key);
+		throw new RecordingPlaybackStoppedByOperatorError(recordingId);
+	}
+
+	/** Extend a restart barrier while an HLS client continues retrying. */
+	private extendOperatorStopBarrier(key: string): void {
+		const existing = this.operatorStopBarriers.get(key);
+		if (existing) clearTimeout(existing);
+		const timer = setTimeout(() => {
+			if (this.operatorStopBarriers.get(key) === timer) {
+				this.operatorStopBarriers.delete(key);
+			}
+		}, this.operatorStopQuietMs);
+		timer.unref?.();
+		this.operatorStopBarriers.set(key, timer);
 	}
 
 	/** Publish only the stable category so FFmpeg paths cannot leak to clients. */
@@ -544,6 +704,11 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 /** Convert untrusted seek values to a stable non-negative whole second. */
 function normalizeStartSeconds(value: number): number {
 	return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+/** Keep recording and offset identities collision-safe inside process memory. */
+function playbackKey(recordingId: string, startSeconds: number): string {
+	return `${recordingId}\u001f${startSeconds}`;
 }
 
 /** Keep FFmpeg away from an empty timestamp at the exact end of the file. */

@@ -1014,12 +1014,13 @@ registry.registerPath({
 	path: "/api/v1/recordings/{id}/stream.m3u8",
 	summary: "Prepare and return a recording HLS playlist",
 	description:
-		"Validates that the recording completed and its file is readable, then creates or reuses an idle-expiring VOD HLS session. The optional start timestamp replaces an earlier window and seeks FFmpeg into the input so distant playback does not require transcoding the skipped portion. Compatible H.264/AAC streams are copied; incompatible streams are selectively transcoded for browser playback.",
+		"Validates that the recording completed and its file is readable, then creates or reuses a VOD HLS window keyed by recording and start timestamp. A browser-generated viewerId owns the window across playlist and segment requests, allowing independent tabs to seek without replacing each other. Compatible H.264/AAC streams are copied; incompatible streams are selectively transcoded for browser playback.",
 	tags: ["recordings"],
 	request: {
 		params: z.object({ id: z.string().uuid() }),
 		query: z.object({
-			start: z.coerce.number().int().min(0).optional().default(0)
+			start: z.coerce.number().int().min(0).optional().default(0),
+			viewerId: z.string().uuid().optional()
 		})
 	},
 	responses: {
@@ -1066,7 +1067,10 @@ registry.registerPath({
 				.max(64)
 				.regex(/^[A-Za-z0-9_-]+\.ts$/)
 		}),
-		query: z.object({ session: z.string().uuid() })
+		query: z.object({
+			session: z.string().uuid(),
+			viewerId: z.string().uuid().optional()
+		})
 	},
 	responses: {
 		200: {
@@ -1084,6 +1088,22 @@ registry.registerPath({
 			content: { "application/json": { schema: ErrorResponse } }
 		}
 	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/recordings/{id}/viewers/{viewerId}/release",
+	summary: "Release a recording-playback viewer",
+	description:
+		"Idempotently releases one browser player. The final viewer stops FFmpeg and removes temporary playback artifacts immediately; heartbeat timeout remains the fallback for a lost beacon.",
+	tags: ["recordings"],
+	request: {
+		params: z.object({
+			id: z.string().uuid(),
+			viewerId: z.string().uuid()
+		})
+	},
+	responses: { 204: { description: "Viewer released or already absent." } }
 });
 
 registry.registerPath({

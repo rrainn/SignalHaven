@@ -317,8 +317,10 @@ export class RecordingsService {
 			kind: "recording" | "recording-playback";
 			state: string;
 			startedAt: string;
+			playbackSessionId?: string;
 			profile?: string;
 			hwaccel?: string | null;
+			clientCount?: number;
 		}>
 	> {
 		const captures = await Promise.all(
@@ -346,9 +348,9 @@ export class RecordingsService {
 		return [...captures, ...playbacks];
 	}
 
-	/** Stop an advanced-mode recording playback session without deleting media. */
-	stopPlayback(recordingId: string): Promise<void> {
-		return this.playback.stop(recordingId);
+	/** Stop one advanced-mode playback process without affecting sibling viewers. */
+	stopPlayback(playbackSessionId: string): boolean {
+		return this.playback.stopSession(playbackSessionId);
 	}
 
 	/**
@@ -518,23 +520,35 @@ export class RecordingsService {
 	async getPlaybackManifest(
 		id: string,
 		context: { requestId?: string } = {},
-		startSeconds = 0
+		startSeconds = 0,
+		viewerId?: string
 	): Promise<string> {
-		return this.playback.getManifest(id, context, startSeconds);
+		return this.playback.getManifest(id, context, startSeconds, viewerId);
 	}
 
 	/** Read a segment from the exact opaque session referenced by the manifest. */
 	async getPlaybackSegment(
 		id: string,
 		sessionId: string,
-		segment: string
+		segment: string,
+		viewerId?: string
 	): Promise<Buffer> {
-		return this.playback.getSegment(id, sessionId, segment);
+		return this.playback.getSegment(id, sessionId, segment, viewerId);
+	}
+
+	/** Release one recording viewer after navigation or tab closure. */
+	releasePlaybackViewer(id: string, viewerId: string): boolean {
+		return this.playback.releaseViewer(id, viewerId);
 	}
 
 	/** Number of active or starting recording playback sessions. */
 	getActivePlaybackSessionCount(): number {
 		return this.playback.getActiveSessionCount();
+	}
+
+	/** Number of recording-playback FFmpeg child processes still running. */
+	getRunningPlaybackProcessCount(): number {
+		return this.playback.getRunningProcessCount();
 	}
 
 	/** Graceful-shutdown hook for FFmpeg processes and temporary HLS files. */
