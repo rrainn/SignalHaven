@@ -392,6 +392,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const hlsMediaRecoveryTimerRef = useRef<number | null>(null);
 		const hasLoadedManifestRef = useRef(false);
 		const resumeAfterSourceChangeRef = useRef(true);
+		// Recording seek windows reuse a zero-based media timeline, so callbacks
+		// must prove they still belong to the active window before changing state.
+		const sourceGenerationRef = useRef(0);
 		const goLiveStallTimerRef = useRef<number | null>(null);
 		const goLiveTargetTimeRef = useRef<number | null>(null);
 		const lastFatalHlsErrorWasMediaRef = useRef(false);
@@ -573,13 +576,15 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			!hlsJsSupported &&
 			!detectedNative;
 
-		// Source attachment effect — re-runs on src changes (quality switches).
-		// We *intentionally* do not key the <video> element to the src so the
-		// element is never re-mounted; HLS.js's `loadSource` swaps the playlist
-		// in place per the U6 perf requirement.
+		// Source attachment re-runs when the playlist changes. The video element
+		// remains mounted; live sources reuse HLS.js while zero-based recording
+		// windows replace its MediaSource to keep their timelines isolated.
 		useEffect(() => {
 			const video = videoRef.current;
 			if (!video) return;
+			const sourceGeneration = ++sourceGenerationRef.current;
+			const isCurrentSource = (): boolean =>
+				!isRecording || sourceGenerationRef.current === sourceGeneration;
 			if (!hasLoadedManifestRef.current) {
 				resumeAfterSourceChangeRef.current = true;
 			}
@@ -651,6 +656,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					Events["LEVEL_SWITCHED"] ?? "hlsLevelSwitched";
 				const mediaErrorType = ErrorTypes?.["MEDIA_ERROR"] ?? "mediaError";
 				createdHls.on(errorEvent, (..._args: unknown[]) => {
+					if (!isCurrentSource()) return;
 					const data = _args[1] as
 						| {
 								fatal?: boolean;
@@ -713,6 +719,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					}
 				});
 				createdHls.on(levelSwitchedEvent, (...args: unknown[]) => {
+					if (!isCurrentSource()) return;
 					const data = args[1] as { level?: number } | undefined;
 					const level =
 						typeof data?.level === "number"
@@ -733,6 +740,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					});
 				});
 				createdHls.on(manifestEvent, () => {
+					if (!isCurrentSource()) return;
 					lastFatalHlsErrorWasMediaRef.current = false;
 					setLoading(false);
 					hasLoadedManifestRef.current = true;
@@ -758,12 +766,25 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			lastFatalHlsErrorWasMediaRef.current = false;
 			hls.loadSource(effectiveSrc);
 			return () => {
-				// Stop the old playlist loop before loading another channel while
-				// retaining the MediaSource instance across source swaps.
 				preservePlaybackIntent();
+				if (isRecording) {
+					// Lazy windows all begin at media time zero. Reusing their SourceBuffer
+					// can mix old and new fragments at identical timestamps after a seek.
+					sourceGenerationRef.current += 1;
+					if (hlsInstanceRef.current === hls) {
+						try {
+							hls.destroy();
+						} catch {
+							/* A concurrent media teardown already released the pipeline. */
+						}
+						hlsInstanceRef.current = null;
+					}
+					return;
+				}
+				// Live profile changes retain one timeline and can safely reuse MSE.
 				hls.stopLoad();
 			};
-		}, [effectiveSrc, HlsCtor, hlsJsSupported, useNativeHls]);
+		}, [effectiveSrc, HlsCtor, hlsJsSupported, isRecording, useNativeHls]);
 
 		// Sample browser and server playback state only while the operator overlay is visible.
 		useEffect(() => {

@@ -508,7 +508,7 @@ describe("Player", () => {
 		);
 	});
 
-	it("keeps a paused recording paused when a seek swaps its source", () => {
+	it("replaces the recording media pipeline while keeping a paused seek paused", () => {
 		const play = vi
 			.spyOn(HTMLMediaElement.prototype, "play")
 			.mockResolvedValue();
@@ -537,15 +537,27 @@ describe("Player", () => {
 				src="/recording-second.m3u8"
 			/>
 		);
+		const replacement = fakeInstances[1]!;
+		const replacementManifestHandler = replacement.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.MANIFEST_PARSED
+		)?.[1] as (() => void) | undefined;
+		// A late callback from the destroyed window must not resume or mutate the
+		// replacement pipeline before its own manifest becomes ready.
 		act(() => manifestHandler?.());
+		expect(play).not.toHaveBeenCalled();
+		act(() => replacementManifestHandler?.());
 
-		expect(instance.loadSource).toHaveBeenLastCalledWith(
+		// A new MediaSource prevents zero-based fragments from the old lazy
+		// window from overlapping the replacement window's timeline.
+		expect(instance.destroy).toHaveBeenCalledOnce();
+		expect(fakeInstances).toHaveLength(2);
+		expect(replacement.loadSource).toHaveBeenLastCalledWith(
 			"/recording-second.m3u8"
 		);
 		expect(play).not.toHaveBeenCalled();
 	});
 
-	it("resumes a playing recording after a seek swaps its source", () => {
+	it("resumes a playing recording after replacing its seek pipeline", () => {
 		let paused = true;
 		const play = vi
 			.spyOn(HTMLMediaElement.prototype, "play")
@@ -581,8 +593,16 @@ describe("Player", () => {
 				src="/recording-second.m3u8"
 			/>
 		);
+		const replacement = fakeInstances[1]!;
+		const replacementManifestHandler = replacement.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.MANIFEST_PARSED
+		)?.[1] as (() => void) | undefined;
 		act(() => manifestHandler?.());
+		expect(play).toHaveBeenCalledOnce();
+		act(() => replacementManifestHandler?.());
 
+		expect(instance.destroy).toHaveBeenCalledOnce();
+		expect(fakeInstances).toHaveLength(2);
 		expect(play).toHaveBeenCalledTimes(2);
 	});
 
