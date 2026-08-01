@@ -321,6 +321,7 @@ export class RecordingsService {
 			profile?: string;
 			hwaccel?: string | null;
 			clientCount?: number;
+			pipelineSpeed?: number | null;
 		}>
 	> {
 		const captures = await Promise.all(

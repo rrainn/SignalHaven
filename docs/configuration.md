@@ -137,13 +137,24 @@ stopping one session does not interrupt viewers using a different seek window.
 
 ### `transcoding`
 
+Browser and Apple clients use `profile=auto` (also the public behavior when
+`profile` is omitted) to request one channel-keyed adaptive session. That
+session acquires one tuner/source ingest and publishes synchronized 1080p,
+720p, and 480p renditions when those sizes do not upscale the source. Broadcast
+interlacing is removed once before the rendition split, and outputs use atomic
+two-second fragmented-MP4 HLS segments with H.264/AAC. Explicit profile values remain locked
+recovery options. A synthetic complete-graph benchmark must sustain 1.25× real
+time before Adaptive Streaming is available. Once live, five consecutive
+samples that are actually falling behind wall clock stop with an actionable
+`encoder_capacity` error.
+
 | Key                 | Type                                                                            | Default      | Description                                                                                                                                                      |
 | ------------------- | ------------------------------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `enabled`           | `boolean`                                                                       | `false`      | Enables/disables transcoding.                                                                                                                                    |
 | `preset`            | `"fast" \| "balanced" \| "quality"`                                             | `"balanced"` | Encoder preset profile.                                                                                                                                          |
 | `videoBitrateKbps`  | `number`                                                                        | `4000`       | Target video bitrate in kbps.                                                                                                                                    |
 | `audioBitrateKbps`  | `number`                                                                        | `192`        | Target audio bitrate in kbps.                                                                                                                                    |
-| `defaultProfile`    | `"direct" \| "original-quality" \| "1080p" \| "720p" \| "480p" \| "audio-only"` | `"direct"`   | Default stream profile when no per-request profile is specified.                                                                                                 |
+| `defaultProfile`    | `"direct" \| "original-quality" \| "1080p" \| "720p" \| "480p" \| "audio-only"` | `"direct"`   | Default locked profile for internal/manual playback; public requests without a profile use Adaptive Streaming.                                                   |
 | `hwaccel`           | `"auto" \| "none" \| "videotoolbox" \| "vaapi" \| "qsv" \| "nvenc"`             | `"auto"`     | Hardware acceleration preference.                                                                                                                                |
 | `availableHwaccels` | `HwaccelKind[]`                                                                 | `[]`         | Backends the SignalHaven process successfully initialized and used to encode a synthetic frame. Probes are bounded, and failures fall back to software encoding. |
 | `captionsEnabled`   | `boolean`                                                                       | `true`       | Enables sidecar closed-caption extraction for streams.                                                                                                           |
@@ -232,8 +243,9 @@ deletion.
 
 Time-shift media has a separate lifecycle from recordings. FFmpeg publishes
 segments and manifests atomically, advances a bounded playlist, and deletes
-expired segments. Multiple clients using the same channel and transcode profile
-join one session and tuner lease. Different profiles remain separate sessions.
+expired segments. Adaptive clients using the same channel join one session,
+one upstream ingest, and one tuner lease. Explicit manual profiles remain
+separate locked sessions.
 When the last viewer leaves, the buffer remains available for the configured
 idle grace period and is then deleted; switching channels therefore keeps the
 old buffer only for that grace period. Startup cleanup and normal shutdown remove
@@ -313,6 +325,13 @@ fall back to the server-provided canonical order.
 | `qualityByChannel` | `Record<channelId, profile>` | `{}`    | Per-channel transcode profile override. |
 
 ### `observability`
+
+`POST /api/v1/playback/telemetry` accepts only bounded playback event, client,
+profile, cause, duration, buffer, latency, and pipeline values. The self-hosted
+server converts these into low-cardinality Prometheus metrics and deliberately
+does not accept channel IDs, viewer IDs, or URLs. Playback startup, rebuffer
+count/duration/ratio, rendition changes, fatal errors, and live latency are
+available from `/api/v1/metrics`.
 
 | Key                  | Type      | Default | Description                                              |
 | -------------------- | --------- | ------- | -------------------------------------------------------- |

@@ -8,7 +8,10 @@ import type { HwaccelKind } from "@signalhaven/shared";
 
 import type { EventBus } from "../events/event-bus";
 import { DEFAULT_MEDIA_PROBE, type MediaProbe } from "../streaming/media-probe";
-import { buildFfmpegArgs, parseFfmpegLine } from "../streaming/transcoder";
+import {
+	buildAdaptiveFfmpegArgs,
+	parseFfmpegLine
+} from "../streaming/transcoder";
 
 /** Default time without manifest or segment reads before a session expires. */
 export const DEFAULT_RECORDING_PLAYBACK_IDLE_MS = 5 * 60_000;
@@ -75,7 +78,7 @@ export class RecordingPlaybackSession {
 	readonly startSeconds: number;
 	readonly sessionId = randomUUID();
 	readonly startedAt = new Date();
-	readonly profile = "original-quality" as const;
+	readonly profile = "auto" as const;
 	readonly hwaccel: HwaccelKind | null;
 
 	private readonly inputPath: string;
@@ -107,6 +110,9 @@ export class RecordingPlaybackSession {
 	private retainedByLegacyRequests = false;
 	private lastError: Error | undefined;
 	private failureDiagnostic: RecordingPlaybackFailureDiagnostic | undefined;
+	private readonly pendingProgress = new Map<string, string>();
+	private pipelineSpeed: number | null = null;
+	private underSpeedSamples = 0;
 
 	constructor(options: RecordingPlaybackSessionOptions) {
 		this.recordingId = options.recordingId;
@@ -154,7 +160,7 @@ export class RecordingPlaybackSession {
 		await this.start();
 		if (viewerId) this.attachViewer(viewerId);
 		this.touch();
-		const playlist = await readFile(join(this.outDir, "playlist.m3u8"), "utf8");
+		const playlist = await readFile(join(this.outDir, "master.m3u8"), "utf8");
 		return exposeRecordingSegmentUris(playlist, this.sessionId, viewerId);
 	}
 
@@ -175,7 +181,16 @@ export class RecordingPlaybackSession {
 		) {
 			throw new Error(`Invalid recording segment name: ${name}`);
 		}
-		return readFile(target);
+		const body = await readFile(target);
+		return name.endsWith(".m3u8")
+			? Buffer.from(
+					exposeRecordingRenditionSegmentUris(
+						body.toString("utf8"),
+						this.sessionId,
+						viewerId
+					)
+				)
+			: body;
 	}
 
 	/** Register or refresh one logical browser viewer. */
@@ -263,6 +278,11 @@ export class RecordingPlaybackSession {
 		return this.failureDiagnostic ? { ...this.failureDiagnostic } : undefined;
 	}
 
+	/** Latest FFmpeg output rate used to distinguish encoder limits from networks. */
+	getPipelineSpeed(): number | null {
+		return this.pipelineSpeed;
+	}
+
 	/** Subscribe to completed cleanup; late subscribers run on a microtask. */
 	onStopped(listener: (error?: Error) => void): () => void {
 		if (this.finalized) {
@@ -318,14 +338,14 @@ export class RecordingPlaybackSession {
 				join(this.tmpRoot, "signalhaven-recording-playback-")
 			);
 			const codecs = await this.runner.probe(this.inputPath);
-			this.args = buildFfmpegArgs({
+			this.args = buildAdaptiveFfmpegArgs({
 				input: this.inputPath,
 				outDir: this.outDir,
-				profile: "original-quality",
 				hwaccel: this.hwaccel,
 				input_codecs: codecs,
 				outputMode: "vod",
-				inputSeekSeconds: this.startSeconds
+				inputSeekSeconds: this.startSeconds,
+				outputLayout: "flat"
 			});
 		} catch (error) {
 			const normalized = normalizeError(error);
@@ -366,6 +386,32 @@ export class RecordingPlaybackSession {
 	private bindProcess(child: ChildProcess): void {
 		let stderrBuffer = "";
 		const consume = (raw: string): void => {
+			const progress = /^([a-z_]+)=(.*)$/i.exec(raw.trim());
+			if (progress?.[1]) {
+				this.pendingProgress.set(progress[1], progress[2] ?? "");
+				if (progress[1] === "progress") {
+					const parsedSpeed = Number.parseFloat(
+						(this.pendingProgress.get("speed") ?? "").replace(/x$/i, "")
+					);
+					this.pipelineSpeed = Number.isFinite(parsedSpeed)
+						? parsedSpeed
+						: null;
+					this.underSpeedSamples =
+						this.pipelineSpeed !== null && this.pipelineSpeed < 0.95
+							? this.underSpeedSamples + 1
+							: 0;
+					this.pendingProgress.clear();
+					if (this.underSpeedSamples >= 5) {
+						const error = new RecordingPlaybackFfmpegError(
+							"Adaptive recording encoder cannot sustain real-time output",
+							"encoder_capacity"
+						);
+						this.setFailureDiagnostic("encoder_capacity", error);
+						this.fail(error);
+					}
+				}
+				return;
+			}
 			const parsed = parseFfmpegLine(raw);
 			if (parsed.level === "error") {
 				const currentCategory = this.failureDiagnostic?.category;
@@ -445,7 +491,7 @@ export class RecordingPlaybackSession {
 	private async handleSuccessfulExit(): Promise<void> {
 		if (this.state === "starting") {
 			try {
-				await readFile(join(this.outDir, "playlist.m3u8"));
+				await readFile(join(this.outDir, "master.m3u8"));
 				this.markReady();
 			} catch {
 				const error = new Error(
@@ -463,7 +509,7 @@ export class RecordingPlaybackSession {
 		const started = Date.now();
 		while (this.state === "starting" && !this.finalized) {
 			try {
-				await readFile(join(this.outDir, "playlist.m3u8"));
+				await readFile(join(this.outDir, "master.m3u8"));
 				this.markReady();
 				return;
 			} catch {
@@ -610,12 +656,12 @@ export class RecordingPlaybackSession {
 	}
 }
 
-/** Only plain MPEG-TS segment names produced by our FFmpeg template are valid. */
+/** Only flat adaptive playlist and segment names from our FFmpeg template are valid. */
 export function isSafeRecordingSegmentName(name: string): boolean {
 	return (
 		name.length > 0 &&
 		name.length <= MAX_RECORDING_SEGMENT_NAME_LENGTH &&
-		/^[A-Za-z0-9_-]+\.ts$/.test(name) &&
+		/^[A-Za-z0-9_-]+\.(?:m4s|mp4|ts|m3u8)$/.test(name) &&
 		!name.includes("..")
 	);
 }
@@ -633,6 +679,30 @@ export function exposeRecordingSegmentUris(
 		.split(lineBreak)
 		.map((line) =>
 			isSafeRecordingSegmentName(line) ? `segments/${line}?${query}` : line
+		)
+		.join(lineBreak);
+}
+
+/** Rendition playlists already live inside the public segment route directory. */
+function exposeRecordingRenditionSegmentUris(
+	playlist: string,
+	sessionId: string,
+	viewerId?: string
+): string {
+	const lineBreak = playlist.includes("\r\n") ? "\r\n" : "\n";
+	const query = new URLSearchParams({ session: sessionId });
+	if (viewerId) query.set("viewerId", viewerId);
+	return playlist
+		.split(lineBreak)
+		.map((line) =>
+			line.startsWith('#EXT-X-MAP:URI="')
+				? line.replace(
+						/#EXT-X-MAP:URI="([^"\r\n]+)"/,
+						`#EXT-X-MAP:URI="$1?${query}"`
+					)
+				: isSafeRecordingSegmentName(line)
+					? `${line}?${query}`
+					: line
 		)
 		.join(lineBreak);
 }

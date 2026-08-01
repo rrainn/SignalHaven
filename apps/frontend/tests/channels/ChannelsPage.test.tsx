@@ -203,6 +203,7 @@ describe("ChannelsPage", () => {
 		);
 	});
 
+	// Concurrent coverage work can make this intentionally large fixture exceed Vitest's default timeout.
 	it("bounds the initial render for large channel lineups", async () => {
 		const user = userEvent.setup();
 		const seed = buildChannelsFixture()[0]!;
@@ -245,5 +246,5 @@ describe("ChannelsPage", () => {
 		expect(
 			screen.getByRole("link", { name: "Watch 999 Channel 999" })
 		).toBeVisible();
-	});
+	}, 15_000);
 });

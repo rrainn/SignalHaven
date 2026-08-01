@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
 	buildFfmpegArgs,
+	buildAdaptiveFfmpegArgs,
 	buildCaptionsFfmpegArgs,
 	CAPTIONS_PLAYLIST_NAME,
 	CAPTIONS_SEGMENT_PREFIX,
@@ -21,6 +22,45 @@ const INPUT = "udp://example/in";
 const ffmpegAvailable =
 	spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
 
+test("adaptive output uses one ingest and a complete aligned quality ladder", () => {
+	const args = buildAdaptiveFfmpegArgs({
+		input: "https://example.invalid/live.m3u8",
+		outDir: OUT_DIR,
+		input_codecs: { width: 1920, height: 1080, audioCodec: "ac3" }
+	});
+
+	assert.equal(args.filter((arg) => arg === "-i").length, 1);
+	assert.match(args[args.indexOf("-var_stream_map") + 1] ?? "", /name:1080p/);
+	assert.match(args[args.indexOf("-var_stream_map") + 1] ?? "", /name:720p/);
+	assert.match(args[args.indexOf("-var_stream_map") + 1] ?? "", /name:480p/);
+	assert.match(
+		args[args.indexOf("-var_stream_map") + 1] ?? "",
+		/^v:0,a:0,name:480p/
+	);
+	assert.equal(args[args.indexOf("-hls_time") + 1], "2");
+	assert.match(args[args.indexOf("-hls_flags") + 1] ?? "", /temp_file/);
+	assert.match(args[args.indexOf("-hls_flags") + 1] ?? "", /program_date_time/);
+	assert.equal(args[args.indexOf("-master_pl_name") + 1], "master.m3u8");
+	assert.ok(args.includes("expr:gte(t,n_forced*2)"));
+	assert.match(
+		args[args.indexOf("-filter_complex") + 1] ?? "",
+		/bwdif=mode=send_field:parity=auto:deint=interlaced/
+	);
+	assert.equal(args[args.indexOf("-hls_segment_type") + 1], "fmp4");
+	assert.match(args[args.indexOf("-hls_fmp4_init_filename") + 1] ?? "", /%v/);
+	assert.match(args[args.indexOf("-hls_segment_filename") + 1] ?? "", /\.m4s$/);
+});
+
+test("adaptive output omits duplicate upscale rungs when source size is known", () => {
+	const args = buildAdaptiveFfmpegArgs({
+		input: INPUT,
+		outDir: OUT_DIR,
+		input_codecs: { width: 854, height: 480 }
+	});
+
+	assert.equal(args[args.indexOf("-var_stream_map") + 1], "v:0,a:0,name:480p");
+});
+
 function snapshot(args: readonly string[]): string {
 	// Strip the path-prefixed segment filename so the snapshot is stable
 	// across operating systems / temp paths.
@@ -34,8 +74,8 @@ test("direct profile produces a pure stream-copy pipeline", () => {
 	assert.equal(
 		snapshot(args),
 		"-hide_banner -loglevel warning -nostdin -nostats -stats_period 1 " +
-			"-progress pipe:2 -fflags +genpts+nobuffer -i " +
-			"udp://example/in -c copy -f hls -hls_time 1 -hls_list_size 12 " +
+			"-progress pipe:2 -fflags +genpts+nobuffer -thread_queue_size 512 -i " +
+			"udp://example/in -c copy -f hls -hls_time 2 -hls_list_size 12 " +
 			"-hls_flags delete_segments+independent_segments+omit_endlist " +
 			"-hls_segment_filename <OUT>/seg-%05d.ts <OUT>/playlist.m3u8"
 	);
@@ -48,7 +88,7 @@ test("live output publishes an atomic bounded time-shift window", () => {
 		timeShiftWindowSeconds: 30 * 60
 	});
 
-	assert.equal(args[args.indexOf("-hls_list_size") + 1], "1800");
+	assert.equal(args[args.indexOf("-hls_list_size") + 1], "900");
 	assert.equal(args[args.indexOf("-hls_delete_threshold") + 1], "2");
 	assert.equal(
 		args[args.indexOf("-hls_flags") + 1],

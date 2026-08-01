@@ -3,6 +3,8 @@
 import type {
 	ChannelQuality,
 	CommercialMarker,
+	PlaybackStallCause,
+	StreamStatus,
 	TranscodeProfile
 } from "@signalhaven/shared";
 import {
@@ -45,6 +47,7 @@ import { Spinner } from "../_ui/Spinner";
 import { cn } from "../_ui/cn";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
 import { getChannelQuality, getStreamStatus } from "../../lib/api-client";
+import { reportPlaybackTelemetry } from "../../lib/playback-telemetry";
 import { useHls, type HlsModule } from "./useHls";
 
 /**
@@ -68,6 +71,11 @@ interface HlsInstance {
 	attachMedia(el: HTMLMediaElement): void;
 	recoverMediaError(): void;
 	on(event: string, handler: (...args: unknown[]) => void): void;
+	/** Mutable latency target allows gradual recovery after a stable period. */
+	readonly config?: {
+		liveSyncDuration?: number;
+		liveSyncOnStallIncrease?: number;
+	};
 	readonly bandwidthEstimate?: number;
 	readonly currentLevel?: number;
 	/** HLS.js derives live-edge latency from playlist timing more accurately than TimeRanges. */
@@ -94,6 +102,8 @@ interface PlaybackStats {
 	profile: string | null;
 	hwaccel: string | null;
 	serverState: string | null;
+	classifiedCause: string | null;
+	capacityStatus: string | null;
 	pipeline: {
 		mode: "remux" | "transcode";
 		health: "starting" | "healthy" | "slow" | "stalled";
@@ -167,9 +177,12 @@ const GO_LIVE_RECOVERY_BACKOFF_SECONDS = 2;
 const GO_LIVE_STALL_TIMEOUT_MS = 4_000;
 /** Smooth short decoder scheduling spikes without hiding sustained FPS changes. */
 const FRAME_RATE_SMOOTHING_WEIGHT = 0.25;
-/** Extra live-edge depth absorbs short tuner, network, and scheduler jitter. */
-const LIVE_SYNC_SEGMENT_COUNT = 6;
-const LIVE_MAX_LATENCY_SEGMENT_COUNT = 12;
+/** Reliability-first target, raised after stalls and recovered after stability. */
+const LIVE_TARGET_SECONDS = 6;
+const LIVE_STALL_INCREASE_SECONDS = 2;
+const LIVE_MAX_LATENCY_SECONDS = 18;
+const LIVE_STABLE_RECOVERY_DELAY_MS = 120_000;
+const LIVE_RECOVERY_INTERVAL_MS = 60_000;
 
 export interface PlayerPersistence {
 	/** Latest known volume in [0..1]; player initialises from this. */
@@ -273,8 +286,8 @@ interface AirPlayAvailabilityEvent extends Event {
 
 /**
  * Build the master playlist URL for a channel; respects the optional
- * `quality` pin by appending `?profile=<profile>`. `auto` (or absent) uses
- * `original-quality` so broadcast codecs are converted for browser playback.
+ * `quality` pin by appending `?profile=<profile>`. `auto` requests the
+ * multivariant graph so hls.js can change renditions before buffer exhaustion.
  */
 function buildSrc(
 	channelId: string,
@@ -282,9 +295,7 @@ function buildSrc(
 	viewerId?: string
 ): string {
 	const base = `/api/v1/stream/${encodeURIComponent(channelId)}/master.m3u8`;
-	// The backend's legacy default is direct remuxing, which can expose MPEG-2
-	// video from an antenna even though browsers only decode its audio track.
-	const profile = !quality || quality === "auto" ? "original-quality" : quality;
+	const profile = !quality || quality === "auto" ? "auto" : quality;
 	const search = new URLSearchParams({ profile });
 	if (viewerId) {
 		search.set("viewerId", viewerId);
@@ -336,8 +347,7 @@ function buildViewerReleaseUrl(
 	quality: PlayerQuality,
 	viewerId: string
 ): string {
-	const profile = quality === "auto" ? "original-quality" : quality;
-	const query = new URLSearchParams({ profile });
+	const query = new URLSearchParams({ profile: quality });
 	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release?${query.toString()}`;
 }
 
@@ -394,6 +404,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const bufferEventAccumulatorRef = useRef<BufferEventAccumulator>(
 			createBufferEventAccumulator()
 		);
+		const playbackRequestedAtRef = useRef(performance.now());
+		const stableSinceRef = useRef(performance.now());
+		const liveTargetSecondsRef = useRef(LIVE_TARGET_SECONDS);
 		const statusRequestInFlightRef = useRef(false);
 		const lastTapRef = useRef<{ at: number; side: "left" | "right" | null }>({
 			at: 0,
@@ -533,6 +546,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			setAdaptiveLivePosition(null);
 			setNativeTimeShifted(false);
 			bufferEventAccumulatorRef.current = createBufferEventAccumulator();
+			playbackRequestedAtRef.current = performance.now();
+			stableSinceRef.current = performance.now();
+			liveTargetSecondsRef.current = LIVE_TARGET_SECONDS;
 		}, [effectiveSrc]);
 
 		// ── HLS setup ─────────────────────────────────────────────────────────
@@ -601,10 +617,23 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			// playlist URL needs to change.
 			let hls = hlsInstanceRef.current;
 			if (!hls) {
-				const real = new HlsCtor({
-					liveSyncDurationCount: LIVE_SYNC_SEGMENT_COUNT,
-					liveMaxLatencyDurationCount: LIVE_MAX_LATENCY_SEGMENT_COUNT
-				});
+				const real = new HlsCtor(
+					isRecording
+						? {
+								// Recordings trade latency for resilience under sustained throttling.
+								maxBufferLength: 60,
+								maxMaxBufferLength: 120,
+								startFragPrefetch: true
+							}
+						: {
+								liveSyncDuration: LIVE_TARGET_SECONDS,
+								liveMaxLatencyDuration: LIVE_MAX_LATENCY_SECONDS,
+								liveSyncOnStallIncrease: LIVE_STALL_INCREASE_SECONDS,
+								maxLiveSyncPlaybackRate: 1.05,
+								abrBandWidthFactor: 0.8,
+								abrBandWidthUpFactor: 0.65
+							}
+				);
 				const createdHls = real as unknown as HlsInstance;
 				hls = createdHls;
 				hlsInstanceRef.current = createdHls;
@@ -618,6 +647,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				).ErrorTypes;
 				const errorEvent = Events["ERROR"] ?? "hlsError";
 				const manifestEvent = Events["MANIFEST_PARSED"] ?? "hlsManifestParsed";
+				const levelSwitchedEvent =
+					Events["LEVEL_SWITCHED"] ?? "hlsLevelSwitched";
 				const mediaErrorType = ErrorTypes?.["MEDIA_ERROR"] ?? "mediaError";
 				createdHls.on(errorEvent, (..._args: unknown[]) => {
 					const data = _args[1] as
@@ -630,6 +661,13 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						  }
 						| undefined;
 					if (data?.fatal) {
+						reportPlaybackTelemetry({
+							event: "fatal_error",
+							media: isRecording ? "recording" : "live",
+							client: "web",
+							profile: quality,
+							cause: data.type === mediaErrorType ? "decoder" : "network"
+						});
 						lastFatalHlsErrorWasMediaRef.current = data.type === mediaErrorType;
 						if (data.type === mediaErrorType) {
 							// Ignore duplicate fatal events while the delayed recovery is
@@ -673,6 +711,26 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								.catch(() => undefined);
 						}
 					}
+				});
+				createdHls.on(levelSwitchedEvent, (...args: unknown[]) => {
+					const data = args[1] as { level?: number } | undefined;
+					const level =
+						typeof data?.level === "number"
+							? createdHls.levels?.[data.level]
+							: undefined;
+					const rendition =
+						level?.height === 1080 ||
+						level?.height === 720 ||
+						level?.height === 480
+							? (`${level.height}p` as "1080p" | "720p" | "480p")
+							: "unknown";
+					reportPlaybackTelemetry({
+						event: "rendition_changed",
+						media: isRecording ? "recording" : "live",
+						client: "web",
+						profile: rendition,
+						cause: "unknown"
+					});
 				});
 				createdHls.on(manifestEvent, () => {
 					lastFatalHlsErrorWasMediaRef.current = false;
@@ -777,6 +835,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					profile: isRecording ? "recording playback" : null,
 					hwaccel: null,
 					serverState: null,
+					classifiedCause: null,
+					capacityStatus: null,
 					pipeline: null,
 					sourceQuality: null,
 					timeShift: null
@@ -798,6 +858,12 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 														profile: serverResult.value.profile,
 														hwaccel: serverResult.value.hwaccel,
 														serverState: serverResult.value.state,
+														classifiedCause:
+															serverResult.value.lastError?.category ??
+															(serverResult.value.pipeline.health === "healthy"
+																? null
+																: classifyStallCause(serverResult.value)),
+														capacityStatus: serverResult.value.capacity.status,
 														pipeline: serverResult.value.pipeline,
 														timeShift: {
 															enabled: serverResult.value.timeShift.enabled,
@@ -1179,10 +1245,31 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					accumulator.activeStartedAt === null
 				) {
 					accumulator.activeStartedAt = performance.now();
+					stableSinceRef.current = performance.now();
+					if (!isRecording && !nativeTimeShifted) {
+						liveTargetSecondsRef.current = Math.min(
+							LIVE_MAX_LATENCY_SECONDS,
+							liveTargetSecondsRef.current + LIVE_STALL_INCREASE_SECONDS
+						);
+						const config = hlsInstanceRef.current?.config;
+						if (config) {
+							// Own the target after the first stall so recovery can lower it later.
+							config.liveSyncOnStallIncrease = 0;
+							config.liveSyncDuration = liveTargetSecondsRef.current;
+						}
+					}
+					reportPlaybackTelemetry({
+						event: "stall_started",
+						media: isRecording ? "recording" : "live",
+						client: "web",
+						profile: quality,
+						cause: "unknown"
+					});
 				}
 			};
 			const onPlaying = () => {
 				const accumulator = bufferEventAccumulatorRef.current;
+				const wasStarted = accumulator.playbackStarted;
 				if (accumulator.activeStartedAt !== null) {
 					const durationMs = Math.max(
 						0,
@@ -1198,9 +1285,43 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						accumulator.maximumDurationMs ?? durationMs,
 						durationMs
 					);
+					const telemetry = {
+						event: "stall_ended",
+						media: isRecording ? "recording" : "live",
+						client: "web",
+						profile: quality,
+						cause: "unknown",
+						durationSeconds: durationMs / 1_000,
+						...(!isRecording && hlsInstanceRef.current?.latency !== undefined
+							? { latencySeconds: hlsInstanceRef.current.latency }
+							: {})
+					} as const;
+					if (isRecording) {
+						reportPlaybackTelemetry(telemetry);
+					} else {
+						void getStreamStatus(channelId, quality)
+							.then((status) => {
+								reportPlaybackTelemetry({
+									...telemetry,
+									cause: classifyStallCause(status)
+								});
+							})
+							.catch(() => reportPlaybackTelemetry(telemetry));
+					}
 					accumulator.activeStartedAt = null;
 				}
 				accumulator.playbackStarted = true;
+				if (!wasStarted) {
+					reportPlaybackTelemetry({
+						event: "startup_completed",
+						media: isRecording ? "recording" : "live",
+						client: "web",
+						profile: quality,
+						cause: "unknown",
+						durationSeconds:
+							(performance.now() - playbackRequestedAtRef.current) / 1_000
+					});
+				}
 				setLoading(false);
 				hlsMediaRecoveryAttemptsRef.current = 0;
 				lastFatalHlsErrorWasMediaRef.current = false;
@@ -1248,7 +1369,55 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				v.removeEventListener("enterpictureinpicture", onEnterPip);
 				v.removeEventListener("leavepictureinpicture", onLeavePip);
 			};
-		}, [isRecording, useNativeHls]);
+		}, [isRecording, nativeTimeShifted, quality, useNativeHls]);
+
+		// Stable live playback slowly returns to the six-second reliability target.
+		useEffect(() => {
+			if (isRecording) return;
+			const timer = window.setInterval(() => {
+				const video = videoRef.current;
+				if (
+					!video ||
+					video.paused ||
+					nativeTimeShifted ||
+					performance.now() - stableSinceRef.current <
+						LIVE_STABLE_RECOVERY_DELAY_MS ||
+					liveTargetSecondsRef.current <= LIVE_TARGET_SECONDS
+				) {
+					return;
+				}
+				const bufferedAhead =
+					video.buffered.length > 0
+						? video.buffered.end(video.buffered.length - 1) - video.currentTime
+						: 0;
+				if (bufferedAhead < LIVE_TARGET_SECONDS) return;
+				liveTargetSecondsRef.current = Math.max(
+					LIVE_TARGET_SECONDS,
+					liveTargetSecondsRef.current - 1
+				);
+				const config = hlsInstanceRef.current?.config;
+				if (config) config.liveSyncDuration = liveTargetSecondsRef.current;
+			}, LIVE_RECOVERY_INTERVAL_MS);
+			return () => window.clearInterval(timer);
+		}, [isRecording, nativeTimeShifted]);
+
+		useEffect(() => {
+			return () => {
+				const accumulator = bufferEventAccumulatorRef.current;
+				reportPlaybackTelemetry({
+					event: "session_ended",
+					media: isRecording ? "recording" : "live",
+					client: "web",
+					profile: quality,
+					cause: "unknown",
+					watchedDurationSeconds: Math.max(
+						0,
+						(performance.now() - playbackRequestedAtRef.current) / 1_000
+					),
+					stallDurationSeconds: accumulator.totalDurationMs / 1_000
+				});
+			};
+		}, [isRecording, quality]);
 
 		// Safari exposes AirPlay through vendor-prefixed media events. Registering
 		// only when the picker exists avoids target discovery work in other browsers.
@@ -1564,6 +1733,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						<dd>{formatServerState(playbackStats.serverState)}</dd>
 						<dt>Pipeline health</dt>
 						<dd>{formatPipelineHealth(playbackStats.pipeline)}</dd>
+						<dt>Classified cause</dt>
+						<dd>{playbackStats.classifiedCause ?? "None detected"}</dd>
+						<dt>Adaptive capacity</dt>
+						<dd>{playbackStats.capacityStatus ?? "N/A"}</dd>
 						<dt>Tuner/source</dt>
 						<dd>{formatSourceQuality(playbackStats.sourceQuality)}</dd>
 						<dt>Live rewind</dt>
@@ -1989,6 +2162,19 @@ function formatPipelineHealth(pipeline: PlaybackStats["pipeline"]): string {
 		pipeline.mode === "remux" ? "Direct/remux" : "Transcoding"
 	].filter(Boolean);
 	return [labels[pipeline.health], ...details].join(" · ");
+}
+
+/** Pair a client stall with bounded server evidence instead of guessing from bandwidth. */
+function classifyStallCause(status: StreamStatus): PlaybackStallCause {
+	const category = status.lastError?.category ?? "";
+	if (category === "encoder_capacity" || status.pipeline.health === "slow") {
+		return "encoder";
+	}
+	if (category === "input_unreachable") return "source";
+	if (category === "invalid_data") return "packaging";
+	if (category.includes("decoder")) return "decoder";
+	if (status.pipeline.health === "stalled") return "source";
+	return "network";
 }
 
 /** Summarize provider-side RF and transport measurements when available. */

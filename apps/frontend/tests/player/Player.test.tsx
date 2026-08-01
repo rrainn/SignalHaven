@@ -121,11 +121,11 @@ describe("Player", () => {
 		const instance = fakeInstances[0]!;
 		expect(instance.attachMedia).toHaveBeenCalled();
 		const source = instance.loadSource.mock.calls[0]?.[0] as string;
-		const viewerId = expectLiveSource(source, CHANNEL_ID, "original-quality");
+		const viewerId = expectLiveSource(source, CHANNEL_ID, "auto");
 
 		unmount();
 		expect(sendBeacon).toHaveBeenCalledWith(
-			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release?profile=original-quality`
+			`/api/v1/stream/${CHANNEL_ID}/viewers/${viewerId}/release?profile=auto`
 		);
 	});
 
@@ -133,8 +133,12 @@ describe("Player", () => {
 		renderPlayer();
 
 		expect(fakeConfigs[0]).toEqual({
-			liveSyncDurationCount: 6,
-			liveMaxLatencyDurationCount: 12
+			liveSyncDuration: 6,
+			liveMaxLatencyDuration: 18,
+			liveSyncOnStallIncrease: 2,
+			maxLiveSyncPlaybackRate: 1.05,
+			abrBandWidthFactor: 0.8,
+			abrBandWidthUpFactor: 0.65
 		});
 	});
 
@@ -153,7 +157,7 @@ describe("Player", () => {
 		expectLiveSource(
 			fakeInstances[0]?.loadSource.mock.calls[0]?.[0] as string,
 			CHANNEL_ID,
-			"original-quality"
+			"auto"
 		);
 		expect(screen.queryByTestId("player-error")).not.toBeInTheDocument();
 	});
@@ -170,7 +174,7 @@ describe("Player", () => {
 
 		await waitFor(() => expect(FakeHls.isSupported).toHaveBeenCalled());
 		expect(fakeInstances).toHaveLength(0);
-		expectLiveSource(video.src, CHANNEL_ID, "original-quality");
+		expectLiveSource(video.src, CHANNEL_ID, "auto");
 	});
 
 	it("explains when neither HLS playback engine is supported", async () => {
@@ -307,6 +311,14 @@ describe("Player", () => {
 				JSON.stringify({
 					channelId: CHANNEL_ID,
 					profile: "original-quality",
+					playbackMode: "manual",
+					availableProfiles: ["auto", "original-quality", "720p", "480p"],
+					activeRendition: "original-quality",
+					capacity: {
+						status: "not-applicable",
+						requiredSpeed: null,
+						measuredSpeed: null
+					},
 					hwaccel: null,
 					state: "lingering",
 					startedAt: "2026-07-24T12:00:00.000Z",
@@ -492,7 +504,7 @@ describe("Player", () => {
 				instance.loadSource.mock.calls.length - 1
 			]?.[0] as string,
 			"00000000-0000-4000-8000-000000000002",
-			"original-quality"
+			"auto"
 		);
 	});
 

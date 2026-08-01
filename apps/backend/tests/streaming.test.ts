@@ -153,8 +153,10 @@ test(
 
 		// ---------- two concurrent clients share one session ----------
 		const [resp1, resp2] = await Promise.all([
-			request(app).get(`/api/v1/stream/${channelId}/master.m3u8`),
-			request(app).get(`/api/v1/stream/${channelId}/master.m3u8`)
+			request(app).get(
+				`/api/v1/stream/${channelId}/master.m3u8?profile=direct`
+			),
+			request(app).get(`/api/v1/stream/${channelId}/master.m3u8?profile=direct`)
 		]);
 
 		assert.equal(resp1.status, 200, "first master.m3u8 should be 200");
@@ -179,7 +181,7 @@ test(
 
 		// ---------- media playlist is reachable while session is up ----------
 		const playlistResp = await request(app).get(
-			`/api/v1/stream/${channelId}/playlist.m3u8`
+			`/api/v1/stream/${channelId}/playlist.m3u8?profile=direct`
 		);
 		assert.equal(playlistResp.status, 200);
 		assert.match(playlistResp.text, /^#EXTM3U/);
@@ -273,6 +275,57 @@ test("StreamSession runs ffmpeg once for many concurrent attaches", async () => 
 			0,
 			"lease released after tear-down"
 		);
+	} finally {
+		await rm(tmpRoot, { recursive: true, force: true });
+	}
+});
+
+test("adaptive playlists route fMP4 initialization and media fragments", async () => {
+	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-adaptive-fmp4-"));
+	try {
+		const allocator = new TunerAllocator({ capacity: async () => 1 });
+		const lease = await allocator.acquire({
+			providerId: randomUUID(),
+			channelId: "adaptive",
+			purpose: "live",
+			priority: 0
+		});
+		const session = new StreamSession({
+			sessionId: "adaptive",
+			upstreamUrl: "fake://input",
+			lease,
+			releaseLease: () => allocator.release(lease.leaseId),
+			lingerMs: 0,
+			tmpRoot,
+			profile: "auto",
+			inputCodecs: { width: 854, height: 480 },
+			runner: {
+				spawn: (args) => {
+					const pattern = args[
+						args.indexOf("-hls_segment_filename") + 1
+					] as string;
+					return makeAdaptiveFakeProcess(pattern.split("/%v/")[0] ?? "");
+				}
+			}
+		});
+
+		await session.start();
+		const playlist = await session.readRenditionPlaylist("480p");
+		assert.match(
+			playlist,
+			/#EXT-X-MAP:URI="segments\/init_480p\.mp4\?profile=auto"/
+		);
+		assert.match(playlist, /segments\/seg-00000\.m4s\?profile=auto/);
+		assert.deepEqual(
+			await session.readRenditionSegment("480p", "init_480p.mp4"),
+			Buffer.from("initialization fragment")
+		);
+
+		const stopped = new Promise<void>((resolve) =>
+			session.onStopped(() => resolve())
+		);
+		session.stop();
+		await stopped;
 	} finally {
 		await rm(tmpRoot, { recursive: true, force: true });
 	}
@@ -782,6 +835,36 @@ function makeFakeProcess(outDir: string): ChildProcess {
 	return proc as unknown as ChildProcess;
 }
 
+/** Publish a minimal adaptive fMP4 tree without depending on FFmpeg timing. */
+function makeAdaptiveFakeProcess(outDir: string): ChildProcess {
+	const proc = new EventEmitter() as FakeProcess;
+	proc.stderr = new EventEmitter();
+	proc.exitCode = null;
+	proc.signalCode = null;
+	proc.kill = (sig: string): void => {
+		proc.signalCode = sig;
+		setImmediate(() => proc.emit("exit", null, sig));
+	};
+	setImmediate(async () => {
+		const renditionDir = join(outDir, "480p");
+		await mkdir(renditionDir, { recursive: true });
+		await writeFile(
+			join(renditionDir, "init_480p.mp4"),
+			"initialization fragment"
+		);
+		await writeFile(join(renditionDir, "seg-00000.m4s"), "media fragment");
+		await writeFile(
+			join(renditionDir, "playlist.m3u8"),
+			'#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI="init_480p.mp4"\n#EXTINF:2.0,\nseg-00000.m4s\n'
+		);
+		await writeFile(
+			join(outDir, "master.m3u8"),
+			"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000\n480p/playlist.m3u8\n"
+		);
+	});
+	return proc as unknown as ChildProcess;
+}
+
 test("failed startup writes one sanitized structured log without subscribers", async () => {
 	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-startup-failure-"));
 	try {
@@ -966,11 +1049,11 @@ test("media playlist segment URLs are served by the streaming route", async () =
 
 		// Start the session through the same entry point used by the player.
 		const master = await request(app).get(
-			`/api/v1/stream/${channelId}/master.m3u8`
+			`/api/v1/stream/${channelId}/master.m3u8?profile=direct`
 		);
 		assert.equal(master.status, 200);
 
-		const playlistPath = `/api/v1/stream/${channelId}/playlist.m3u8`;
+		const playlistPath = `/api/v1/stream/${channelId}/playlist.m3u8?profile=direct`;
 		const playlist = await request(app).get(playlistPath);
 		assert.equal(playlist.status, 200);
 		const segmentUri = playlist.text
@@ -1034,9 +1117,9 @@ test("master.m3u8?profile=720p selects the 720p profile per session", async () =
 
 		const channelId = "ch-profile";
 
-		// Default profile (no ?profile=) is `direct` → stream copy.
+		// Explicit direct remains a locked stream-copy recovery profile.
 		const respDefault = await request(app).get(
-			`/api/v1/stream/${channelId}/master.m3u8`
+			`/api/v1/stream/${channelId}/master.m3u8?profile=direct`
 		);
 		assert.equal(respDefault.status, 200);
 		assert.match(respDefault.text, /^#EXTM3U/);

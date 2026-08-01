@@ -354,6 +354,43 @@ export function createAppWithServices(
 			"ffmpeg_processes_total",
 			"Number of ffmpeg processes currently running"
 		)
+		// Playback QoE labels are closed enums so metrics remain safe to aggregate.
+		.registerHistogram(
+			"playback_startup_duration_seconds",
+			"Time from playback request to the first rendered frame in seconds",
+			[1, 2, 3, 5, 8, 12, 20, 30]
+		)
+		.registerCounter(
+			"playback_rebuffer_events_total",
+			"Total number of completed playback rebuffer events"
+		)
+		.registerHistogram(
+			"playback_rebuffer_duration_seconds",
+			"Duration of playback rebuffer events in seconds",
+			[0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60]
+		)
+		.registerHistogram(
+			"playback_rebuffer_ratio",
+			"Fraction of watched playback time spent rebuffering",
+			[0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1]
+		)
+		.registerCounter(
+			"playback_rendition_changes_total",
+			"Total number of adaptive rendition changes"
+		)
+		.registerCounter(
+			"playback_fatal_errors_total",
+			"Total number of fatal playback errors"
+		)
+		.registerHistogram(
+			"playback_live_latency_seconds",
+			"Observed distance from the live edge in seconds",
+			[2, 4, 6, 8, 10, 12, 15, 18, 24, 30, 60]
+		)
+		.registerCounter(
+			"playback_pipeline_under_speed_total",
+			"Adaptive pipelines stopped after sustained output below real time"
+		)
 		// Recordings
 		.registerGauge(
 			"recordings_active",
@@ -371,6 +408,28 @@ export function createAppWithServices(
 			"Duration of database query operations in seconds",
 			DB_DURATION_BUCKETS
 		);
+
+	// Capacity failures arrive on existing bounded event topics without identifiers.
+	bus.subscribe("tuners", ({ event, data }) => {
+		if (
+			event === "session.error" &&
+			(data as { category?: unknown }).category === "encoder_capacity"
+		) {
+			metrics.incrementCounter("playback_pipeline_under_speed_total", {
+				media: "live"
+			});
+		}
+	});
+	bus.subscribe("recordings", ({ event, data }) => {
+		if (
+			event === "recording.playback.error" &&
+			(data as { category?: unknown }).category === "encoder_capacity"
+		) {
+			metrics.incrementCounter("playback_pipeline_under_speed_total", {
+				media: "recording"
+			});
+		}
+	});
 
 	// Instrument the pg pool to capture DB query durations.
 	instrumentPool(pool, metrics);

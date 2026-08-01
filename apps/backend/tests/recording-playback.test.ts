@@ -54,10 +54,15 @@ function createFakeProcess(outDir: string): ChildProcess {
 	};
 	setImmediate(async () => {
 		await mkdir(outDir, { recursive: true });
-		await writeFile(join(outDir, "seg-00000.ts"), "playable segment");
+		await writeFile(join(outDir, "init_720p.mp4"), "initialization fragment");
+		await writeFile(join(outDir, "720p-seg-00000.m4s"), "playable segment");
 		await writeFile(
-			join(outDir, "playlist.m3u8"),
-			"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6.0,\nseg-00000.ts\n"
+			join(outDir, "720p.m3u8"),
+			'#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI="init_720p.mp4"\n#EXTINF:2.0,\n720p-seg-00000.m4s\n'
+		);
+		await writeFile(
+			join(outDir, "master.m3u8"),
+			"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720\n720p.m3u8\n"
 		);
 	});
 	return process as unknown as ChildProcess;
@@ -448,21 +453,29 @@ test("concurrent manifest requests share one FFmpeg session and stable segments"
 
 	assert.equal(spawnCount, 1);
 	assert.equal(first, second);
-	assert.match(first, /segments\/seg-00000\.ts\?session=[0-9a-f-]{36}/);
+	assert.match(first, /segments\/720p\.m3u8\?session=[0-9a-f-]{36}/);
 	const uri = first.split(/\r?\n/).find((line) => line.startsWith("segments/"));
 	assert.ok(uri);
 	const parsed = new URL(uri, "http://localhost/recordings/id/stream.m3u8");
-	const segment = await playback.getSegment(
+	const rendition = await playback.getSegment(
 		row.id,
 		parsed.searchParams.get("session") ?? "",
 		parsed.pathname.split("/").pop() ?? ""
 	);
+	assert.match(rendition.toString("utf8"), /init_720p\.mp4\?session=/);
+	assert.match(rendition.toString("utf8"), /720p-seg-00000\.m4s\?session=/);
+	const segment = await playback.getSegment(
+		row.id,
+		parsed.searchParams.get("session") ?? "",
+		"720p-seg-00000.m4s"
+	);
 	assert.deepEqual(segment, Buffer.from("playable segment"));
 
-	// Compatible H.264/AAC streams are remuxed, while playback retains all output.
-	assert.deepEqual(
-		ffmpegArgs.slice(ffmpegArgs.indexOf("-c:v"), -1).includes("copy"),
-		true
+	// Every recording rendition has an encoder ceiling so throttled clients can adapt.
+	assert.equal(ffmpegArgs.includes("libx264"), true);
+	assert.match(
+		ffmpegArgs[ffmpegArgs.indexOf("-var_stream_map") + 1] ?? "",
+		/720p/
 	);
 	// FFmpeg's VOD type defers the playlist until the entire input completes.
 	assert.equal(ffmpegArgs.includes("-hls_playlist_type"), false);
@@ -515,8 +528,8 @@ test("hardware startup failure retries once in software after cleaning artifacts
 
 	assert.match(manifest, /^#EXTM3U/);
 	assert.equal(attempts.length, 2);
-	assert.equal(attempts[0]?.includes("vaapi"), true);
-	assert.equal(attempts[1]?.includes("vaapi"), false);
+	assert.equal(attempts[0]?.includes("h264_vaapi"), true);
+	assert.equal(attempts[1]?.includes("h264_vaapi"), false);
 	assert.equal(attempts[1]?.includes("libx264"), true);
 	await assert.rejects(stat(outputDirectories[0] ?? ""), /ENOENT/);
 	assert.deepEqual(fallbackEvents, [
@@ -709,7 +722,7 @@ test("terminal playback failure writes one sanitized structured summary", async 
 		requestId: response.headers["x-request-id"],
 		recordingId: row.id,
 		playbackSessionId: logs[0]?.context["playbackSessionId"],
-		profile: "original-quality",
+		profile: "auto",
 		hwaccel: "none",
 		exitCode: 1,
 		signal: null,
@@ -837,7 +850,7 @@ test("cancellation during software fallback stops its process and artifacts", as
 	);
 });
 
-test("codec planning copies compatible video and transcodes incompatible audio", async (t) => {
+test("codec planning encodes the adaptive ladder and browser-safe audio", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-codecs-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -868,10 +881,9 @@ test("codec planning copies compatible video and transcodes incompatible audio",
 
 	await playback.getManifest(row.id);
 
-	const videoIndex = args.indexOf("-c:v");
-	const audioIndex = args.indexOf("-c:a");
-	assert.equal(args[videoIndex + 1], "copy");
-	assert.equal(args[audioIndex + 1], "aac");
+	assert.equal(args[args.indexOf("-c:v:0") + 1], "libx264");
+	assert.equal(args[args.indexOf("-c:a:0") + 1], "aac");
+	assert.match(args[args.indexOf("-var_stream_map") + 1] ?? "", /1080p/);
 });
 
 test("non-completed and missing recordings return intentional playback errors", async (t) => {
@@ -1174,7 +1186,7 @@ test(
 		const manifest = await playback.getManifest(row.id);
 
 		assert.match(manifest, /#EXTM3U/);
-		assert.match(manifest, /segments\/seg-00000\.ts/);
+		assert.match(manifest, /segments\/480p\.m3u8/);
 		assert.equal(playback.getSession(row.id)?.getState(), "ready");
 	}
 );
@@ -1217,16 +1229,40 @@ test(
 			.find((line) => line.startsWith("segments/"));
 		assert.ok(segmentUri);
 
-		const segmentUrl = new URL(segmentUri, `http://localhost${manifestPath}`);
+		const renditionUrl = new URL(segmentUri, `http://localhost${manifestPath}`);
+		const rendition = await request(app).get(
+			`${renditionUrl.pathname}${renditionUrl.search}`
+		);
+		assert.equal(rendition.status, 200);
+		assert.match(rendition.headers["content-type"] ?? "", /mpegurl/);
+		const renditionSegmentUri = rendition.text
+			.split(/\r?\n/)
+			.find((line) => line.length > 0 && !line.startsWith("#"));
+		assert.ok(renditionSegmentUri);
+		const segmentUrl = new URL(
+			renditionSegmentUri,
+			`http://localhost${renditionUrl.pathname}`
+		);
 		const segment = await request(app).get(
 			`${segmentUrl.pathname}${segmentUrl.search}`
 		);
 		assert.equal(segment.status, 200);
-		assert.match(segment.headers["content-type"] ?? "", /video\/mp2t/);
+		assert.match(segment.headers["content-type"] ?? "", /video\/iso\.segment/);
 		assert.ok(segment.body.length > 0);
 
-		const downloaded = join(tmp, "downloaded.ts");
-		await writeFile(downloaded, segment.body);
+		const initMatch = /#EXT-X-MAP:URI="([^"]+)"/.exec(rendition.text);
+		assert.ok(initMatch?.[1]);
+		const initUrl = new URL(
+			initMatch[1],
+			`http://localhost${renditionUrl.pathname}`
+		);
+		const init = await request(app).get(`${initUrl.pathname}${initUrl.search}`);
+		assert.equal(init.status, 200);
+		assert.match(init.headers["content-type"] ?? "", /video\/mp4/);
+
+		const downloaded = join(tmp, "downloaded.mp4");
+		// A fragmented media segment needs its initialization box for probing.
+		await writeFile(downloaded, Buffer.concat([init.body, segment.body]));
 		const probe = spawnSync(
 			"ffprobe",
 			["-v", "error", "-show_streams", downloaded],
