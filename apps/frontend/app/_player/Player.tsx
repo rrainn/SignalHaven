@@ -1457,12 +1457,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		// ── Render helpers ────────────────────────────────────────────────────
 		const showOverlay =
 			controlsVisible || !playing || loading || error !== null;
-		const fmt = (s: number): string => {
-			if (!Number.isFinite(s) || s < 0) return "0:00";
-			const m = Math.floor(s / 60);
-			const sec = Math.floor(s % 60);
-			return `${m}:${sec.toString().padStart(2, "0")}`;
-		};
+		const showTimelineHours = timelineDuration >= 3_600;
 
 		const surfaceLoadError = loadError && !useNativeHls;
 		const initializationError = playbackUnsupported
@@ -1795,7 +1790,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								data-testid="player-time"
 								className="text-xs tabular-nums text-white/80"
 							>
-								{fmt(displayedCurrentTime)} / {fmt(timelineDuration)}
+								{formatPlaybackTime(displayedCurrentTime, showTimelineHours)} /{" "}
+								{formatPlaybackTime(timelineDuration, showTimelineHours)}
 							</span>
 						) : (
 							<div className="flex items-center gap-2">
@@ -1813,7 +1809,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 									</Button>
 								) : null}
 								<span className="text-xs tabular-nums text-white/80">
-									{isDelayed ? `-${fmt(liveDelaySeconds)}` : "At live edge"}
+									{isDelayed
+										? `-${formatPlaybackTime(liveDelaySeconds, false)}`
+										: "At live edge"}
 								</span>
 							</div>
 						)}
@@ -2023,6 +2021,20 @@ function formatTimeWindow(seconds: number): string {
 	return remainingMinutes > 0
 		? `${hours} hr ${remainingMinutes} min`
 		: `${hours} hr`;
+}
+
+/** Keep elapsed and total recording times aligned as the playhead advances. */
+function formatPlaybackTime(seconds: number, showHours: boolean): string {
+	const safeSeconds = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0;
+	const wholeSeconds = Math.floor(safeSeconds);
+	const minutes = Math.floor(wholeSeconds / 60);
+	const remainingSeconds = wholeSeconds % 60;
+	const minuteSeconds = `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+	if (!showHours) return minuteSeconds;
+
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	return `${hours}:${remainingMinutes.toString().padStart(2, "0")}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
 /** Compact byte units keep the overlay readable at video-player scale. */

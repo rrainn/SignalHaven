@@ -791,6 +791,14 @@ describe("Player", () => {
 		expect(screen.getByTestId("player-time")).toHaveTextContent("1:05 / 50:00");
 	});
 
+	it("shows hours for the full timeline of recordings longer than one hour", () => {
+		renderPlayer({ isRecording: true, recordingDurationSeconds: 3_661 });
+
+		expect(screen.getByTestId("player-time")).toHaveTextContent(
+			"0:00:00 / 1:01:01"
+		);
+	});
+
 	it("requests a new recording window when the target is outside generated media", () => {
 		const onRecordingSeek = vi.fn();
 		renderPlayer({
