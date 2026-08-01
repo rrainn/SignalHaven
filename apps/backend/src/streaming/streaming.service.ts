@@ -13,6 +13,7 @@ import { TunerAllocator } from "../tuners/tuner-allocator";
 
 import {
 	StreamSession,
+	type PlaybackProfile,
 	type StreamSessionLogger,
 	type StreamSessionRunner
 } from "./stream-session";
@@ -166,10 +167,9 @@ interface PendingSession {
  * short window before tearing down — handles channel-flipping by the same
  * viewer without thrashing the tuner.
  *
- * Sessions are keyed on `(channelId, profile)` so two viewers asking for
- * the same channel at different qualities each get their own ffmpeg
- * process (each consuming its own tuner lease — the allocator handles
- * preempting recordings if capacity runs out).
+ * Adaptive viewers are keyed by channel and share one complete-rendition
+ * process, upstream ingest, and tuner lease. Explicit manual profiles retain
+ * profile-specific sessions as recovery paths for under-capacity servers.
  */
 export class StreamingService {
 	private readonly allocator: TunerAllocator;
@@ -243,16 +243,15 @@ export class StreamingService {
 	 * Attach a new HTTP client to the stream for `channelId`. Resolves the
 	 * channel, picks a profile (per-call override > channel default >
 	 * settings default > `direct`), acquires a tuner lease (the first time
-	 * for this `(channelId, profile)`), spawns ffmpeg (the first time), and
-	 * increments the refcount. Subsequent attaches at the same profile
-	 * reuse the existing session.
+	 * for this playback mode), spawns ffmpeg once, and increments the refcount.
+	 * Subsequent adaptive viewers on the channel reuse the complete ladder.
 	 *
 	 * The caller MUST eventually invoke `session.detach()` for every
 	 * successful `attach()` (typically from a request `close` handler).
 	 */
 	async attach(
 		channelId: string,
-		requestedProfile?: TranscodeProfile
+		requestedProfile?: PlaybackProfile
 	): Promise<StreamSession> {
 		const sources = this.resolver.resolveCandidates
 			? await this.resolver.resolveCandidates(channelId)
@@ -263,7 +262,9 @@ export class StreamingService {
 		}
 		const [transcoding, timeShift] = await Promise.all([
 			this.transcodingResolver.resolve(
-				requestedProfile,
+				requestedProfile === "auto" || requestedProfile === undefined
+					? undefined
+					: requestedProfile,
 				firstSource.defaultProfile
 			),
 			this.timeShiftResolver.resolve()
@@ -274,7 +275,10 @@ export class StreamingService {
 		if (bufferRoot) {
 			await this.prepareBufferRoot(bufferRoot);
 		}
-		const key = sessionKey(channelId, transcoding.profile);
+		// HTTP routes resolve omitted profile to auto; internal callers retain settings defaults.
+		const playbackProfile: PlaybackProfile =
+			requestedProfile ?? transcoding.profile;
+		const key = sessionKey(channelId, playbackProfile);
 		this.assertNotOperatorStopped(key, channelId);
 
 		const existing = this.sessions.get(key);
@@ -319,7 +323,7 @@ export class StreamingService {
 			releaseLease: () => this.allocator.release(lease.leaseId),
 			lingerMs: timeShift.enabled ? timeShift.idleGraceMs : this.lingerMs,
 			bus: this.bus,
-			profile: transcoding.profile,
+			profile: playbackProfile,
 			hwaccel: transcoding.hwaccel,
 			captionsEnabled: transcoding.captionsEnabled,
 			...(source.inputCodecs ? { inputCodecs: source.inputCodecs } : {}),
@@ -382,16 +386,16 @@ export class StreamingService {
 	 */
 	getSession(
 		channelId: string,
-		profile?: TranscodeProfile
+		profile?: PlaybackProfile
 	): StreamSession | undefined {
 		if (profile) {
 			return this.sessions.get(sessionKey(channelId, profile))?.session;
 		}
 		// Profile not supplied: return any active session for this channel,
 		// preferring `direct` (the historical default) when present.
-		const direct = this.sessions.get(sessionKey(channelId, "direct"));
-		if (direct) {
-			return direct.session;
+		const adaptive = this.sessions.get(sessionKey(channelId, "auto"));
+		if (adaptive) {
+			return adaptive.session;
 		}
 		const prefix = `${channelId}\u001f`;
 		for (const [key, entry] of this.sessions) {
@@ -409,7 +413,7 @@ export class StreamingService {
 	releaseViewer(
 		channelId: string,
 		viewerId: string,
-		profile?: TranscodeProfile
+		profile?: PlaybackProfile
 	): boolean {
 		if (profile) {
 			return (
@@ -457,7 +461,7 @@ export class StreamingService {
 		channelId: string;
 		state: string;
 		startedAt: string;
-		profile: TranscodeProfile;
+		profile: PlaybackProfile;
 		hwaccel: HwaccelKind | null;
 		clientCount: number;
 	}> {
@@ -574,7 +578,7 @@ function isProcessRunning(pid: number): boolean {
 	}
 }
 
-function sessionKey(channelId: string, profile: TranscodeProfile): string {
+function sessionKey(channelId: string, profile: PlaybackProfile): string {
 	// Use the ASCII Unit Separator control character (0x1f) so a channelId
 	// containing the visually similar `::` sequence (allowed by the route
 	// schema's permissive 1-128 char regex) cannot collide with the

@@ -65,6 +65,14 @@ export type ChannelQuality = z.infer<typeof channelQualitySchema>;
 export const streamStatusSchema = z.object({
 	channelId: z.string(),
 	profile: z.string(),
+	playbackMode: z.enum(["adaptive", "manual"]),
+	availableProfiles: z.array(z.string()),
+	activeRendition: z.string(),
+	capacity: z.object({
+		status: z.enum(["checking", "passed", "not-applicable"]),
+		requiredSpeed: z.number().nullable(),
+		measuredSpeed: z.number().nullable()
+	}),
 	hwaccel: z.string().nullable(),
 	state: z.string(),
 	startedAt: z.string(),

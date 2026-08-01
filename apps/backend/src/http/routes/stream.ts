@@ -1,11 +1,12 @@
 import { Router } from "express";
-import {
-	transcodeProfileSchema,
-	type TranscodeProfile
-} from "@signalhaven/shared";
+import { transcodeProfileSchema } from "@signalhaven/shared";
 import { z } from "zod";
 
-import { MAX_SEGMENT_NAME_LENGTH } from "../../streaming/stream-session";
+import {
+	AdaptiveEncoderCapacityError,
+	MAX_SEGMENT_NAME_LENGTH
+} from "../../streaming/stream-session";
+import type { PlaybackProfile } from "../../streaming/stream-session";
 import {
 	ChannelNotStreamableError,
 	StreamStoppedByOperatorError,
@@ -20,7 +21,7 @@ const channelIdParamSchema = z.object({
 });
 
 const profileQuerySchema = z.object({
-	profile: transcodeProfileSchema.optional(),
+	profile: z.union([z.literal("auto"), transcodeProfileSchema]).optional(),
 	viewerId: z.string().uuid().optional()
 });
 
@@ -36,6 +37,10 @@ const segmentParamSchema = z.object({
 		.min(1)
 		.max(MAX_SEGMENT_NAME_LENGTH)
 		.regex(/^[A-Za-z0-9._-]+$/, "Invalid segment name")
+});
+
+const renditionParamSchema = segmentParamSchema.extend({
+	rendition: z.enum(["1080p", "720p", "480p"])
 });
 
 /**
@@ -61,19 +66,19 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		validate({ params: channelIdParamSchema, query: profileQuerySchema }),
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const viewerId = req.query["viewerId"] as string | undefined;
 			let attached = false;
 			let session: Awaited<ReturnType<StreamingService["attach"]>> | undefined;
 			try {
-				session = await streaming.attach(channelId, profile);
+				session = await streaming.attach(channelId, profile ?? "auto");
 				attached = true;
 				registerDetach(req, res, session);
 				if (viewerId) {
 					session.attachViewer(viewerId);
 				}
 
-				const body = session.buildMasterPlaylist(viewerId);
+				const body = await session.readMasterPlaylist(viewerId);
 				applyCommonHeaders(res);
 				res.setHeader(
 					"Content-Type",
@@ -97,12 +102,12 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		validate({ params: channelIdParamSchema, query: profileQuerySchema }),
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const viewerId = req.query["viewerId"] as string | undefined;
 			let attached = false;
 			let session: Awaited<ReturnType<StreamingService["attach"]>> | undefined;
 			try {
-				session = await streaming.attach(channelId, profile);
+				session = await streaming.attach(channelId, profile ?? "auto");
 				attached = true;
 				registerDetach(req, res, session);
 				if (viewerId) {
@@ -133,7 +138,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		(req, res) => {
 			const channelId = req.params["channelId"] as string;
 			const viewerId = req.params["viewerId"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			streaming.releaseViewer(channelId, viewerId, profile);
 			res.status(204).end();
 		}
@@ -144,7 +149,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		validate({ params: channelIdParamSchema, query: profileQuerySchema }),
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const session = streaming.getSession(channelId, profile);
 			if (!session || !session.captionsEnabled) {
 				next(
@@ -175,7 +180,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
 			const segment = req.params["segment"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const session = streaming.getSession(channelId, profile);
 			if (!session) {
 				next(
@@ -197,6 +202,60 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		}
 	);
 
+	router.get(
+		"/stream/:channelId/variants/:rendition/playlist.m3u8",
+		validate({ params: renditionParamSchema, query: profileQuerySchema }),
+		async (req, res, next) => {
+			const channelId = req.params["channelId"] as string;
+			const rendition = req.params["rendition"] as string;
+			const session = streaming.getSession(channelId, "auto");
+			if (!session) {
+				next(
+					new HttpError(404, "not_found", `No adaptive stream for ${channelId}`)
+				);
+				return;
+			}
+			try {
+				const body = await session.readRenditionPlaylist(rendition);
+				applyCommonHeaders(res);
+				res.setHeader(
+					"Content-Type",
+					"application/vnd.apple.mpegurl; charset=utf-8"
+				);
+				res.setHeader("Cache-Control", "no-store");
+				res.status(200).send(body);
+			} catch {
+				next(new HttpError(404, "not_found", "Adaptive rendition unavailable"));
+			}
+		}
+	);
+
+	router.get(
+		"/stream/:channelId/variants/:rendition/segments/:segment",
+		validate({ params: renditionParamSchema, query: profileQuerySchema }),
+		async (req, res, next) => {
+			const channelId = req.params["channelId"] as string;
+			const rendition = req.params["rendition"] as string;
+			const segment = req.params["segment"] as string;
+			const session = streaming.getSession(channelId, "auto");
+			if (!session) {
+				next(
+					new HttpError(404, "not_found", `No adaptive stream for ${channelId}`)
+				);
+				return;
+			}
+			try {
+				const body = await session.readRenditionSegment(rendition, segment);
+				applyCommonHeaders(res);
+				res.setHeader("Content-Type", contentTypeFor(segment));
+				res.setHeader("Cache-Control", "public, max-age=300, immutable");
+				res.status(200).send(body);
+			} catch {
+				next(new HttpError(404, "not_found", `Segment ${segment} not found`));
+			}
+		}
+	);
+
 	// Lightweight introspection used by the UI / smoke tests to surface a
 	// viewer-safe error and the active profile/hwaccel pair for the session.
 	// Returns 404 when no session is active for the channel.
@@ -205,7 +264,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		validate({ params: channelIdParamSchema, query: profileQuerySchema }),
 		(req, res, next) => {
 			const channelId = req.params["channelId"] as string;
-			const profile = req.query["profile"] as TranscodeProfile | undefined;
+			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const session = streaming.getSession(channelId, profile);
 			if (!session) {
 				next(
@@ -218,6 +277,18 @@ export function createStreamRouter(streaming: StreamingService): Router {
 			res.status(200).json({
 				channelId,
 				profile: session.profile,
+				playbackMode: session.profile === "auto" ? "adaptive" : "manual",
+				availableProfiles: [
+					"auto",
+					"original-quality",
+					"1080p",
+					"720p",
+					"480p",
+					"audio-only",
+					"direct"
+				],
+				activeRendition: session.profile === "auto" ? "auto" : session.profile,
+				capacity: session.getCapacityStatus(),
 				hwaccel: session.hwaccel,
 				state: session.getState(),
 				startedAt: session.startedAt.toISOString(),
@@ -281,6 +352,9 @@ function translate(err: unknown): unknown {
 	}
 	if (err instanceof StreamStoppedByOperatorError) {
 		return new HttpError(409, "stream_stopped_by_operator", err.message);
+	}
+	if (err instanceof AdaptiveEncoderCapacityError) {
+		return new HttpError(422, "encoder_capacity", err.message);
 	}
 	if (err instanceof TunerUnavailableError) {
 		return new HttpError(409, err.code, err.message, {

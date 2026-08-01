@@ -13,6 +13,7 @@ import {
 	epgSourceSchema,
 	errorResponseSchema,
 	healthResponseSchema,
+	playbackTelemetryEventSchema,
 	recordingByProgramCreateSchema,
 	recordingByProgramResponseSchema,
 	recordingConflictListSchema,
@@ -159,6 +160,11 @@ const SearchResponse = registry.register(
 	"SearchResponse",
 	searchResponseSchema
 );
+const PlaybackTelemetryEvent = registry.register(
+	"PlaybackTelemetryEvent",
+	playbackTelemetryEventSchema
+);
+const PlaybackProfile = z.union([z.literal("auto"), transcodeProfileSchema]);
 
 registry.registerPath({
 	method: "get",
@@ -775,18 +781,18 @@ registry.registerPath({
 	path: "/api/v1/stream/{channelId}/master.m3u8",
 	summary: "HLS master playlist for a channel",
 	description:
-		"Attaches an HTTP client to the per-channel `StreamSession`, spinning up ffmpeg + acquiring a tuner lease the first time. A browser-generated `viewerId` retains the session across short HLS requests until its release beacon arrives.",
+		"Attaches an HTTP client to the channel-keyed adaptive session, benchmarking the configured encoder and then acquiring one tuner/source ingest for the synchronized rendition graph. Explicit profile values remain locked manual streams. A browser-generated `viewerId` retains the session across short HLS requests until its release beacon arrives.",
 	tags: ["streaming"],
 	request: {
 		params: z.object({ channelId: z.string().min(1).max(128) }),
 		query: z.object({
-			profile: transcodeProfileSchema.optional(),
+			profile: PlaybackProfile.optional(),
 			viewerId: z.string().uuid().optional()
 		})
 	},
 	responses: {
 		200: {
-			description: "HLS master playlist (synthetic, points at media playlist).",
+			description: "Multivariant adaptive HLS master or locked-profile master.",
 			content: {
 				"application/vnd.apple.mpegurl": {
 					schema: { type: "string" }
@@ -806,13 +812,62 @@ registry.registerPath({
 
 registry.registerPath({
 	method: "get",
+	path: "/api/v1/stream/{channelId}/variants/{rendition}/playlist.m3u8",
+	summary: "Adaptive HLS rendition playlist",
+	tags: ["streaming"],
+	request: {
+		params: z.object({
+			channelId: z.string().min(1).max(128),
+			rendition: z.enum(["1080p", "720p", "480p"])
+		})
+	},
+	responses: {
+		200: {
+			description: "Synchronized two-second rendition playlist.",
+			content: {
+				"application/vnd.apple.mpegurl": { schema: { type: "string" } }
+			}
+		},
+		404: { description: "Adaptive session or rendition unavailable." }
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/stream/{channelId}/variants/{rendition}/segments/{segment}",
+	summary: "Adaptive HLS rendition segment",
+	tags: ["streaming"],
+	request: {
+		params: z.object({
+			channelId: z.string().min(1).max(128),
+			rendition: z.enum(["1080p", "720p", "480p"]),
+			segment: z.string().regex(/^[A-Za-z0-9._-]+$/)
+		})
+	},
+	responses: {
+		200: {
+			description: "Immutable fMP4 initialization or media fragment.",
+			content: {
+				"video/iso.segment": {
+					schema: { type: "string", format: "binary" }
+				},
+				"video/mp4": { schema: { type: "string", format: "binary" } },
+				"video/mp2t": { schema: { type: "string", format: "binary" } }
+			}
+		},
+		404: { description: "Segment unavailable." }
+	}
+});
+
+registry.registerPath({
+	method: "get",
 	path: "/api/v1/stream/{channelId}/playlist.m3u8",
 	summary: "HLS media playlist for a channel",
 	tags: ["streaming"],
 	request: {
 		params: z.object({ channelId: z.string().min(1).max(128) }),
 		query: z.object({
-			profile: transcodeProfileSchema.optional(),
+			profile: PlaybackProfile.optional(),
 			viewerId: z.string().uuid().optional()
 		})
 	},
@@ -844,7 +899,7 @@ registry.registerPath({
 			channelId: z.string().min(1).max(128),
 			viewerId: z.string().uuid()
 		}),
-		query: z.object({ profile: transcodeProfileSchema.optional() })
+		query: z.object({ profile: PlaybackProfile.optional() })
 	},
 	responses: {
 		204: { description: "Viewer released or already absent." }
@@ -1012,9 +1067,9 @@ registry.registerPath({
 registry.registerPath({
 	method: "get",
 	path: "/api/v1/recordings/{id}/stream.m3u8",
-	summary: "Prepare and return a recording HLS playlist",
+	summary: "Prepare and return a recording adaptive HLS master",
 	description:
-		"Validates that the recording completed and its file is readable, then creates or reuses a VOD HLS window keyed by recording and start timestamp. A browser-generated viewerId owns the window across playlist and segment requests, allowing independent tabs to seek without replacing each other. Compatible H.264/AAC streams are copied; incompatible streams are selectively transcoded for browser playback.",
+		"Validates that the recording completed and its file is readable, then creates or reuses a multivariant VOD HLS window keyed by recording and start timestamp. The existing entry URL returns synchronized applicable 1080p, 720p, and 480p choices. A browser-generated viewerId owns the window across playlist and segment requests, allowing independent tabs to seek without replacing each other.",
 	tags: ["recordings"],
 	request: {
 		params: z.object({ id: z.string().uuid() }),
@@ -1025,7 +1080,7 @@ registry.registerPath({
 	},
 	responses: {
 		200: {
-			description: "Recording HLS media playlist.",
+			description: "Recording multivariant HLS master playlist.",
 			content: {
 				"application/vnd.apple.mpegurl": {
 					schema: { type: "string" }
@@ -1054,9 +1109,9 @@ registry.registerPath({
 registry.registerPath({
 	method: "get",
 	path: "/api/v1/recordings/{id}/segments/{segment}",
-	summary: "Serve one recording playback segment",
+	summary: "Serve one recording playback artifact",
 	description:
-		"Serves immutable MPEG-TS bytes from the opaque playback session referenced by the manifest. Expired or replaced session identifiers are rejected.",
+		"Serves a rendition playlist, fMP4 initialization fragment, or immutable media fragment from the opaque playback session referenced by the manifest. Expired or replaced session identifiers are rejected.",
 	tags: ["recordings"],
 	request: {
 		params: z.object({
@@ -1065,7 +1120,7 @@ registry.registerPath({
 				.string()
 				.min(1)
 				.max(64)
-				.regex(/^[A-Za-z0-9_-]+\.ts$/)
+				.regex(/^[A-Za-z0-9_-]+\.(?:m3u8|m4s|mp4|ts)$/)
 		}),
 		query: z.object({
 			session: z.string().uuid(),
@@ -1074,8 +1129,13 @@ registry.registerPath({
 	},
 	responses: {
 		200: {
-			description: "Immutable MPEG-TS segment bytes.",
+			description: "Adaptive recording playback artifact.",
 			content: {
+				"application/vnd.apple.mpegurl": { schema: { type: "string" } },
+				"video/iso.segment": {
+					schema: { type: "string", format: "binary" }
+				},
+				"video/mp4": { schema: { type: "string", format: "binary" } },
 				"video/mp2t": { schema: { type: "string", format: "binary" } }
 			}
 		},
@@ -1333,11 +1393,37 @@ registry.registerPath({
 });
 
 registry.registerPath({
+	method: "post",
+	path: "/api/v1/playback/telemetry",
+	summary: "Report a bounded playback QoE event",
+	description:
+		"Records low-cardinality startup, rebuffer, rendition, latency, and fatal-error observations on the self-hosted server. Identifiers and URLs are not accepted or persisted.",
+	tags: ["observability"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: PlaybackTelemetryEvent } }
+		}
+	},
+	responses: {
+		204: { description: "Playback observation recorded." },
+		400: {
+			description: "Invalid or unbounded telemetry event.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		429: {
+			description: "Telemetry request rate exceeded.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
 	method: "get",
 	path: "/api/v1/metrics",
 	summary: "Prometheus-format metrics",
 	description:
-		"Returns all collected metrics in Prometheus text format 0.0.4. Includes HTTP request counts/latencies, active stream sessions, active recordings, EPG refresh durations, FFmpeg process count, and DB query durations.",
+		"Returns all collected metrics in Prometheus text format 0.0.4. Includes HTTP and playback QoE observations, active stream sessions, active recordings, EPG refresh durations, FFmpeg process count, and DB query durations.",
 	tags: ["observability"],
 	responses: {
 		200: {

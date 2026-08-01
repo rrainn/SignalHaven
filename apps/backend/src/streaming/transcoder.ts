@@ -122,6 +122,177 @@ export interface BuildFfmpegArgsOptions {
 	inputSeekSeconds?: number;
 }
 
+export interface BuildAdaptiveFfmpegArgsOptions {
+	/** One acquired upstream shared by every rendition in the process. */
+	input: string;
+	/** Root containing the master and rendition subdirectories. */
+	outDir: string;
+	/** Configured encoder backend used by the full ladder capacity check. */
+	hwaccel?: HwaccelKind | null;
+	/** Known source dimensions prevent duplicate or upscaled renditions. */
+	input_codecs?: InputCodecInfo;
+	/** Retained live window in seconds. */
+	timeShiftWindowSeconds?: number;
+	/** Recordings keep every segment and may begin from a lazy seek offset. */
+	outputMode?: "live" | "vod";
+	inputSeekSeconds?: number;
+	/** Flat names let the existing recording segment route preserve its entry URL. */
+	outputLayout?: "directories" | "flat";
+}
+
+/**
+ * Build a single-ingest, synchronized adaptive HLS graph.
+ *
+ * Every rung is encoded in the same FFmpeg process, so timestamps, GOP
+ * boundaries, source interruptions, and tuner ownership remain shared.
+ */
+export function buildAdaptiveFfmpegArgs(
+	options: BuildAdaptiveFfmpegArgsOptions
+): string[] {
+	const encoder = videoEncoderFor(options.hwaccel ?? null);
+	const outputMode = options.outputMode ?? "live";
+	const outputLayout = options.outputLayout ?? "directories";
+	const sourceHeight = options.input_codecs?.height;
+	const candidates = [
+		// Put the continuity rung first so native players have a safe startup default.
+		{ name: "480p", height: 480, bitrate: 1_200, audio: 128 },
+		{ name: "720p", height: 720, bitrate: 3_000, audio: 160 },
+		{ name: "1080p", height: 1080, bitrate: 6_000, audio: 192 }
+	];
+	// Keep the lowest rung for small/unknown sources while avoiding upscales.
+	const renditions = candidates.filter(
+		(candidate) =>
+			sourceHeight === undefined || candidate.height <= sourceHeight
+	);
+	if (renditions.length === 0) {
+		renditions.push(candidates[0]!);
+	}
+
+	const inputLabels = renditions.map((_, index) => `[v${index}]`).join("");
+	const formatFilter =
+		encoder === "h264_vaapi" ? "format=nv12,hwupload" : "format=yuv420p";
+	const filters = [
+		// Broadcast feeds are commonly 1080i/480i. Deinterlace once before the
+		// split so every Apple-compatible rendition shares the same frame cadence.
+		`[0:v:0]bwdif=mode=send_field:parity=auto:deint=interlaced,split=${renditions.length}${inputLabels}`,
+		...renditions.map(
+			(rendition, index) =>
+				`[v${index}]scale=-2:'min(${rendition.height},ih)':flags=lanczos,${formatFilter}[v${index}out]`
+		)
+	].join(";");
+	const maps = renditions.flatMap((_, index) => [
+		"-map",
+		`[v${index}out]`,
+		"-map",
+		"0:a:0?"
+	]);
+	const codecs = renditions.flatMap((rendition, index) => [
+		`-c:v:${index}`,
+		encoder,
+		...scopedVideoArgs(presetArgsFor(encoder), index),
+		...(encoder === "libx264" ? [`-a53cc:v:${index}`, "1"] : []),
+		`-b:v:${index}`,
+		`${rendition.bitrate}k`,
+		`-maxrate:v:${index}`,
+		`${Math.round(rendition.bitrate * 1.1)}k`,
+		`-bufsize:v:${index}`,
+		`${rendition.bitrate * 2}k`,
+		`-force_key_frames:v:${index}`,
+		"expr:gte(t,n_forced*2)",
+		`-sc_threshold:v:${index}`,
+		"0",
+		`-c:a:${index}`,
+		"aac",
+		`-b:a:${index}`,
+		`${rendition.audio}k`,
+		`-ac:a:${index}`,
+		"2"
+	]);
+	const listSize = Math.max(
+		12,
+		Math.ceil((options.timeShiftWindowSeconds ?? 24) / 2)
+	);
+
+	return [
+		"-hide_banner",
+		"-loglevel",
+		"warning",
+		"-nostdin",
+		"-nostats",
+		"-stats_period",
+		"1",
+		"-progress",
+		"pipe:2",
+		"-fflags",
+		outputMode === "live" ? "+genpts+nobuffer" : "+genpts",
+		...(encoder === "h264_vaapi"
+			? ["-vaapi_device", "/dev/dri/renderD128"]
+			: []),
+		...(outputMode === "live" ? reconnectInputArgs(options.input) : []),
+		...(outputMode === "live" ? ["-thread_queue_size", "512"] : []),
+		...(options.inputSeekSeconds && options.inputSeekSeconds > 0
+			? ["-ss", String(options.inputSeekSeconds)]
+			: []),
+		"-i",
+		options.input,
+		"-filter_complex",
+		filters,
+		...maps,
+		...codecs,
+		"-f",
+		"hls",
+		"-hls_time",
+		"2",
+		"-hls_list_size",
+		outputMode === "vod" ? "0" : String(listSize),
+		...(outputMode === "live" ? ["-hls_delete_threshold", "2"] : []),
+		"-hls_flags",
+		outputMode === "vod"
+			? "independent_segments+temp_file"
+			: "delete_segments+independent_segments+omit_endlist+temp_file+program_date_time",
+		"-hls_segment_type",
+		"fmp4",
+		"-hls_fmp4_init_filename",
+		// FFmpeg expands %v only when multiple variants exist. A concrete name
+		// keeps a source with only one non-upscaled rung from creating `%v` literally.
+		renditions.length > 1 ? "init_%v.mp4" : `init_${renditions[0]!.name}.mp4`,
+		"-master_pl_name",
+		"master.m3u8",
+		"-var_stream_map",
+		renditions
+			.map((rendition, index) => `v:${index},a:${index},name:${rendition.name}`)
+			.join(" "),
+		"-hls_segment_filename",
+		outputLayout === "flat"
+			? join(options.outDir, "%v-seg-%05d.m4s")
+			: join(options.outDir, "%v", "seg-%05d.m4s"),
+		outputLayout === "flat"
+			? join(options.outDir, "%v.m3u8")
+			: join(options.outDir, "%v", "playlist.m3u8")
+	];
+}
+
+/** Scope encoder option pairs to one stream in a multivariant output. */
+function scopedVideoArgs(args: string[], index: number): string[] {
+	return args.map((value) =>
+		value.startsWith("-") ? `${value.replace(/:v$/, "")}:v:${index}` : value
+	);
+}
+
+/** Reconnect bounded HTTP inputs while leaving tuner-native protocols alone. */
+function reconnectInputArgs(input: string): string[] {
+	return /^https?:\/\//i.test(input)
+		? [
+				"-reconnect",
+				"1",
+				"-reconnect_streamed",
+				"1",
+				"-reconnect_delay_max",
+				"2"
+			]
+		: [];
+}
+
 /**
  * Build the ffmpeg arg vector for a given (profile, hwaccel, input) tuple.
  *
@@ -189,6 +360,8 @@ export function buildFfmpegArgs(options: BuildFfmpegArgsOptions): string[] {
 		...head,
 		...decode,
 		...inputSeek,
+		...(outputMode === "live" ? reconnectInputArgs(options.input) : []),
+		...(outputMode === "live" ? ["-thread_queue_size", "512"] : []),
 		"-i",
 		options.input,
 		...codec,
@@ -302,6 +475,8 @@ function buildVideoArgs(
 		"60",
 		"-sc_threshold",
 		"0",
+		"-force_key_frames",
+		"expr:gte(t,n_forced*2)",
 		"-pix_fmt",
 		pixFmtFor(encoder)
 	];
@@ -455,14 +630,14 @@ function hlsOutputArgs(
 				]
 			: [
 					"-hls_time",
-					"1",
+					"2",
 					"-hls_list_size",
 					String(
 						timeShiftWindowSeconds === undefined
 							? // Keep enough history for the player's six-segment live
 								// cushion even when full time shifting is disabled.
 								12
-							: Math.max(1, Math.ceil(timeShiftWindowSeconds))
+							: Math.max(1, Math.ceil(timeShiftWindowSeconds / 2))
 					),
 					...(timeShiftWindowSeconds === undefined
 						? []

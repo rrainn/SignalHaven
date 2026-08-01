@@ -27,6 +27,7 @@ import { createEpgRouter } from "./routes/epg";
 import { createEpgGridRouter } from "./routes/epg-grid";
 import { createHealthRouter } from "./routes/health";
 import { createMetricsRouter } from "./routes/metrics";
+import { createPlaybackTelemetryRouter } from "./routes/playback-telemetry";
 import { createRecordingsRouter } from "./routes/recordings";
 import { createSearchRouter } from "./routes/search";
 import { createSeriesRulesRouter } from "./routes/series-rules";
@@ -109,6 +110,7 @@ export function createApiV1Router(deps: ApiV1Dependencies): Router {
 
 	// Observability routes
 	if (deps.metrics) {
+		router.use(createPlaybackTelemetryRouter(deps.metrics));
 		router.use(
 			createMetricsRouter({
 				collector: deps.metrics,

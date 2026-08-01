@@ -59,9 +59,9 @@ channel for history and manual recovery through the merge UI.
 ## Recording playback
 
 Completed recordings are exposed as VOD HLS through
-`/api/v1/recordings/:id/stream.m3u8`. The backend probes the stored media,
-stream-copies browser-compatible H.264/AAC streams, and selectively transcodes
-only incompatible tracks. Playback windows are keyed by recording and seek
+`/api/v1/recordings/:id/stream.m3u8`. The backend probes the stored media and
+produces the same deinterlaced H.264/AAC fragmented-MP4 adaptive ladder used by
+live playback. Playback windows are keyed by recording and seek
 offset: viewers at the same offset share work, while independent tabs can seek
 without replacing each other. A stable browser `viewerId` follows playlist and
 segment requests; navigation sends an idempotent release beacon so the final

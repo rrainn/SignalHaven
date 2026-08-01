@@ -20,13 +20,32 @@ import type {
 import type { EventBus } from "../events/event-bus";
 
 import {
+	checkAdaptiveCapacity,
+	type AdaptiveCapacityResult
+} from "./adaptive-capacity";
+
+import {
 	buildFfmpegArgs as buildProfileFfmpegArgs,
+	buildAdaptiveFfmpegArgs,
 	buildCaptionsFfmpegArgs,
 	CAPTIONS_PLAYLIST_NAME,
 	escapeCaptionsMovieInput,
 	parseFfmpegLine,
 	type InputCodecInfo
 } from "./transcoder";
+
+/** `auto` selects the complete adaptive graph; named profiles remain locked. */
+export type PlaybackProfile = "auto" | TranscodeProfile;
+
+/** The configured encoder cannot safely expose the mandatory adaptive graph. */
+export class AdaptiveEncoderCapacityError extends Error {
+	constructor(speed: number) {
+		super(
+			`Adaptive Streaming requires the complete ladder to sustain 1.25x; this encoder measured ${speed.toFixed(2)}x. Select a supported hardware encoder or use a manual quality profile.`
+		);
+		this.name = "AdaptiveEncoderCapacityError";
+	}
+}
 
 /**
  * Build the FFmpeg arguments used to transcode/remux the upstream URL into a
@@ -121,7 +140,7 @@ export interface StreamSessionOptions {
 	 */
 	startTimeoutMs?: number;
 	/** Output profile fed to {@link buildProfileFfmpegArgs}. */
-	profile?: TranscodeProfile;
+	profile?: PlaybackProfile;
 	/** Hwaccel backend (already resolved against the user preference). */
 	hwaccel?: HwaccelKind | null;
 	/** Probed input codec metadata; lets the builder skip needless re-encode. */
@@ -146,6 +165,8 @@ export interface StreamSessionOptions {
 	bufferStat?: (path: string) => Promise<{ size: number }>;
 	/** Inactivity window before an orphaned logical viewer expires. */
 	viewerTimeoutMs?: number;
+	/** Test seam for the synthetic full-ladder benchmark. */
+	capacityChecker?: () => Promise<AdaptiveCapacityResult>;
 }
 
 export type StreamSessionState = "starting" | "ready" | "lingering" | "stopped";
@@ -174,7 +195,7 @@ export class StreamSession {
 	readonly sessionId: string;
 	readonly lease: TunerLease;
 	readonly startedAt = new Date();
-	readonly profile: TranscodeProfile;
+	readonly profile: PlaybackProfile;
 	readonly hwaccel: HwaccelKind | null;
 	readonly captionsEnabled: boolean;
 
@@ -249,6 +270,11 @@ export class StreamSession {
 				updatedAtMs: number;
 		  }
 		| undefined;
+	/** Sustained under-speed output is an encoder failure, not a network stall. */
+	private underSpeedSamples = 0;
+	private adaptiveCapacityPassed = false;
+	private adaptiveCapacitySpeed: number | null = null;
+	private readonly capacityChecker: () => Promise<AdaptiveCapacityResult>;
 
 	constructor(options: StreamSessionOptions) {
 		this.sessionId = options.sessionId;
@@ -275,6 +301,11 @@ export class StreamSession {
 			1,
 			options.viewerTimeoutMs ?? DEFAULT_VIEWER_TIMEOUT_MS
 		);
+		this.capacityChecker =
+			options.capacityChecker ??
+			(options.runner
+				? async () => ({ passed: true, speed: 1.25 })
+				: () => checkAdaptiveCapacity(this.hwaccel));
 	}
 
 	/**
@@ -287,20 +318,60 @@ export class StreamSession {
 			return this.waitForReady();
 		}
 
+		if (this.profile === "auto") {
+			const capacity = await this.capacityChecker();
+			this.adaptiveCapacityPassed = capacity.passed;
+			this.adaptiveCapacitySpeed = capacity.speed;
+			if (!capacity.passed) {
+				this.lastError = {
+					category: "encoder_capacity",
+					message: "Adaptive encoder failed the sustained 1.25x capacity check",
+					ts: new Date().toISOString()
+				};
+				const error = new AdaptiveEncoderCapacityError(capacity.speed);
+				this.startError = error;
+				this.publish("session.error", {
+					category: "encoder_capacity",
+					message: this.lastError.message
+				});
+				this.finalize(error);
+				throw error;
+			}
+		}
+
 		// A configured time-shift root may not exist yet on a fresh install.
 		await mkdir(this.tmpRoot, { recursive: true });
 		this.outDir = await mkdtemp(
 			join(this.tmpRoot, `signalhaven-stream-${process.pid}-`)
 		);
-		const args = buildFfmpegArgs(this.upstreamUrl, this.outDir, {
-			profile: this.profile,
-			hwaccel: this.hwaccel,
-			captionsEnabled: this.captionsEnabled,
-			...(this.timeShiftWindowSeconds !== undefined
-				? { timeShiftWindowSeconds: this.timeShiftWindowSeconds }
-				: {}),
-			...(this.inputCodecs ? { inputCodecs: this.inputCodecs } : {})
-		});
+		if (this.profile === "auto") {
+			// FFmpeg writes each rendition atomically but does not create `%v` folders.
+			await Promise.all(
+				["1080p", "720p", "480p"].map((rendition) =>
+					mkdir(join(this.outDir, rendition), { recursive: true })
+				)
+			);
+		}
+		const args =
+			this.profile === "auto"
+				? buildAdaptiveFfmpegArgs({
+						input: this.upstreamUrl,
+						outDir: this.outDir,
+						hwaccel: this.hwaccel,
+						...(this.timeShiftWindowSeconds !== undefined
+							? { timeShiftWindowSeconds: this.timeShiftWindowSeconds }
+							: {}),
+						...(this.inputCodecs ? { input_codecs: this.inputCodecs } : {})
+					})
+				: buildFfmpegArgs(this.upstreamUrl, this.outDir, {
+						profile: this.profile,
+						hwaccel: this.hwaccel,
+						captionsEnabled: this.captionsEnabled,
+						...(this.timeShiftWindowSeconds !== undefined
+							? { timeShiftWindowSeconds: this.timeShiftWindowSeconds }
+							: {}),
+						...(this.inputCodecs ? { inputCodecs: this.inputCodecs } : {})
+					});
 		this.processingMode = ffmpegProcessingMode(args);
 
 		this.readyPromise = new Promise<void>((resolve, reject) => {
@@ -402,10 +473,14 @@ export class StreamSession {
 
 		// Poll the output dir for the playlist; LL-HLS support varies between
 		// ffmpeg builds so we look at the file the muxer always writes.
-		const playlistPath = join(this.outDir, "playlist.m3u8");
+		const playlistPath = join(
+			this.outDir,
+			this.profile === "auto" ? "master.m3u8" : "playlist.m3u8"
+		);
 		void this.pollForPlaylist(playlistPath);
 
-		if (this.captionsEnabled) {
+		// Adaptive mode keeps one upstream ingest; it never opens a caption sidecar.
+		if (this.captionsEnabled && this.profile !== "auto") {
 			this.spawnCaptionsSidecar();
 		}
 
@@ -663,6 +738,26 @@ export class StreamSession {
 		};
 	}
 
+	/** Adaptive availability is gated by the configured encoder's live graph. */
+	getCapacityStatus(): {
+		status: "checking" | "passed" | "not-applicable";
+		requiredSpeed: number | null;
+		measuredSpeed: number | null;
+	} {
+		if (this.profile !== "auto") {
+			return {
+				status: "not-applicable",
+				requiredSpeed: null,
+				measuredSpeed: null
+			};
+		}
+		return {
+			status: this.adaptiveCapacityPassed ? "passed" : "checking",
+			requiredSpeed: 1.25,
+			measuredSpeed: this.adaptiveCapacitySpeed
+		};
+	}
+
 	/** Consume one `-progress` key/value line and commit complete samples. */
 	private consumeProgressLine(line: string): boolean {
 		const match = /^([a-z_]+)=(.*)$/i.exec(line);
@@ -683,6 +778,25 @@ export class StreamSession {
 			),
 			updatedAtMs: Date.now()
 		};
+		const speed = this.latestProgress.speed;
+		// Live inputs are clocked at ~1.0×; only a real wall-clock deficit is unhealthy.
+		if (this.profile === "auto" && speed !== null && speed < 0.95) {
+			this.underSpeedSamples += 1;
+		} else {
+			this.underSpeedSamples = 0;
+		}
+		if (this.underSpeedSamples >= 5) {
+			this.lastError = {
+				category: "encoder_capacity",
+				message: "Adaptive encoder cannot sustain real-time output",
+				ts: new Date().toISOString()
+			};
+			this.publish("session.error", {
+				category: this.lastError.category,
+				message: this.lastError.message
+			});
+			this.stop();
+		}
 		this.pendingProgress.clear();
 		return true;
 	}
@@ -720,8 +834,45 @@ export class StreamSession {
 
 	/** Read the current media playlist. */
 	async readPlaylist(): Promise<string> {
+		if (this.profile === "auto") {
+			throw new Error("Adaptive sessions require a rendition playlist");
+		}
 		const buf = await readFile(join(this.outDir, "playlist.m3u8"));
 		return exposeSegmentUris(buf.toString("utf8"), this.profile);
+	}
+
+	/** Read one validated adaptive rendition playlist. */
+	async readRenditionPlaylist(rendition: string): Promise<string> {
+		if (this.profile !== "auto" || !isAdaptiveRendition(rendition)) {
+			throw new Error(`Invalid adaptive rendition: ${rendition}`);
+		}
+		const body = await readFile(
+			join(this.outDir, rendition, "playlist.m3u8"),
+			"utf8"
+		);
+		return exposeAdaptiveArtifactUris(body);
+	}
+
+	/** Read immutable bytes from a closed rendition directory. */
+	async readRenditionSegment(rendition: string, name: string): Promise<Buffer> {
+		if (!isAdaptiveRendition(rendition) || !isSafeSegmentName(name)) {
+			throw new Error("Invalid adaptive segment path");
+		}
+		return readFile(join(this.outDir, rendition, basename(name)));
+	}
+
+	/** Return FFmpeg's authoritative master or the legacy synthetic master. */
+	async readMasterPlaylist(viewerId?: string): Promise<string> {
+		if (this.profile !== "auto") {
+			return this.buildMasterPlaylist(viewerId);
+		}
+		const body = await readFile(join(this.outDir, "master.m3u8"), "utf8");
+		const query = new URLSearchParams({ profile: "auto" });
+		if (viewerId) query.set("viewerId", viewerId);
+		return body.replace(
+			/^(?!#)(1080p|720p|480p)\/playlist\.m3u8$/gm,
+			`variants/$1/playlist.m3u8?${query.toString()}`
+		);
 	}
 
 	/**
@@ -731,6 +882,9 @@ export class StreamSession {
 	 * and lets HLS players poll normally instead of treating startup as a 404.
 	 */
 	async readCaptionsPlaylist(): Promise<string> {
+		if (this.profile === "auto") {
+			throw new Error("Adaptive captions remain in the shared ingest graph");
+		}
 		try {
 			const buf = await readFile(join(this.outDir, CAPTIONS_PLAYLIST_NAME));
 			return exposeSegmentUris(buf.toString("utf8"), this.profile);
@@ -754,6 +908,9 @@ export class StreamSession {
 	 * with native track support pick it up automatically.
 	 */
 	buildMasterPlaylist(viewerId?: string): string {
+		if (this.profile === "auto") {
+			throw new Error("Adaptive master playlists are generated by FFmpeg");
+		}
 		const { bandwidth, averageBandwidth, codecs } = masterMetaFor(this.profile);
 		const query = new URLSearchParams({ profile: this.profile });
 		if (viewerId) {
@@ -790,18 +947,33 @@ export class StreamSession {
 		while (this.state === "starting") {
 			try {
 				await readFile(playlistPath);
-				if (this.state === "starting") {
+				if (
+					this.state === "starting" &&
+					(this.profile !== "auto" || this.adaptiveCapacityPassed)
+				) {
 					this.state = "ready";
 					this.resolveReady?.();
 					this.publish("session.ready", {});
 					this.startBufferMonitor();
 				}
-				return;
+				if (this.state !== "starting") return;
 			} catch {
 				// Not ready yet.
 			}
 			if (Date.now() - start > this.startTimeoutMs) {
-				const err = new Error("Timed out waiting for ffmpeg HLS output");
+				const err = new Error(
+					this.profile === "auto" && !this.adaptiveCapacityPassed
+						? "Adaptive encoder failed the sustained 1.25x capacity check"
+						: "Timed out waiting for ffmpeg HLS output"
+				);
+				if (this.profile === "auto" && !this.adaptiveCapacityPassed) {
+					this.lastError = {
+						category: "encoder_capacity",
+						message:
+							"Adaptive encoder cannot sustain the complete quality ladder",
+						ts: new Date().toISOString()
+					};
+				}
 				this.startError = err;
 				this.rejectReady?.(err);
 				this.logStartupFailure(null, null, err);
@@ -1208,7 +1380,17 @@ function isSafeSegmentName(name: string): boolean {
 	if (name.startsWith(".") || name.includes("..")) {
 		return false;
 	}
-	return name.endsWith(".ts") || name.endsWith(".m4s") || name.endsWith(".vtt");
+	return (
+		name.endsWith(".ts") ||
+		name.endsWith(".m4s") ||
+		name.endsWith(".mp4") ||
+		name.endsWith(".vtt")
+	);
+}
+
+/** Closed rendition names keep adaptive filesystem access non-user-controlled. */
+function isAdaptiveRendition(value: string): boolean {
+	return value === "1080p" || value === "720p" || value === "480p";
 }
 
 /** Identify the expected pending-file state without hiding other I/O errors. */
@@ -1253,6 +1435,17 @@ function exposeSegmentUris(
 			isSafeSegmentName(line) ? `segments/${line}${profileQuery}` : line
 		)
 		.join(lineBreak);
+}
+
+/** Route fMP4 initialization and media fragments through the validated API path. */
+function exposeAdaptiveArtifactUris(playlist: string): string {
+	const query = "profile=auto";
+	return playlist
+		.replace(
+			/#EXT-X-MAP:URI="([^"\r\n]+\.mp4)"/g,
+			`#EXT-X-MAP:URI="segments/$1?${query}"`
+		)
+		.replace(/^(?!#)([^\r\n]+\.(?:m4s|mp4|ts))$/gm, `segments/$1?${query}`);
 }
 
 /**

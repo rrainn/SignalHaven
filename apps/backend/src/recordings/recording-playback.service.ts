@@ -286,6 +286,7 @@ export class RecordingPlaybackService {
 		profile: string;
 		hwaccel: HwaccelKind | null;
 		clientCount: number;
+		pipelineSpeed: number | null;
 	}> {
 		return [...this.sessions.values()].flatMap((pending) => {
 			const session = pending.session;
@@ -302,7 +303,8 @@ export class RecordingPlaybackService {
 							clientCount: Math.max(
 								session.getViewerCount(),
 								pending.viewerIds.size
-							)
+							),
+							pipelineSpeed: session.getPipelineSpeed()
 						}
 					]
 				: [];

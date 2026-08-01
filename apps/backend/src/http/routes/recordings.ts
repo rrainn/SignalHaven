@@ -51,7 +51,10 @@ const recordingPlaybackSegmentParamSchema = z.object({
 		.string()
 		.min(1)
 		.max(MAX_RECORDING_SEGMENT_NAME_LENGTH)
-		.regex(/^[A-Za-z0-9_-]+\.ts$/, "Invalid recording segment name")
+		.regex(
+			/^[A-Za-z0-9_-]+\.(?:m4s|mp4|ts|m3u8)$/,
+			"Invalid recording playback artifact name"
+		)
 });
 
 const recordingPlaybackSessionQuerySchema = z.object({
@@ -222,8 +225,18 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 					req.query["viewerId"] as string | undefined
 				);
 				applyPlaybackHeaders(res);
-				res.setHeader("Content-Type", "video/mp2t");
-				res.setHeader("Cache-Control", "private, max-age=300, immutable");
+				res.setHeader(
+					"Content-Type",
+					recordingPlaybackContentType(req.params["segment"] as string)
+				);
+				const artifactName = req.params["segment"] as string;
+				// Progressive VOD playlists grow while FFmpeg works; only finalized fragments are immutable.
+				res.setHeader(
+					"Cache-Control",
+					artifactName.endsWith(".m3u8")
+						? "no-store"
+						: "private, max-age=300, immutable"
+				);
 				res.status(200).send(body);
 			} catch (error) {
 				next(translate(error));
@@ -409,6 +422,16 @@ function translate(error: unknown): unknown {
 		return new HttpError(404, "not_found", error.message);
 	}
 	return error;
+}
+
+/** Use Apple's recommended MIME types for every adaptive playback artifact. */
+function recordingPlaybackContentType(name: string): string {
+	if (name.endsWith(".m3u8")) {
+		return "application/vnd.apple.mpegurl; charset=utf-8";
+	}
+	if (name.endsWith(".m4s")) return "video/iso.segment";
+	if (name.endsWith(".mp4")) return "video/mp4";
+	return "video/mp2t";
 }
 
 /** Recording HLS is consumable by same-origin and cross-origin web players. */
