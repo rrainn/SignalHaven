@@ -171,6 +171,9 @@ describe("WatchPage", () => {
 		renderPage();
 		expect(screen.getByTestId("watch-page")).toBeInTheDocument();
 		expect(screen.getByTestId("player")).toBeInTheDocument();
+		const startup = within(screen.getByTestId("player-loading"));
+		expect(startup.getByText("5 · Alpha")).toBeVisible();
+		expect(startup.getByText("Alpha Now Show")).toBeVisible();
 		const desktop = within(screen.getByTestId("watch-desktop"));
 		expect(desktop.getByTestId("watch-now-next")).toBeInTheDocument();
 		expect(desktop.getByTestId("watch-switcher")).toBeInTheDocument();

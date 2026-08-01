@@ -11,12 +11,15 @@ import {
 	Airplay,
 	Captions,
 	CaptionsOff,
+	CircleHelp,
 	Maximize,
 	Minimize,
 	Pause,
 	PictureInPicture2,
 	Play,
+	Radio,
 	RotateCcw,
+	SlidersHorizontal,
 	Volume2,
 	VolumeX
 } from "lucide-react";
@@ -137,14 +140,38 @@ interface BufferEventAccumulator {
 	maximumDurationMs: number | null;
 }
 
+/** Loading phases explain whether the player is starting or recovering. */
+type LoadingStage =
+	| "connecting"
+	| "preparing"
+	| "buffering"
+	| "reconnecting"
+	| "returning-live";
+
 const QUALITY_LABELS: Record<PlayerQuality, string> = {
 	auto: "Auto",
-	direct: "Source",
-	"original-quality": "Original",
+	direct: "Direct",
+	"original-quality": "Original resolution",
 	"1080p": "1080p",
 	"720p": "720p",
 	"480p": "480p",
 	"audio-only": "Audio only"
+};
+
+/** Short guidance keeps codec strategy understandable without exposing FFmpeg. */
+const QUALITY_DESCRIPTIONS: Partial<Record<PlayerQuality, string>> = {
+	auto: "Choose the most reliable profile",
+	direct: "No conversion",
+	"original-quality": "Convert for browser playback",
+	"audio-only": "Play audio without video"
+};
+
+const LOADING_STAGE_LABELS: Record<LoadingStage, string> = {
+	connecting: "Connecting to stream",
+	preparing: "Preparing stream",
+	buffering: "Buffering video",
+	reconnecting: "Reconnecting playback",
+	"returning-live": "Returning to live TV"
 };
 
 const ALL_QUALITIES: PlayerQuality[] = [
@@ -205,6 +232,10 @@ export interface PlayerSavePayload {
 export interface PlayerProps {
 	/** Channel id used to build the master playlist URL + persist quality. */
 	channelId: string;
+	/** Human-readable channel or recording name retained during startup. */
+	mediaTitle?: string | undefined;
+	/** Optional program or episode context shown beneath the media title. */
+	mediaSubtitle?: string | undefined;
 	/**
 	 * Whether this is a recording (vs. live). Affects gestures (double-tap
 	 * seek is recordings-only per the U6 acceptance criteria) and shows
@@ -363,6 +394,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 	function Player(props, ref) {
 		const {
 			channelId,
+			mediaTitle,
+			mediaSubtitle,
 			isRecording = false,
 			recordingDurationSeconds,
 			recordingStartSeconds = 0,
@@ -416,6 +449,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			side: null
 		});
 		const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+		const focusWithinRef = useRef(false);
 		const swipeStartRef = useRef<{ x: number; y: number; t: number } | null>(
 			null
 		);
@@ -458,8 +492,16 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			useState<AirPlayAvailability>("unsupported");
 		const [isAirPlaying, setIsAirPlaying] = useState(false);
 		const [controlsVisible, setControlsVisible] = useState(true);
+		const [focusWithin, setFocusWithin] = useState(false);
 		const [loading, setLoading] = useState(true);
+		const [loadingStage, setLoadingStage] =
+			useState<LoadingStage>("connecting");
 		const [error, setError] = useState<string | null>(null);
+		const [errorDetail, setErrorDetail] = useState<string | null>(null);
+		const [secondaryControlsOpen, setSecondaryControlsOpen] = useState(false);
+		const [controlsHelpOpen, setControlsHelpOpen] = useState(false);
+		const [fullscreenSupported, setFullscreenSupported] = useState(false);
+		const [pipSupported, setPipSupported] = useState(false);
 		const [extraStats, setExtraStats] = useState(false);
 		const [contextMenu, setContextMenu] = useState<{
 			x: number;
@@ -476,6 +518,21 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				setContextMenu(null);
 			}
 		}, [advancedEnabled]);
+
+		useEffect(() => {
+			const video = videoRef.current as
+				| (HTMLVideoElement & {
+						requestPictureInPicture?: () => Promise<unknown>;
+				  })
+				| null;
+			const doc = document as Document & { pictureInPictureEnabled?: boolean };
+			setFullscreenSupported(
+				typeof containerRef.current?.requestFullscreen === "function"
+			);
+			setPipSupported(
+				Boolean(doc.pictureInPictureEnabled && video?.requestPictureInPicture)
+			);
+		}, []);
 
 		const knownRecordingDuration =
 			isRecording &&
@@ -595,9 +652,12 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				}
 			};
 			setLoading(true);
+			setLoadingStage("connecting");
 			setError(null);
+			setErrorDetail(null);
 
 			if (useNativeHls) {
+				setLoadingStage("preparing");
 				video.src = effectiveSrc;
 				if (resumeAfterSourceChangeRef.current) {
 					// Best-effort autoplay; modern browsers gate this behind muted.
@@ -681,6 +741,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 							if (hlsMediaRecoveryTimerRef.current !== null) {
 								setError(null);
 								setLoading(true);
+								setLoadingStage(
+									bufferEventAccumulatorRef.current.playbackStarted
+										? "reconnecting"
+										: "preparing"
+								);
 								return;
 							}
 							const attempt = hlsMediaRecoveryAttemptsRef.current;
@@ -688,6 +753,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								hlsMediaRecoveryAttemptsRef.current = attempt + 1;
 								setError(null);
 								setLoading(true);
+								setLoadingStage(
+									bufferEventAccumulatorRef.current.playbackStarted
+										? "reconnecting"
+										: "preparing"
+								);
 								if (attempt === 0) {
 									createdHls.recoverMediaError();
 								} else {
@@ -707,12 +777,17 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 							window.clearTimeout(hlsMediaRecoveryTimerRef.current);
 							hlsMediaRecoveryTimerRef.current = null;
 						}
-						setError(formatPlaybackError(data, advancedEnabledRef.current));
+						setError("Playback stopped. Try again or switch Quality to Auto.");
+						setErrorDetail(formatPlaybackDiagnostic(data));
 						setLoading(false);
 						if (advancedEnabledRef.current && !isRecording) {
 							void getStreamStatus(channelId, quality)
 								.then((status) => {
-									if (status.lastError) setError(status.lastError.message);
+									if (status.lastError) {
+										setErrorDetail(
+											formatExternalDiagnostic(status.lastError.message)
+										);
+									}
 								})
 								.catch(() => undefined);
 						}
@@ -742,7 +817,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				createdHls.on(manifestEvent, () => {
 					if (!isCurrentSource()) return;
 					lastFatalHlsErrorWasMediaRef.current = false;
-					setLoading(false);
+					setLoading(true);
+					setLoadingStage("buffering");
 					hasLoadedManifestRef.current = true;
 					if (resumeAfterSourceChangeRef.current) {
 						const playPromise = video.play();
@@ -764,6 +840,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			goLiveTargetTimeRef.current = null;
 			hlsMediaRecoveryAttemptsRef.current = 0;
 			lastFatalHlsErrorWasMediaRef.current = false;
+			setLoadingStage("preparing");
 			hls.loadSource(effectiveSrc);
 			return () => {
 				preservePlaybackIntent();
@@ -997,13 +1074,18 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const persist = useCallback(
 			(patch: PlayerSavePayload) => {
 				if (!onPersist) return;
+				const reportFailure = (): void => {
+					setRecoveryMessage(
+						"That player preference couldn't be saved. Playback will continue with the current setting."
+					);
+				};
 				try {
 					const ret = onPersist(patch);
 					if (ret && typeof (ret as Promise<void>).catch === "function") {
-						(ret as Promise<void>).catch(() => undefined);
+						(ret as Promise<void>).catch(reportFailure);
 					}
 				} catch {
-					/* never block UI on persistence */
+					reportFailure();
 				}
 			},
 			[onPersist]
@@ -1015,7 +1097,13 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			if (!v) return;
 			if (v.paused) {
 				const p = v.play();
-				if (p && typeof p.catch === "function") p.catch(() => undefined);
+				if (p && typeof p.catch === "function") {
+					p.catch(() => {
+						setRecoveryMessage(
+							"Playback couldn't start. Select Play again or check this browser's media permissions."
+						);
+					});
+				}
 			} else {
 				v.pause();
 			}
@@ -1060,15 +1148,25 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			[persist]
 		);
 
-		const toggleFullscreen = useCallback(() => {
+		const toggleFullscreen = useCallback(async () => {
 			const el = containerRef.current;
 			if (!el) return;
-			if (document.fullscreenElement) {
-				void document.exitFullscreen?.();
-			} else {
-				void el.requestFullscreen?.();
+			if (!fullscreenSupported) {
+				setRecoveryMessage("Fullscreen isn't available in this browser.");
+				return;
 			}
-		}, []);
+			try {
+				if (document.fullscreenElement) {
+					await document.exitFullscreen?.();
+				} else {
+					await el.requestFullscreen?.();
+				}
+			} catch {
+				setRecoveryMessage(
+					"Fullscreen couldn't open. Check this browser's site permissions and try again."
+				);
+			}
+		}, [fullscreenSupported]);
 
 		const togglePip = useCallback(async () => {
 			const v = videoRef.current;
@@ -1081,7 +1179,12 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			const vid = v as HTMLVideoElement & {
 				requestPictureInPicture?: () => Promise<unknown>;
 			};
-			if (!doc.pictureInPictureEnabled || !vid.requestPictureInPicture) return;
+			if (!doc.pictureInPictureEnabled || !vid.requestPictureInPicture) {
+				setRecoveryMessage(
+					"Picture in picture isn't available in this browser."
+				);
+				return;
+			}
 			try {
 				if (doc.pictureInPictureElement === v) {
 					await doc.exitPictureInPicture?.();
@@ -1089,7 +1192,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					await vid.requestPictureInPicture();
 				}
 			} catch {
-				/* user denied or unsupported source */
+				setRecoveryMessage(
+					"Picture in picture couldn't open. Start playback, then try again."
+				);
 			}
 		}, []);
 
@@ -1100,7 +1205,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				// Safari requires this native picker call to remain inside a user gesture.
 				video.webkitShowPlaybackTargetPicker();
 			} catch {
-				/* Safari can reject the picker while the media source is changing. */
+				setRecoveryMessage(
+					"AirPlay couldn't open while the stream was changing. Try again in a moment."
+				);
 			}
 		}, []);
 
@@ -1189,7 +1296,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			const play = () => {
 				const promise = v.play();
 				if (promise && typeof promise.catch === "function") {
-					promise.catch(() => undefined);
+					promise.catch(() => {
+						setRecoveryMessage(
+							"Live playback couldn't resume. Select Go Live again or check this browser's media permissions."
+						);
+					});
 				}
 			};
 			setError(null);
@@ -1199,6 +1310,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				// A second seek inside the buffered range avoids Safari repeatedly
 				// waiting on a segment that is still being finalized at the edge.
 				setLoading(true);
+				setLoadingStage("returning-live");
 				seekNearLiveEdge(GO_LIVE_RECOVERY_BACKOFF_SECONDS);
 				hlsInstanceRef.current?.recoverMediaError();
 				play();
@@ -1206,7 +1318,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					goLiveStallTimerRef.current = null;
 					goLiveTargetTimeRef.current = null;
 					setLoading(false);
-					setError("Playback stalled. Retry to continue.");
+					setError(
+						"Playback stalled while returning to live TV. Try again or switch Quality to Auto."
+					);
+					setErrorDetail("Live-edge recovery timed out after two attempts.");
 				}, GO_LIVE_STALL_TIMEOUT_MS);
 			}, GO_LIVE_STALL_TIMEOUT_MS);
 			play();
@@ -1257,9 +1372,18 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			};
 			const onTime = () => updateTimeline();
 			const onDur = () => updateTimeline();
+			const onLoadedMetadata = () => {
+				updateTimeline();
+				if (!bufferEventAccumulatorRef.current.playbackStarted) {
+					setLoadingStage("buffering");
+				}
+			};
 			const onWaiting = () => {
 				setLoading(true);
 				const accumulator = bufferEventAccumulatorRef.current;
+				setLoadingStage(
+					accumulator.playbackStarted ? "reconnecting" : "buffering"
+				);
 				// Initial startup delay is load time, not interrupted playback.
 				if (
 					accumulator.playbackStarted &&
@@ -1358,11 +1482,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			};
 			const onError = () => {
 				const mediaError = v.error;
-				setError(
-					advancedEnabledRef.current
-						? formatMediaError(mediaError)
-						: "Playback error"
-				);
+				setError("Playback stopped. Try again or switch Quality to Auto.");
+				setErrorDetail(formatMediaError(mediaError));
 			};
 			const onEnterPip = () => setIsPip(true);
 			const onLeavePip = () => setIsPip(false);
@@ -1371,7 +1492,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			v.addEventListener("timeupdate", onTime);
 			v.addEventListener("durationchange", onDur);
 			v.addEventListener("progress", updateTimeline);
-			v.addEventListener("loadedmetadata", updateTimeline);
+			v.addEventListener("loadedmetadata", onLoadedMetadata);
 			v.addEventListener("waiting", onWaiting);
 			v.addEventListener("playing", onPlaying);
 			v.addEventListener("error", onError);
@@ -1383,7 +1504,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				v.removeEventListener("timeupdate", onTime);
 				v.removeEventListener("durationchange", onDur);
 				v.removeEventListener("progress", updateTimeline);
-				v.removeEventListener("loadedmetadata", updateTimeline);
+				v.removeEventListener("loadedmetadata", onLoadedMetadata);
 				v.removeEventListener("waiting", onWaiting);
 				v.removeEventListener("playing", onPlaying);
 				v.removeEventListener("error", onError);
@@ -1490,11 +1611,19 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
 			hideTimerRef.current = setTimeout(() => {
 				// Don't hide while paused — playing users want a clean view; paused
-				// users want to see what they paused.
+				// users, keyboard focus, and open utility panels need stable controls.
 				const v = videoRef.current;
-				if (v && !v.paused) setControlsVisible(false);
+				if (
+					v &&
+					!v.paused &&
+					!focusWithinRef.current &&
+					!secondaryControlsOpen &&
+					!controlsHelpOpen
+				) {
+					setControlsVisible(false);
+				}
 			}, CONTROLS_HIDE_DELAY_MS);
-		}, []);
+		}, [controlsHelpOpen, secondaryControlsOpen]);
 
 		useEffect(() => {
 			return () => {
@@ -1510,6 +1639,16 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 				const key = event.key;
 				switch (key) {
+					case "Escape":
+						event.preventDefault();
+						if (secondaryControlsOpen || controlsHelpOpen || contextMenu) {
+							setSecondaryControlsOpen(false);
+							setControlsHelpOpen(false);
+							setContextMenu(null);
+						} else {
+							onDismiss?.();
+						}
+						break;
 					case " ":
 					case "k":
 					case "K":
@@ -1550,12 +1689,18 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					case "f":
 					case "F":
 						event.preventDefault();
-						toggleFullscreen();
+						void toggleFullscreen();
 						break;
 					case "c":
 					case "C":
 						event.preventDefault();
 						toggleCaptions();
+						showControls();
+						break;
+					case "?":
+						event.preventDefault();
+						setSecondaryControlsOpen(false);
+						setControlsHelpOpen((current) => !current);
 						showControls();
 						break;
 					default:
@@ -1564,6 +1709,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 			},
 			[
 				isRecording,
+				contextMenu,
+				controlsHelpOpen,
+				onDismiss,
+				secondaryControlsOpen,
 				seekRange.end,
 				seekRange.start,
 				seekBy,
@@ -1646,14 +1795,20 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 
 		// ── Render helpers ────────────────────────────────────────────────────
 		const showOverlay =
-			controlsVisible || !playing || loading || error !== null;
+			controlsVisible ||
+			focusWithin ||
+			!playing ||
+			loading ||
+			error !== null ||
+			secondaryControlsOpen ||
+			controlsHelpOpen;
 		const showTimelineHours = timelineDuration >= 3_600;
 
 		const surfaceLoadError = loadError && !useNativeHls;
 		const initializationError = playbackUnsupported
-			? "This browser doesn't support HLS playback."
+			? "This browser can't play this stream. Try a current version of Safari, Chrome, Firefox, or Edge."
 			: surfaceLoadError
-				? "Couldn't load the video player."
+				? "The video player couldn't start. Check your connection, then try again."
 				: null;
 		const liveDelaySeconds =
 			adaptiveLivePosition === null
@@ -1670,7 +1825,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				ref={containerRef}
 				data-testid="player"
 				className={cn(
-					"relative aspect-video w-full overflow-hidden rounded bg-black text-white outline-none",
+					"relative aspect-video w-full overflow-hidden rounded bg-black text-white outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
 					className
 				)}
 				style={style}
@@ -1679,6 +1834,20 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				aria-label="Video player"
 				onKeyDown={onKeyDown}
 				onMouseMove={showControls}
+				onFocusCapture={() => {
+					// Focus can enter after the rail fades, so reveal it before the user
+					// must identify or activate the newly focused control.
+					focusWithinRef.current = true;
+					setFocusWithin(true);
+					setControlsVisible(true);
+					if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+				}}
+				onBlurCapture={(event) => {
+					if (event.currentTarget.contains(event.relatedTarget)) return;
+					focusWithinRef.current = false;
+					setFocusWithin(false);
+					showControls();
+				}}
 				onPointerDown={onPointerDown}
 				onPointerUp={onPointerUp}
 				onContextMenu={(event) => {
@@ -1775,13 +1944,27 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					<div
 						role="menu"
 						data-testid="player-context-menu"
-						className="absolute z-40 rounded border border-white/20 bg-neutral-900 p-1 text-sm shadow-xl"
+						aria-label="Advanced player controls"
+						className="absolute z-40 max-w-[calc(100%-1rem)] rounded-md border border-white/20 bg-black/95 p-1 text-sm shadow-xl"
 						style={{ left: contextMenu.x, top: contextMenu.y }}
+						onBlur={(event) => {
+							if (!event.currentTarget.contains(event.relatedTarget)) {
+								setContextMenu(null);
+							}
+						}}
+						onKeyDown={(event) => {
+							if (event.key === "Escape") {
+								event.preventDefault();
+								setContextMenu(null);
+								containerRef.current?.focus();
+							}
+						}}
 					>
 						<button
+							autoFocus
 							type="button"
 							role="menuitem"
-							className="rounded px-3 py-2 hover:bg-white/10"
+							className="min-h-11 rounded-md px-3 py-2 text-left hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 							onClick={() => {
 								setExtraStats((current) => !current);
 								setContextMenu(null);
@@ -1795,55 +1978,108 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				{loading && !error ? (
 					<div
 						data-testid="player-loading"
-						className="pointer-events-none absolute inset-0 flex items-center justify-center"
+						className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 p-4 text-center"
 					>
-						<Spinner aria-label="Loading video" />
+						<div className="max-w-[min(28rem,calc(100%-2rem))]">
+							<Spinner
+								aria-label={LOADING_STAGE_LABELS[loadingStage]}
+								label={LOADING_STAGE_LABELS[loadingStage]}
+							/>
+							<p
+								data-testid="player-loading-stage"
+								className="mt-2 text-sm font-medium text-white"
+							>
+								{LOADING_STAGE_LABELS[loadingStage]}
+							</p>
+							{mediaTitle ? (
+								<p className="mt-1 truncate text-sm text-white/90">
+									{mediaTitle}
+								</p>
+							) : null}
+							{mediaSubtitle ? (
+								<p className="truncate text-xs text-white/70">
+									{mediaSubtitle}
+								</p>
+							) : null}
+						</div>
 					</div>
 				) : null}
 
 				{error || initializationError ? (
 					<div
 						data-testid="player-error"
-						className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 p-4 text-center text-sm"
+						role="alert"
+						className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/80 p-4 text-center text-sm"
 					>
-						<p className="max-w-prose">{error ?? initializationError}</p>
+						<p className="max-w-prose font-medium">
+							{error ?? initializationError}
+						</p>
+						{advancedEnabled && errorDetail ? (
+							<details className="max-w-prose text-left text-xs text-white/75">
+								<summary className="cursor-pointer rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+									Technical details
+								</summary>
+								<p className="mt-1 break-words px-2">{errorDetail}</p>
+							</details>
+						) : null}
 						{!playbackUnsupported ? (
-							<Button
-								variant="outline"
-								onClick={() => {
-									setError(null);
-									if (surfaceLoadError) {
-										reload();
-									} else {
-										const v = videoRef.current;
-										if (v) {
-											setLoading(true);
-											// Force a re-attach by re-setting the source.
-											if (useNativeHls) {
-												v.src = effectiveSrc;
-											} else if (hlsInstanceRef.current) {
-												if (lastFatalHlsErrorWasMediaRef.current) {
-													// A playlist reload cannot clear a failed MediaSource.
-													if (hlsMediaRecoveryTimerRef.current !== null) {
-														window.clearTimeout(
-															hlsMediaRecoveryTimerRef.current
-														);
-														hlsMediaRecoveryTimerRef.current = null;
+							<div className="flex flex-wrap items-center justify-center gap-2">
+								<Button
+									variant="outline"
+									className="border-white/30 text-white hover:bg-white/10"
+									onClick={() => {
+										setError(null);
+										setErrorDetail(null);
+										if (surfaceLoadError) {
+											reload();
+										} else {
+											const v = videoRef.current;
+											if (v) {
+												setLoading(true);
+												setLoadingStage(
+													bufferEventAccumulatorRef.current.playbackStarted
+														? "reconnecting"
+														: "preparing"
+												);
+												// Force a re-attach by re-setting the source.
+												if (useNativeHls) {
+													v.src = effectiveSrc;
+												} else if (hlsInstanceRef.current) {
+													if (lastFatalHlsErrorWasMediaRef.current) {
+														// A playlist reload cannot clear a failed MediaSource.
+														if (hlsMediaRecoveryTimerRef.current !== null) {
+															window.clearTimeout(
+																hlsMediaRecoveryTimerRef.current
+															);
+															hlsMediaRecoveryTimerRef.current = null;
+														}
+														// Manual retry starts a fresh bounded recovery cycle.
+														hlsMediaRecoveryAttemptsRef.current = 1;
+														hlsInstanceRef.current.recoverMediaError();
+													} else {
+														hlsInstanceRef.current.loadSource(effectiveSrc);
 													}
-													// Manual retry starts a fresh bounded recovery cycle.
-													hlsMediaRecoveryAttemptsRef.current = 1;
-													hlsInstanceRef.current.recoverMediaError();
-												} else {
-													hlsInstanceRef.current.loadSource(effectiveSrc);
 												}
 											}
 										}
-									}
-								}}
-							>
-								<RotateCcw aria-hidden="true" className="h-4 w-4" />
-								Retry
-							</Button>
+									}}
+								>
+									<RotateCcw aria-hidden="true" className="h-4 w-4" />
+									Try again
+								</Button>
+								{quality !== "auto" && !isRecording ? (
+									<Button
+										variant="secondary"
+										onClick={() => {
+											setError(null);
+											setErrorDetail(null);
+											changeQuality("auto");
+										}}
+									>
+										Use Auto quality
+									</Button>
+								) : null}
+							</div>
 						) : null}
 					</div>
 				) : null}
@@ -1851,17 +2087,35 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				{recoveryMessage ? (
 					<p
 						role="status"
-						className="absolute inset-x-3 top-3 rounded bg-black/75 px-3 py-2 text-center text-sm"
+						className="absolute left-3 right-16 top-3 z-20 rounded-md border border-white/15 bg-black/85 px-3 py-2 text-center text-sm md:right-3"
 					>
 						{recoveryMessage}
 					</p>
 				) : null}
 
+				<IconButton
+					aria-label="More playback controls"
+					aria-expanded={secondaryControlsOpen}
+					aria-controls="player-secondary-controls"
+					size="lg"
+					className={cn(
+						"absolute right-2 top-2 z-20 border border-white/15 bg-black/75 text-white hover:bg-black/90 md:hidden",
+						showOverlay ? "opacity-100" : "pointer-events-none opacity-0"
+					)}
+					onClick={() => {
+						setControlsHelpOpen(false);
+						setSecondaryControlsOpen((current) => !current);
+						showControls();
+					}}
+				>
+					<SlidersHorizontal aria-hidden="true" />
+				</IconButton>
+
 				<div
 					data-testid="player-controls"
 					data-visible={showOverlay ? "true" : "false"}
 					className={cn(
-						"pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 transition-opacity duration-200",
+						"pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-2 border-t border-white/15 bg-black/85 p-2 transition-opacity duration-200 sm:p-3",
 						showOverlay ? "opacity-100" : "opacity-0"
 					)}
 				>
@@ -1869,7 +2123,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						{timelineDuration > 0 ? (
 							<div
 								data-testid="player-commercial-markers"
-								aria-label="Commercial regions"
+								aria-hidden="true"
 								className="pointer-events-none absolute inset-x-0 top-1/2 z-10 h-1.5 -translate-y-1/2 overflow-hidden rounded-full"
 							>
 								{commercialMarkers.map((marker) => (
@@ -1887,6 +2141,11 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						<Slider
 							data-testid="player-seek"
 							aria-label={isRecording ? "Seek" : "Live buffer position"}
+							aria-describedby={
+								commercialMarkers.length > 0
+									? "player-commercial-description"
+									: undefined
+							}
 							min={isRecording ? 0 : seekRange.start}
 							max={
 								isRecording
@@ -1921,15 +2180,25 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 								setScrubPosition(null);
 								seekRecordingTo(next);
 							}}
-							className="pointer-events-auto"
+							className="pointer-events-auto h-11"
 						/>
+						{commercialMarkers.length > 0 ? (
+							<p id="player-commercial-description" className="sr-only">
+								The timeline includes {commercialMarkers.length} marked
+								commercial
+								{commercialMarkers.length === 1 ? " region." : " regions."}
+							</p>
+						) : null}
 					</div>
-					<div className="pointer-events-auto flex flex-wrap items-center gap-2">
-						{activeCommercial ? (
+					{activeCommercial ? (
+						<div
+							data-testid="player-skip-commercial-overlay"
+							className="pointer-events-auto absolute bottom-full right-2 z-20 mb-2"
+						>
 							<Button
 								data-testid="player-skip-commercial"
 								variant="secondary"
-								size="sm"
+								size="md"
 								onClick={() => {
 									const video = videoRef.current;
 									if (!video) return;
@@ -1942,134 +2211,210 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 							>
 								Skip Commercial
 							</Button>
-						) : null}
-						<IconButton
-							data-testid="player-play"
-							aria-label={playing ? "Pause" : "Play"}
-							onClick={togglePlay}
+						</div>
+					) : null}
+
+					{controlsHelpOpen ? (
+						<div
+							role="region"
+							aria-label="Player keyboard shortcuts"
+							className="pointer-events-auto absolute bottom-0 right-2 z-30 w-72 max-w-[calc(100%-1rem)] rounded-md border border-white/20 bg-black/95 p-3 text-xs text-white shadow-xl md:bottom-[calc(100%+0.5rem)]"
 						>
-							{playing ? (
-								<Pause aria-hidden="true" className="h-5 w-5" />
-							) : (
-								<Play aria-hidden="true" className="h-5 w-5" />
-							)}
-						</IconButton>
-
-						<IconButton
-							data-testid="player-mute"
-							aria-label={muted ? "Unmute" : "Mute"}
-							aria-pressed={muted}
-							onClick={toggleMute}
-						>
-							{muted || volume === 0 ? (
-								<VolumeX aria-hidden="true" className="h-5 w-5" />
-							) : (
-								<Volume2 aria-hidden="true" className="h-5 w-5" />
-							)}
-						</IconButton>
-
-						<Slider
-							data-testid="player-volume"
-							aria-label="Volume"
-							min={0}
-							max={1}
-							step={0.01}
-							value={[muted ? 0 : volume]}
-							onValueChange={(values) => setVolumeAndPersist(values[0] ?? 0)}
-							className="w-24"
-						/>
-
-						{isRecording ? (
-							<span
-								data-testid="player-time"
-								className="text-xs tabular-nums text-white/80"
-							>
-								{formatPlaybackTime(displayedCurrentTime, showTimelineHours)} /{" "}
-								{formatPlaybackTime(timelineDuration, showTimelineHours)}
-							</span>
-						) : (
-							<div className="flex items-center gap-2">
-								<span
-									className={cn(
-										"rounded px-1.5 py-0.5 text-xs uppercase tracking-wide",
-										isDelayed ? "bg-amber-500/80" : "bg-red-500/80"
-									)}
+							<div className="flex items-center justify-between gap-3">
+								<p className="font-semibold">Keyboard shortcuts</p>
+								<button
+									type="button"
+									className="min-h-11 rounded-md px-2 text-white/80 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+									onClick={() => setControlsHelpOpen(false)}
 								>
-									{isDelayed ? "Delayed" : "Live"}
-								</span>
-								{isDelayed ? (
-									<Button size="sm" variant="outline" onClick={goLive}>
-										Go Live
-									</Button>
-								) : null}
-								<span className="text-xs tabular-nums text-white/80">
-									{isDelayed
-										? `-${formatPlaybackTime(liveDelaySeconds, false)}`
-										: "At live edge"}
-								</span>
+									Close
+								</button>
 							</div>
-						)}
+							<p className="mt-1 leading-5 text-white/75">
+								Space or K: play and pause · M: mute · F: fullscreen · C:
+								captions · Arrow keys: seek and volume · ?: this help
+							</p>
+						</div>
+					) : null}
 
-						<div className="ml-auto flex items-center gap-2">
-							{tracks.length > 0 ? (
+					<div className="contents md:flex md:items-center md:gap-2">
+						<div
+							id="player-secondary-controls"
+							role="region"
+							aria-label="More playback controls"
+							className={cn(
+								"pointer-events-auto absolute bottom-0 right-2 z-30 w-72 max-w-[calc(100%-1rem)] flex-col gap-3 rounded-md border border-white/20 bg-black/95 p-3 text-white shadow-xl",
+								secondaryControlsOpen ? "flex" : "hidden",
+								"md:static md:ml-auto md:flex md:w-auto md:max-w-none md:flex-row md:items-center md:gap-2 md:border-0 md:bg-transparent md:p-0 md:shadow-none"
+							)}
+						>
+							<div className="flex items-center gap-2">
 								<IconButton
-									data-testid="player-captions"
-									aria-label={captionsOn ? "Hide captions" : "Show captions"}
-									aria-pressed={captionsOn}
-									onClick={toggleCaptions}
+									data-testid="player-mute"
+									aria-label={muted ? "Unmute" : "Mute"}
+									aria-pressed={muted}
+									className="min-h-11 min-w-11 text-white hover:bg-white/10"
+									onClick={toggleMute}
 								>
-									{captionsOn ? (
-										<Captions aria-hidden="true" className="h-5 w-5" />
+									{muted || volume === 0 ? (
+										<VolumeX aria-hidden="true" className="h-5 w-5" />
 									) : (
-										<CaptionsOff aria-hidden="true" className="h-5 w-5" />
+										<Volume2 aria-hidden="true" className="h-5 w-5" />
 									)}
 								</IconButton>
-							) : null}
+								<Slider
+									data-testid="player-volume"
+									aria-label="Volume"
+									min={0}
+									max={1}
+									step={0.01}
+									value={[muted ? 0 : volume]}
+									onValueChange={(values) =>
+										setVolumeAndPersist(values[0] ?? 0)
+									}
+									className="h-11 min-w-0 flex-1 md:w-24 md:flex-none"
+								/>
+							</div>
+
+							<div className="flex items-center gap-2">
+								{tracks.length > 0 ? (
+									<IconButton
+										data-testid="player-captions"
+										aria-label={captionsOn ? "Hide captions" : "Show captions"}
+										aria-pressed={captionsOn}
+										className="min-h-11 min-w-11 text-white hover:bg-white/10"
+										onClick={toggleCaptions}
+									>
+										{captionsOn ? (
+											<Captions aria-hidden="true" className="h-5 w-5" />
+										) : (
+											<CaptionsOff aria-hidden="true" className="h-5 w-5" />
+										)}
+									</IconButton>
+								) : null}
+								{airPlayAvailability !== "unsupported" ? (
+									<IconButton
+										data-testid="player-airplay"
+										aria-label={
+											isAirPlaying
+												? "AirPlay connected"
+												: "Choose AirPlay device"
+										}
+										aria-pressed={isAirPlaying}
+										disabled={
+											airPlayAvailability === "not-available" && !isAirPlaying
+										}
+										className="min-h-11 min-w-11 text-white hover:bg-white/10"
+										onClick={showAirPlayPicker}
+									>
+										<Airplay aria-hidden="true" className="h-5 w-5" />
+									</IconButton>
+								) : null}
+								<IconButton
+									data-testid="player-pip"
+									aria-label="Picture in picture"
+									aria-pressed={isPip}
+									disabled={!pipSupported}
+									className="min-h-11 min-w-11 text-white hover:bg-white/10"
+									onClick={() => void togglePip()}
+								>
+									<PictureInPicture2 aria-hidden="true" className="h-5 w-5" />
+								</IconButton>
+								<IconButton
+									aria-label="Show keyboard shortcuts"
+									aria-expanded={controlsHelpOpen}
+									className="min-h-11 min-w-11 text-white hover:bg-white/10"
+									onClick={() => {
+										setSecondaryControlsOpen(false);
+										setControlsHelpOpen((current) => !current);
+									}}
+								>
+									<CircleHelp aria-hidden="true" />
+								</IconButton>
+							</div>
+						</div>
+
+						<div
+							role="group"
+							aria-label="Primary player controls"
+							className="pointer-events-auto grid grid-cols-4 items-stretch gap-2 md:order-first md:flex md:items-center"
+						>
+							<IconButton
+								data-testid="player-play"
+								aria-label={playing ? "Pause" : "Play"}
+								className="h-11 w-full text-white hover:bg-white/10 md:w-11"
+								onClick={togglePlay}
+							>
+								{playing ? (
+									<Pause aria-hidden="true" className="h-5 w-5" />
+								) : (
+									<Play aria-hidden="true" className="h-5 w-5" />
+								)}
+							</IconButton>
+
+							{isRecording ? (
+								<span
+									data-testid="player-time"
+									role="status"
+									className="flex min-h-11 min-w-0 items-center justify-center text-[10px] tabular-nums text-white/80 sm:text-xs md:px-2"
+								>
+									{formatPlaybackTime(displayedCurrentTime, showTimelineHours)}{" "}
+									/ {formatPlaybackTime(timelineDuration, showTimelineHours)}
+								</span>
+							) : isDelayed ? (
+								<div className="flex min-h-11 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md bg-white/10 px-1">
+									<span className="text-[10px] leading-none text-white/75">
+										Delayed {formatPlaybackTime(liveDelaySeconds, false)}
+									</span>
+									<button
+										type="button"
+										className="rounded-md px-2 text-xs font-medium text-white underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+										onClick={goLive}
+									>
+										Go Live
+									</button>
+								</div>
+							) : (
+								<div
+									role="status"
+									className="flex min-h-11 items-center justify-center gap-1.5 rounded-md bg-live px-2 text-xs font-medium text-live-foreground"
+								>
+									<Radio aria-hidden="true" className="h-4 w-4" />
+									<span>Live</span>
+								</div>
+							)}
 
 							<Select
 								value={quality}
-								onValueChange={(v) => changeQuality(v as PlayerQuality)}
+								onValueChange={(value) => changeQuality(value as PlayerQuality)}
 							>
 								<SelectTrigger
 									data-testid="player-quality"
 									aria-label="Quality"
-									className="h-8 w-[8.5rem]"
+									className="h-11 min-w-0 border-white/20 bg-black/30 px-2 text-white md:ml-auto md:w-[10rem]"
 								>
-									<SelectValue />
+									<SelectValue>{QUALITY_LABELS[quality]}</SelectValue>
 								</SelectTrigger>
-								<SelectContent>
-									{ALL_QUALITIES.map((q) => (
-										<SelectItem key={q} value={q} data-testid={`quality-${q}`}>
-											{QUALITY_LABELS[q]}
+								<SelectContent className="w-[18rem] max-w-[calc(100vw-2rem)]">
+									{ALL_QUALITIES.map((option) => (
+										<SelectItem
+											key={option}
+											value={option}
+											data-testid={"quality-" + option}
+											className="py-2"
+										>
+											<span className="flex flex-col">
+												<span>{QUALITY_LABELS[option]}</span>
+												{QUALITY_DESCRIPTIONS[option] ? (
+													<span className="text-xs text-muted">
+														{QUALITY_DESCRIPTIONS[option]}
+													</span>
+												) : null}
+											</span>
 										</SelectItem>
 									))}
 								</SelectContent>
 							</Select>
-
-							{airPlayAvailability !== "unsupported" ? (
-								<IconButton
-									data-testid="player-airplay"
-									aria-label={
-										isAirPlaying ? "AirPlay connected" : "Choose AirPlay device"
-									}
-									aria-pressed={isAirPlaying}
-									disabled={
-										airPlayAvailability === "not-available" && !isAirPlaying
-									}
-									onClick={showAirPlayPicker}
-								>
-									<Airplay aria-hidden="true" className="h-5 w-5" />
-								</IconButton>
-							) : null}
-
-							<IconButton
-								data-testid="player-pip"
-								aria-label="Picture in picture"
-								aria-pressed={isPip}
-								onClick={() => void togglePip()}
-							>
-								<PictureInPicture2 aria-hidden="true" className="h-5 w-5" />
-							</IconButton>
 
 							<IconButton
 								data-testid="player-fullscreen"
@@ -2077,7 +2422,9 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 									isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
 								}
 								aria-pressed={isFullscreen}
-								onClick={toggleFullscreen}
+								disabled={!fullscreenSupported}
+								className="h-11 w-full text-white hover:bg-white/10 md:w-11"
+								onClick={() => void toggleFullscreen()}
 							>
 								{isFullscreen ? (
 									<Minimize aria-hidden="true" className="h-5 w-5" />
@@ -2093,23 +2440,36 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 	}
 );
 
-/** Preserve useful HLS classification while keeping normal mode concise. */
-function formatPlaybackError(
-	data: {
-		type?: string;
-		details?: string;
-		reason?: string;
-		response?: { code?: number; text?: string };
-	},
-	advanced: boolean
-): string {
-	if (!advanced) return "Playback error";
-	const parts = [data.type, data.details, data.reason];
+/** Preserve useful HLS classification without exposing URLs or server payloads. */
+function formatPlaybackDiagnostic(data: {
+	type?: string;
+	details?: string;
+	reason?: string;
+	response?: { code?: number; text?: string };
+}): string {
+	const parts = [
+		sanitizeDiagnosticValue(data.type),
+		sanitizeDiagnosticValue(data.details),
+		sanitizeDiagnosticValue(data.reason)
+	];
 	if (data.response?.code) parts.push(`HTTP ${data.response.code}`);
-	if (data.response?.text) parts.push(data.response.text);
+	return parts.filter(Boolean).join(" · ") || "Fatal HLS playback error";
+}
+
+/** Keep server diagnostics useful while withholding sensitive request details. */
+function formatExternalDiagnostic(message: string): string {
 	return (
-		parts.filter(Boolean).join(" · ") || "Playback error (fatal HLS error)"
+		sanitizeDiagnosticValue(message) ?? "Server reported a playback failure"
 	);
+}
+
+/** Allow bounded diagnostic labels but reject URLs, tokens, and arbitrary payloads. */
+function sanitizeDiagnosticValue(value: string | undefined): string | null {
+	if (!value) return null;
+	const normalized = value.trim();
+	return /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,120}$/.test(normalized)
+		? normalized
+		: "Additional details withheld";
 }
 
 /** Decode the browser's numeric MediaError for advanced troubleshooting. */
@@ -2121,7 +2481,8 @@ function formatMediaError(error: MediaError | null): string {
 		3: "Media decode error",
 		4: "Unsupported media source"
 	};
-	return `${labels[error.code] ?? "Playback error"} (MediaError ${error.code}${error.message ? `: ${error.message}` : ""})`;
+	const message = sanitizeDiagnosticValue(error.message);
+	return `${labels[error.code] ?? "Playback error"} (MediaError ${error.code}${message ? `: ${message}` : ""})`;
 }
 
 /** Find the end of the buffered range that can actually continue playback. */

@@ -4,7 +4,8 @@ import {
 	fireEvent,
 	render,
 	screen,
-	waitFor
+	waitFor,
+	within
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -183,13 +184,13 @@ describe("Player", () => {
 		render(<Player channelId={CHANNEL_ID} />);
 
 		expect(
-			await screen.findByText("This browser doesn't support HLS playback.")
+			await screen.findByText(/This browser can't play this stream/i)
 		).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+		expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
 		expect(fakeInstances).toHaveLength(0);
 	});
 
-	it("exhausts bounded automatic media recovery before showing Retry", () => {
+	it("exhausts bounded automatic media recovery before asking the user", () => {
 		vi.useFakeTimers();
 		try {
 			renderPlayer();
@@ -238,7 +239,7 @@ describe("Player", () => {
 			expect(screen.getByTestId("player-error")).toBeInTheDocument();
 
 			instance.loadSource.mockClear();
-			fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+			fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
 			expect(instance.recoverMediaError).toHaveBeenCalledTimes(3);
 			expect(instance.loadSource).not.toHaveBeenCalled();
@@ -264,7 +265,9 @@ describe("Player", () => {
 			});
 		});
 
-		expect(screen.getByText("Playback error")).toBeInTheDocument();
+		expect(
+			screen.getByText(/Playback stopped.*Quality to Auto/i)
+		).toBeInTheDocument();
 		expect(screen.queryByText(/192\.168\.1\.20|viewer|secret/)).toBeNull();
 	});
 
@@ -622,6 +625,140 @@ describe("Player", () => {
 		);
 	});
 
+	it("explains why Direct and Original remain separate quality choices", async () => {
+		const user = userEvent.setup();
+		renderPlayer();
+
+		await user.click(screen.getByTestId("player-quality"));
+
+		expect(await screen.findByText("Direct")).toBeInTheDocument();
+		expect(screen.getByText("No conversion")).toBeInTheDocument();
+		expect(screen.getByText("Original resolution")).toBeInTheDocument();
+		expect(
+			screen.getByText("Convert for browser playback")
+		).toBeInTheDocument();
+	});
+
+	it("keeps the mobile rail focused on four primary controls", () => {
+		renderPlayer();
+		const rail = screen.getByRole("group", { name: "Primary player controls" });
+		const primaryControls = within(rail);
+
+		expect(primaryControls.getByRole("button", { name: "Play" })).toBeVisible();
+		expect(primaryControls.getByRole("status")).toHaveTextContent("Live");
+		expect(
+			primaryControls.getByRole("combobox", { name: "Quality" })
+		).toBeVisible();
+		expect(
+			primaryControls.getByRole("button", { name: "Enter fullscreen" })
+		).toBeVisible();
+		expect(primaryControls.queryByRole("button", { name: "Mute" })).toBeNull();
+	});
+
+	it("keeps the commercial skip action out of the controls layout flow", () => {
+		renderPlayer({
+			isRecording: true,
+			recordingDurationSeconds: 1_200,
+			commercialMarkers: [{ startMs: 10_000, endMs: 20_000 }]
+		});
+		const video = screen.getByTestId("player-video") as HTMLVideoElement;
+		Object.defineProperty(video, "currentTime", {
+			configurable: true,
+			get: () => 12
+		});
+
+		fireEvent.timeUpdate(video);
+
+		// A transient skip action overlays the video instead of adding a row that
+		// shifts the stable transport rail.
+		expect(screen.getByTestId("player-skip-commercial-overlay")).toHaveClass(
+			"absolute"
+		);
+	});
+
+	it("progressively discloses secondary player controls and shortcut help", async () => {
+		const user = userEvent.setup();
+		renderPlayer();
+
+		await user.click(
+			screen.getByRole("button", { name: "More playback controls" })
+		);
+
+		const secondary = screen.getByRole("region", {
+			name: "More playback controls"
+		});
+		expect(
+			within(secondary).getByRole("button", { name: "Mute" })
+		).toBeVisible();
+		expect(
+			within(secondary).getByRole("slider", { name: "Volume" })
+		).toBeVisible();
+
+		await user.click(
+			within(secondary).getByRole("button", {
+				name: "Show keyboard shortcuts"
+			})
+		);
+		const shortcutHelp = screen.getByRole("region", {
+			name: "Player keyboard shortcuts"
+		});
+		expect(within(shortcutHelp).getByText("Keyboard shortcuts")).toBeVisible();
+		expect(within(shortcutHelp).getByText(/Space or K/)).toBeVisible();
+	});
+
+	it("keeps auto-hidden controls visible while keyboard focus is inside", () => {
+		vi.useFakeTimers();
+		try {
+			renderPlayer();
+			const player = screen.getByTestId("player");
+			const video = screen.getByTestId("player-video");
+			const controls = screen.getByTestId("player-controls");
+			const playButton = screen.getByRole("button", { name: "Play" });
+			Object.defineProperty(video, "paused", {
+				configurable: true,
+				get: () => false
+			});
+
+			fireEvent.play(video);
+			fireEvent.playing(video);
+			fireEvent.mouseMove(player);
+			act(() => vi.advanceTimersByTime(2_500));
+			expect(controls).toHaveAttribute("data-visible", "false");
+
+			fireEvent.focus(playButton);
+			expect(controls).toHaveAttribute("data-visible", "true");
+			act(() => vi.advanceTimersByTime(5_000));
+			expect(controls).toHaveAttribute("data-visible", "true");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shows contextual startup progress until playback begins", () => {
+		renderPlayer({
+			mediaTitle: "7 · KQED",
+			mediaSubtitle: "Nature at Night"
+		});
+		const instance = fakeInstances[0]!;
+		const manifestHandler = instance.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.MANIFEST_PARSED
+		)?.[1] as (() => void) | undefined;
+
+		expect(screen.getByTestId("player-loading-stage")).toHaveTextContent(
+			"Preparing stream"
+		);
+		expect(screen.getByText("7 · KQED")).toBeVisible();
+		expect(screen.getByText("Nature at Night")).toBeVisible();
+
+		act(() => manifestHandler?.());
+		expect(screen.getByTestId("player-loading-stage")).toHaveTextContent(
+			"Buffering video"
+		);
+
+		fireEvent.playing(screen.getByTestId("player-video"));
+		expect(screen.queryByTestId("player-loading")).toBeNull();
+	});
+
 	it("renders custom controls and toggles play/pause", async () => {
 		const user = userEvent.setup();
 		renderPlayer();
@@ -738,6 +875,45 @@ describe("Player", () => {
 
 		fireEvent.keyDown(player, { key: " " });
 		expect(video.play).toHaveBeenCalled();
+	});
+
+	it("dismisses an embedded player with Escape", () => {
+		const onDismiss = vi.fn();
+		renderPlayer({ onDismiss });
+
+		fireEvent.keyDown(screen.getByTestId("player"), { key: "Escape" });
+
+		expect(onDismiss).toHaveBeenCalledOnce();
+	});
+
+	it("surfaces a plain recovery message when playback cannot start", async () => {
+		const user = userEvent.setup();
+		renderPlayer();
+		const video = screen.getByTestId("player-video") as HTMLVideoElement;
+		video.play = vi.fn().mockRejectedValue(new Error("NotAllowedError"));
+
+		await user.click(screen.getByTestId("player-play"));
+
+		expect(
+			await screen.findByText(
+				"Playback couldn't start. Select Play again or check this browser's media permissions."
+			)
+		).toBeInTheDocument();
+	});
+
+	it("reports when a player preference could not be saved", async () => {
+		const user = userEvent.setup();
+		renderPlayer({
+			onPersist: vi.fn().mockRejectedValue(new Error("offline"))
+		});
+
+		await user.click(screen.getByTestId("player-mute"));
+
+		expect(
+			await screen.findByText(
+				"That player preference couldn't be saved. Playback will continue with the current setting."
+			)
+		).toBeInTheDocument();
 	});
 
 	it("m / f / c keyboard shortcuts fire mute / fullscreen / captions", () => {
@@ -905,7 +1081,7 @@ describe("Player", () => {
 
 		fireEvent.keyDown(player, { key: "ArrowLeft" });
 		expect(liveTime).toBe(90);
-		expect(screen.getByText("Delayed")).toBeInTheDocument();
+		expect(screen.getByText(/^Delayed /)).toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: "Go Live" }));
 		expect(liveTime).toBe(114);

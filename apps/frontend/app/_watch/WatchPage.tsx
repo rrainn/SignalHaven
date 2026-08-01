@@ -446,6 +446,9 @@ export function WatchPage(props: WatchPageProps) {
 
 	const channelName = currentChannel?.name ?? "Channel";
 	const channelNumber = currentChannel?.number ?? "";
+	const playerTitle = channelNumber
+		? `${channelNumber} · ${channelName}`
+		: channelName;
 
 	if (status !== "loading" && !currentChannel) {
 		return (
@@ -523,6 +526,8 @@ export function WatchPage(props: WatchPageProps) {
 			<div className="overflow-hidden rounded-lg bg-black">
 				<PlayerPage
 					channelId={currentChannelId}
+					mediaTitle={playerTitle}
+					mediaSubtitle={nowProgram?.title ?? "Live TV"}
 					{...(initialPlayerSettings !== undefined
 						? { initialPlayerSettings }
 						: {})}
