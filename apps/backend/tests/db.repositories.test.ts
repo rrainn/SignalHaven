@@ -21,6 +21,7 @@ import { EventBus } from "../src/events/event-bus";
 import { RecordingsService } from "../src/recordings/recordings.service";
 import { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.repository";
 import { ChannelsRepository } from "../src/repositories/channels.repository";
+import { CommercialsRepository } from "../src/repositories/commercials.repository";
 import { EpgChannelsRepository } from "../src/repositories/epg-channels.repository";
 import { EpgProgramsRepository } from "../src/repositories/epg-programs.repository";
 import { EpgSourcesRepository } from "../src/repositories/epg-sources.repository";
@@ -322,6 +323,57 @@ test("recordings repository CRUD round-trip", async () => {
 		}
 	);
 	assert.equal(failedAttempt, null);
+});
+
+test("commercial analysis failures wait for an explicit retry", async () => {
+	const { channel } = await seedTunerAndChannel();
+	const recordingsRepository = new RecordingsRepository(db);
+	const commercialsRepository = new CommercialsRepository(db);
+	const recording = await recordingsRepository.create({
+		channelId: channel.id,
+		title: "Evening News",
+		status: "completed",
+		scheduledStart: new Date("2026-01-01T03:00:00.000Z"),
+		scheduledEnd: new Date("2026-01-01T04:00:00.000Z")
+	});
+
+	const initial = await commercialsRepository.enqueue(
+		recording.id,
+		"comskip-v1",
+		"commercial-analysis"
+	);
+	assert.equal(initial.created, true);
+	await commercialsRepository.markRunning(recording.id);
+	await commercialsRepository.fail(recording.id, "Comskip exited 1");
+
+	// Routine startup reconciliation must preserve the failure for the user.
+	const reconciled = await commercialsRepository.enqueue(
+		recording.id,
+		"comskip-v1",
+		"commercial-analysis"
+	);
+	assert.equal(reconciled.created, false);
+	assert.equal(reconciled.analysis.status, "failed");
+
+	// A detector update deliberately reconsiders old terminal results.
+	const reconfigured = await commercialsRepository.enqueue(
+		recording.id,
+		"comskip-v2",
+		"commercial-analysis"
+	);
+	assert.equal(reconfigured.created, true);
+	await commercialsRepository.markRunning(recording.id);
+	await commercialsRepository.fail(recording.id, "Comskip exited 1");
+
+	// A user-requested retry still replaces the terminal analysis atomically.
+	const retried = await commercialsRepository.enqueue(
+		recording.id,
+		"comskip-v2",
+		"commercial-analysis",
+		true
+	);
+	assert.equal(retried.created, true);
+	assert.equal(retried.analysis.status, "queued");
 });
 
 test("recordings migration indexes Guide lookups across every state", async () => {
