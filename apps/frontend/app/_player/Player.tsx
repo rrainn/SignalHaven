@@ -1945,7 +1945,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 						role="menu"
 						data-testid="player-context-menu"
 						aria-label="Advanced player controls"
-						className="absolute z-40 max-w-[calc(100%-1rem)] rounded-md border border-white/20 bg-black/95 p-1 text-sm shadow-xl"
+						className="absolute z-50 max-w-[calc(100%-1rem)] rounded-md border border-white/20 bg-black/95 p-1 text-sm shadow-xl"
 						style={{ left: contextMenu.x, top: contextMenu.y }}
 						onBlur={(event) => {
 							if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -2093,13 +2093,15 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					</p>
 				) : null}
 
+				{/* Keep control surfaces above playback errors so suggested recovery
+				    actions such as changing quality or returning live remain reachable. */}
 				<IconButton
 					aria-label="More playback controls"
 					aria-expanded={secondaryControlsOpen}
 					aria-controls="player-secondary-controls"
 					size="lg"
 					className={cn(
-						"absolute right-2 top-2 z-20 border border-white/15 bg-black/75 text-white hover:bg-black/90 md:hidden",
+						"absolute right-2 top-2 z-40 border border-white/15 bg-black/75 text-white hover:bg-black/90 md:hidden",
 						showOverlay ? "opacity-100" : "pointer-events-none opacity-0"
 					)}
 					onClick={() => {
@@ -2115,7 +2117,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 					data-testid="player-controls"
 					data-visible={showOverlay ? "true" : "false"}
 					className={cn(
-						"pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-2 border-t border-white/15 bg-black/85 p-2 transition-opacity duration-200 sm:p-3",
+						"pointer-events-none absolute inset-x-0 bottom-0 z-40 flex flex-col gap-2 border-t border-white/15 bg-black/85 p-2 transition-opacity duration-200 sm:p-3",
 						showOverlay ? "opacity-100" : "opacity-0"
 					)}
 				>
