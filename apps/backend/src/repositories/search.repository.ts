@@ -60,11 +60,10 @@ export class SearchRepository {
 
 	/**
 	 * Upcoming EPG programs ranked by `ts_rank_cd` against
-	 * `search_tsv`. Joins through `logical_channel_epg_map` so the row carries
-	 * the stable channel identity used for playback when the user clicks
-	 * the result. Programs whose EPG channel is unmapped still appear
-	 * (with `channelId` null) so search does not silently lose data
-	 * during onboarding.
+	 * `search_tsv`. Joins through `logical_channel_epg_map` so every row carries
+	 * an enabled, stable channel identity that the details endpoint can resolve.
+	 * Unmapped guide data stays out of search because presenting it as a
+	 * clickable result would lead to a guaranteed not-found page.
 	 */
 	async searchPrograms(
 		q: string,
@@ -87,10 +86,11 @@ export class SearchRepository {
         ts_rank_cd(p.search_tsv, q.tsq) AS score
       FROM epg_programs p
       CROSS JOIN q
-	  LEFT JOIN logical_channel_epg_map m ON m.epg_channel_id = p.epg_channel_id
-	  LEFT JOIN logical_channels c ON c.id = m.logical_channel_id
+	  JOIN logical_channel_epg_map m ON m.epg_channel_id = p.epg_channel_id
+	  JOIN logical_channels c ON c.id = m.logical_channel_id
       WHERE p.search_tsv @@ q.tsq
         AND p.stop >= ${nowUtc}
+		AND c.enabled = true
       ORDER BY score DESC, p.start ASC
       LIMIT ${limit}
     `);
