@@ -279,6 +279,49 @@ test("FTS ranking orders programs sensibly", async () => {
 	assert.equal(top.channelName, "FOX News");
 });
 
+test("program search excludes results that cannot open program details", async () => {
+	const seeded = await seed();
+	await pool.query(
+		"UPDATE logical_channels SET enabled = false WHERE id = $1",
+		[seeded.fox.id]
+	);
+
+	const disabledResult = await service.search({ q: "law and order" });
+	assert.equal(
+		disabledResult.programs.some((program) => program.id === seeded.lawSvu.id),
+		false
+	);
+
+	const sources = new EpgSourcesRepository(db);
+	const epgChannels = new EpgChannelsRepository(db);
+	const programs = new EpgProgramsRepository(db);
+	const source = await sources.create({
+		kind: "xmltv",
+		name: "Unmapped XMLTV",
+		url: "https://example.com/unmapped.xml"
+	});
+	const unmappedChannel = await epgChannels.create({
+		sourceId: source.id,
+		externalId: "unmapped-sports",
+		displayName: "Unmapped Sports"
+	});
+	const unreachable = await programs.create({
+		epgChannelId: unmappedChannel.id,
+		start: new Date("2099-01-01T07:00:00.000Z"),
+		stop: new Date("2099-01-01T10:00:00.000Z"),
+		title: "Unreachable Baseball"
+	});
+
+	const result = await service.search({ q: "unreachable baseball" });
+
+	// Program details require a mapped, enabled channel, so search must enforce
+	// the same reachability rule before presenting a clickable result.
+	assert.equal(
+		result.programs.some((program) => program.id === unreachable.id),
+		false
+	);
+});
+
 test("websearch_to_tsquery honours phrase + negation operators", async () => {
 	const seeded = await seed();
 
