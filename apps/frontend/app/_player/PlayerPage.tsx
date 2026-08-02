@@ -9,6 +9,10 @@ import { Player, type PlayerSavePayload } from "./Player";
 
 export interface PlayerPageProps {
 	channelId: string;
+	/** Channel identity retained while the stream starts. */
+	mediaTitle?: string | undefined;
+	/** Current program context retained while the stream starts. */
+	mediaSubtitle?: string | undefined;
 	/** When true, exposes the seek bar and double-tap seek (recordings). */
 	isRecording?: boolean;
 	/**
@@ -32,6 +36,8 @@ export interface PlayerPageProps {
 export function PlayerPage(props: PlayerPageProps) {
 	const {
 		channelId,
+		mediaTitle,
+		mediaSubtitle,
 		isRecording = false,
 		initialPlayerSettings,
 		persist,
@@ -110,6 +116,8 @@ export function PlayerPage(props: PlayerPageProps) {
 	return (
 		<Player
 			channelId={channelId}
+			mediaTitle={mediaTitle}
+			mediaSubtitle={mediaSubtitle}
 			isRecording={isRecording}
 			onPersist={onPersist}
 			onDismiss={onDismiss ?? undefined}

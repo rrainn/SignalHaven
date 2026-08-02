@@ -676,6 +676,8 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 						playerHandleRef.current = handle;
 					}}
 					channelId={recording.channelId}
+					mediaTitle={recording.title}
+					mediaSubtitle={episodeLabel ?? "Recording"}
 					isRecording
 					recordingDurationSeconds={recording.durationSeconds}
 					recordingStartSeconds={playbackStartSeconds}

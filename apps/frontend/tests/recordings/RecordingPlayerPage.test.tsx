@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within
+} from "@testing-library/react";
 import type {
 	ChannelListItem,
 	PlayerSettings,
@@ -174,6 +180,9 @@ describe("RecordingPlayerPage", () => {
 		expect(screen.getByTestId("recording-description")).toHaveTextContent(
 			"Sherlock and John meet for the first time."
 		);
+		const startup = within(screen.getByTestId("player-loading"));
+		expect(startup.getByText(REC.title)).toBeVisible();
+		expect(startup.getByText("S01E01 · A Study in Pink")).toBeVisible();
 		expect(screen.getByTestId("recording-episode")).toHaveTextContent(
 			"S01E01 · A Study in Pink"
 		);
