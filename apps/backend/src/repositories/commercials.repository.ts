@@ -81,7 +81,7 @@ export class CommercialsRepository {
 
 	/**
 	 * Insert analysis ownership and its scheduler row in one transaction.
-	 * Active work and same-version completed output are reused idempotently.
+	 * Active work and same-version terminal results are reused idempotently.
 	 */
 	async enqueue(
 		recordingId: string,
@@ -114,9 +114,10 @@ export class CommercialsRepository {
 			if (
 				existing &&
 				!force &&
-				existing.status === "completed" &&
+				(existing.status === "completed" || existing.status === "failed") &&
 				existing.detectorVersion === detectorVersion
 			) {
+				// Failures stay visible until a manual retry or configuration change.
 				return { analysis: toRecord(existing), created: false };
 			}
 
