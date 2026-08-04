@@ -552,7 +552,17 @@ function presetArgsFor(encoderName: string): string[] {
 				"main"
 			];
 		case "h264_nvenc":
-			return ["-preset", "p4", "-tune", "ll", "-profile:v", "main"];
+			// HLS requires forced keyframes to be IDR frames so segments close promptly.
+			return [
+				"-preset",
+				"p4",
+				"-tune",
+				"ll",
+				"-profile:v",
+				"main",
+				"-forced-idr:v",
+				"1"
+			];
 		case "h264_qsv":
 			return ["-preset", "veryfast", "-profile:v", "main"];
 		case "h264_vaapi":
