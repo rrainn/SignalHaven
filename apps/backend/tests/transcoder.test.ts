@@ -261,6 +261,32 @@ test("hwaccel=nvenc selects cuda decode + nvenc encoder", () => {
 	assert.equal(args[args.indexOf("-c:v") + 1], "h264_nvenc");
 });
 
+test("nvenc forces IDR frames so HLS segments close promptly", () => {
+	const singleRenditionArgs = buildFfmpegArgs({
+		input: INPUT,
+		outDir: OUT_DIR,
+		profile: "1080p",
+		hwaccel: "nvenc"
+	});
+	const adaptiveArgs = buildAdaptiveFfmpegArgs({
+		input: INPUT,
+		outDir: OUT_DIR,
+		hwaccel: "nvenc",
+		input_codecs: { width: 1920, height: 1080 }
+	});
+
+	assert.equal(
+		singleRenditionArgs[singleRenditionArgs.indexOf("-forced-idr:v") + 1],
+		"1"
+	);
+	for (const index of [0, 1, 2]) {
+		assert.equal(
+			adaptiveArgs[adaptiveArgs.indexOf(`-forced-idr:v:${index}`) + 1],
+			"1"
+		);
+	}
+});
+
 test("nvenc preserves CUDA frames for original-quality re-encoding", () => {
 	const args = buildFfmpegArgs({
 		input: INPUT,
