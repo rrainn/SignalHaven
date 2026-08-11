@@ -72,6 +72,8 @@ export const DEFAULT_LOGO_TTL_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_LOGO_MAX_BYTES = 2 * 1024 * 1024;
 /** Default per-request timeout. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** Avoid hammering a failing playlist while serving a last known-good lineup. */
+const LINEUP_REFRESH_RETRY_MS = 60_000;
 
 export interface IptvProviderOptions {
 	fetch?: IptvFetchLike;
@@ -332,10 +334,33 @@ export class IptvProvider implements TunerProvider {
 		if (this.inflightLineup) {
 			return this.inflightLineup;
 		}
+		const staleLineup = this.cachedLineup;
 		const promise = this.fetchAndParseLineup(now)
 			.then((cached) => {
 				this.cachedLineup = cached;
 				return cached;
+			})
+			.catch((error: unknown) => {
+				if (!staleLineup) {
+					throw error;
+				}
+				// A temporary playlist outage must not erase stream URLs that were
+				// already known to work, especially when a scheduled recording starts.
+				const retryDelayMs = Math.min(
+					this.options.lineupTtlMs,
+					LINEUP_REFRESH_RETRY_MS
+				);
+				const fallback = {
+					...staleLineup,
+					expiresAt: now + retryDelayMs
+				};
+				this.cachedLineup = fallback;
+				this.options.logger.warn(
+					`IPTV playlist refresh failed; using the last known lineup: ${
+						error instanceof Error ? error.message : String(error)
+					}`
+				);
+				return fallback;
 			})
 			.finally(() => {
 				this.inflightLineup = undefined;
