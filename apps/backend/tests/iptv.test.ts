@@ -321,6 +321,38 @@ test("IptvProvider lineup TTL controls the cache lifetime", async () => {
 	assert.equal(calls.length, 2);
 });
 
+test("IptvProvider keeps the last known lineup during a refresh outage", async () => {
+	const url = "http://playlist.example/list.m3u";
+	let now = 1_000;
+	let fetchCalls = 0;
+	const logger = new CapturingLogger();
+	const fetch: IptvFetchLike = async () => {
+		fetchCalls += 1;
+		if (fetchCalls === 1) {
+			return textBodyResponse(SAMPLE_PLAYLIST);
+		}
+		throw new Error("temporary playlist outage");
+	};
+	const provider = new IptvProvider(makeRow(url), {
+		fetch,
+		clock: { now: () => now },
+		lineupTtlMs: 500,
+		logger
+	});
+
+	await provider.getLineup();
+	now += 1_000;
+	const stream = await provider.getStreamUrl("news.us");
+
+	assert.equal(stream.url, "http://stream.example/news.m3u8");
+	assert.equal(fetchCalls, 2);
+	assert.ok(
+		logger.warnings.some((warning) =>
+			warning.includes("using the last known lineup")
+		)
+	);
+});
+
 test("IptvProvider concurrent getLineup calls share a single fetch", async () => {
 	const url = "http://playlist.example/list.m3u";
 	let resolve: (() => void) | undefined;

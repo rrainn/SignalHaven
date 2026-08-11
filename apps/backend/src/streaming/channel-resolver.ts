@@ -1,5 +1,9 @@
 import type { ChannelsRepository } from "../repositories/channels.repository";
-import type { TunersService } from "../tuners/tuners.service";
+import {
+	TunerNotFoundError,
+	type TunersService,
+	UnsupportedTunerKindError
+} from "../tuners/tuners.service";
 
 import {
 	ChannelNotStreamableError,
@@ -64,6 +68,12 @@ export class DefaultChannelStreamResolver implements StreamSourceResolver {
 					left.sourcePriority - right.sourcePriority
 				);
 			});
+		if (sourceRows.length === 0) {
+			throw new ChannelNotStreamableError(
+				channelId,
+				`Channel ${channelId} has no available sources`
+			);
+		}
 		const settled = await Promise.allSettled(
 			sourceRows.map(async (row): Promise<ResolvedStreamSource> => {
 				const provider = await this.tuners.getProviderById(row.tunerId);
@@ -92,9 +102,33 @@ export class DefaultChannelStreamResolver implements StreamSourceResolver {
 			result.status === "fulfilled" ? [result.value] : []
 		);
 		if (candidates.length === 0) {
-			throw new ChannelNotStreamableError(
-				channelId,
-				`Channel ${channelId} has no available sources`
+			// Eligible persisted sources exist, so provider failures are operational
+			// outages rather than permanent channel configuration errors. Preserve
+			// them so scheduled recordings can use their bounded retry policy.
+			const failures = settled.flatMap((result) =>
+				result.status === "rejected" ? [result.reason] : []
+			);
+			if (failures.length === 1) {
+				const [failure] = failures;
+				throw failure instanceof Error ? failure : new Error(String(failure));
+			}
+			if (
+				failures.every(
+					(failure) =>
+						failure instanceof TunerNotFoundError ||
+						failure instanceof UnsupportedTunerKindError
+				)
+			) {
+				// Multiple broken tuner references are still configuration failures.
+				throw failures[0];
+			}
+			const details = failures
+				.map((failure) =>
+					failure instanceof Error ? failure.message : String(failure)
+				)
+				.join("; ");
+			throw new Error(
+				`Every source for channel ${channelId} failed to resolve: ${details}`
 			);
 		}
 		return candidates;
