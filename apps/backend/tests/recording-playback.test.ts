@@ -58,7 +58,7 @@ function createFakeProcess(outDir: string): ChildProcess {
 		await writeFile(join(outDir, "720p-seg-00000.m4s"), "playable segment");
 		await writeFile(
 			join(outDir, "720p.m3u8"),
-			'#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI="init_720p.mp4"\n#EXTINF:2.0,\n720p-seg-00000.m4s\n'
+			'#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MAP:URI="init_720p.mp4"\n#EXTINF:2.0,\n720p-seg-00000.m4s\n#EXT-X-ENDLIST\n'
 		);
 		await writeFile(
 			join(outDir, "master.m3u8"),
@@ -217,7 +217,7 @@ test("POST /recordings/:id/viewers/:viewerId/release is idempotent", async () =>
 	]);
 });
 
-test("a viewer seek replaces only its playback window and uses input seeking", async (t) => {
+test("a viewer seek reuses the finalized VOD without input seeking", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-seek-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -238,13 +238,93 @@ test("a viewer seek replaces only its playback window and uses input seeking", a
 	const firstSession = playback.getSession(row.id);
 	const second = await playback.getManifest(row.id, {}, 1_800, viewerId);
 
-	assert.equal(attempts.length, 2);
-	const seekIndex = attempts[1]?.indexOf("-ss") ?? -1;
-	const inputIndex = attempts[1]?.indexOf("-i") ?? -1;
-	assert.deepEqual(attempts[1]?.slice(seekIndex, inputIndex), ["-ss", "1800"]);
+	assert.equal(attempts.length, 1);
+	assert.equal(attempts[0]?.includes("-ss"), false);
 	assert.notEqual(first, second);
-	assert.equal(firstSession?.getState(), "stopped");
-	assert.equal(playback.getSession(row.id, 1_800)?.startSeconds, 1_800);
+	assert.match(second, /#EXT-X-START:TIME-OFFSET=1800\.000,PRECISE=YES/);
+	assert.equal(firstSession?.getState(), "ready");
+	assert.equal(playback.getSession(row.id, 0), firstSession);
+});
+
+test("recording manifests expose one finalized VOD timeline with a native start hint", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-vod-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input, durationSeconds: 3_000 });
+	repository.rows.set(row.id, row);
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner()
+	});
+	t.after(async () => playback.stopAll());
+
+	const manifest = await playback.getManifest(row.id, {}, 1_200, randomUUID());
+	const staleResumeManifest = await playback.getManifest(
+		row.id,
+		{},
+		5_000,
+		randomUUID()
+	);
+	const session = playback.getSession(row.id, 0);
+
+	assert.match(manifest, /#EXT-X-START:TIME-OFFSET=1200\.000,PRECISE=YES/);
+	assert.match(
+		staleResumeManifest,
+		/#EXT-X-START:TIME-OFFSET=2999\.000,PRECISE=YES/
+	);
+	assert.equal(session?.startSeconds, 0);
+	const renditionUri = manifest
+		.split(/\r?\n/)
+		.find((line) => line.startsWith("segments/"));
+	assert.ok(renditionUri);
+	const parsed = new URL(
+		renditionUri,
+		"http://localhost/recordings/id/stream.m3u8"
+	);
+	const rendition = await playback.getSegment(
+		row.id,
+		parsed.searchParams.get("session") ?? "",
+		parsed.pathname.split("/").pop() ?? "",
+		parsed.searchParams.get("viewerId") ?? undefined
+	);
+	assert.match(rendition.toString("utf8"), /#EXT-X-PLAYLIST-TYPE:VOD/);
+	assert.match(rendition.toString("utf8"), /#EXT-X-ENDLIST/);
+});
+
+test("finalized recording VOD is reused across playback service lifetimes", async (t) => {
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-cache-"));
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const input = join(tmp, "recording.mkv");
+	await writeFile(input, "recording bytes");
+	const repository = new FakeRecordingsRepo();
+	const row = makeRow({ filePath: input });
+	repository.rows.set(row.id, row);
+	let spawnCount = 0;
+	const first = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner(() => {
+			spawnCount += 1;
+		})
+	});
+	await first.getManifest(row.id);
+	await first.stopAll();
+
+	const second = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner(() => {
+			spawnCount += 1;
+		})
+	});
+	t.after(async () => second.stopAll());
+	const manifest = await second.getManifest(row.id);
+
+	assert.match(manifest, /^#EXTM3U/);
+	assert.equal(spawnCount, 1);
 });
 
 test("independent viewers share matching offsets without clobbering seeks", async (t) => {
@@ -276,10 +356,10 @@ test("independent viewers share matching offsets without clobbering seeks", asyn
 	assert.equal(shared?.getViewerCount(), 2);
 
 	await playback.getManifest(row.id, {}, 1_800, firstViewer);
-	assert.equal(spawnCount, 2);
+	assert.equal(spawnCount, 1);
 	assert.equal(shared?.getState(), "ready");
-	assert.equal(shared?.getViewerCount(), 1);
-	assert.equal(playback.getSession(row.id, 1_800)?.getViewerCount(), 1);
+	assert.equal(shared?.getViewerCount(), 2);
+	assert.equal(playback.getSession(row.id, 0)?.getViewerCount(), 2);
 });
 
 test("the final viewer release stops FFmpeg and duplicate beacons are harmless", async (t) => {
@@ -356,7 +436,7 @@ test("legacy activity keeps a shared window after its managed viewer leaves", as
 	await waitFor(() => playback.getActiveSessionCount() === 0, 1_000);
 });
 
-test("stale segment requests cannot follow a viewer to its new seek window", async (t) => {
+test("segment requests remain valid when a viewer seeks on the shared VOD", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-stale-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -379,15 +459,13 @@ test("stale segment requests cannot follow a viewer to its new seek window", asy
 	const parsed = new URL(uri, "http://localhost/recordings/id/stream.m3u8");
 	await playback.getManifest(row.id, {}, 1_800, viewerId);
 
-	await assert.rejects(
-		playback.getSegment(
-			row.id,
-			parsed.searchParams.get("session") ?? "",
-			parsed.pathname.split("/").pop() ?? "",
-			viewerId
-		),
-		/playback session expired/i
+	const rendition = await playback.getSegment(
+		row.id,
+		parsed.searchParams.get("session") ?? "",
+		parsed.pathname.split("/").pop() ?? "",
+		viewerId
 	);
+	assert.match(rendition.toString("utf8"), /#EXT-X-ENDLIST/);
 });
 
 test("operator stop blocks automatic playlist recreation until requests go quiet", async (t) => {
@@ -422,7 +500,8 @@ test("operator stop blocks automatic playlist recreation until requests go quiet
 	assert.equal(spawnCount, 1);
 	await new Promise((resolve) => setTimeout(resolve, 150));
 	await playback.getManifest(row.id, {}, 0, viewerId);
-	assert.equal(spawnCount, 2);
+	// A stopped session may safely reopen the immutable finalized VOD cache.
+	assert.equal(spawnCount, 1);
 });
 
 test("concurrent manifest requests share one FFmpeg session and stable segments", async (t) => {
@@ -477,8 +556,8 @@ test("concurrent manifest requests share one FFmpeg session and stable segments"
 		ffmpegArgs[ffmpegArgs.indexOf("-var_stream_map") + 1] ?? "",
 		/720p/
 	);
-	// FFmpeg's VOD type defers the playlist until the entire input completes.
-	assert.equal(ffmpegArgs.includes("-hls_playlist_type"), false);
+	// Finalization ensures native players receive a stable duration and seek range.
+	assert.equal(ffmpegArgs[ffmpegArgs.indexOf("-hls_playlist_type") + 1], "vod");
 	assert.equal(ffmpegArgs[ffmpegArgs.indexOf("-hls_list_size") + 1], "0");
 	assert.equal(
 		ffmpegArgs.includes("delete_segments+independent_segments+omit_endlist"),
@@ -953,7 +1032,7 @@ test("non-completed and missing recordings return intentional playback errors", 
 	assert.equal(response.body.error.code, RECORDING_PLAYBACK_ERROR_CODE.failed);
 });
 
-test("idle expiration stops FFmpeg and removes temporary artifacts", async (t) => {
+test("idle expiration releases the session while retaining finalized VOD", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-idle-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -972,7 +1051,9 @@ test("idle expiration stops FFmpeg and removes temporary artifacts", async (t) =
 	const output = playback.getSession(row.id)?.getOutputDirectory();
 	assert.ok(output);
 	await waitFor(() => playback.getActiveSessionCount() === 0, 3_000);
-	await assert.rejects(stat(output), /ENOENT/);
+	// Finalized media belongs to the recording, not the short-lived viewer session.
+	assert.equal((await stat(output)).isDirectory(), true);
+	assert.equal((await stat(join(output, "master.m3u8"))).isFile(), true);
 });
 
 test("stop during session startup cancels pending work without orphan artifacts", async (t) => {
@@ -1070,7 +1151,7 @@ test("viewer release during startup prevents a late FFmpeg spawn", async (t) => 
 	assert.equal(spawnCount, 0);
 });
 
-test("rapid seeks keep only the latest viewer window", async (t) => {
+test("rapid seeks share one finalized VOD session", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-latest-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
 	const input = join(tmp, "recording.mkv");
@@ -1092,10 +1173,13 @@ test("rapid seeks keep only the latest viewer window", async (t) => {
 	const second = playback.getManifest(row.id, {}, 1_200, viewerId);
 	const third = playback.getManifest(row.id, {}, 1_800, viewerId);
 
-	await Promise.all([assert.rejects(first), assert.rejects(second), third]);
+	const manifests = await Promise.all([first, second, third]);
 	await waitFor(() => playback.getActiveSessionCount() === 1, 1_000);
-	assert.equal(playback.getSession(row.id, 1_800)?.getViewerCount(), 1);
-	assert.ok(spawnCount <= 3);
+	assert.match(manifests[0], /TIME-OFFSET=600\.000/);
+	assert.match(manifests[1], /TIME-OFFSET=1200\.000/);
+	assert.match(manifests[2], /TIME-OFFSET=1800\.000/);
+	assert.equal(playback.getSession(row.id, 0)?.getViewerCount(), 1);
+	assert.equal(spawnCount, 1);
 });
 
 const mediaToolsAvailable = (() => {
@@ -1145,7 +1229,7 @@ function writeSyntheticRecording(input: string, durationSeconds: number): void {
 }
 
 test(
-	"integration: long recordings publish a manifest before transcoding completes",
+	"integration: long recordings publish only a finalized VOD manifest",
 	{ skip: !mediaToolsAvailable && "ffmpeg, ffprobe, or libx264 unavailable" },
 	async (t) => {
 		const tmp = await mkdtemp(
@@ -1163,7 +1247,7 @@ test(
 			spawn: (args) => {
 				const inputIndex = args.indexOf("-i");
 				assert.ok(inputIndex >= 0);
-				// Real-time input ensures readiness must not wait for the full file.
+				// Real-time input proves readiness waits for a closed VOD timeline.
 				const pacedArgs = [
 					...args.slice(0, inputIndex),
 					"-re",
@@ -1188,6 +1272,20 @@ test(
 		assert.match(manifest, /#EXTM3U/);
 		assert.match(manifest, /segments\/480p\.m3u8/);
 		assert.equal(playback.getSession(row.id)?.getState(), "ready");
+		const renditionUri = manifest
+			.split(/\r?\n/)
+			.find((line) => line.startsWith("segments/"));
+		assert.ok(renditionUri);
+		const parsed = new URL(
+			renditionUri,
+			"http://localhost/recordings/id/stream.m3u8"
+		);
+		const rendition = await playback.getSegment(
+			row.id,
+			parsed.searchParams.get("session") ?? "",
+			parsed.pathname.split("/").pop() ?? ""
+		);
+		assert.match(rendition.toString("utf8"), /#EXT-X-ENDLIST/);
 	}
 );
 

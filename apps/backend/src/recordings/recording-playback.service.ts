@@ -12,6 +12,8 @@ import type {
 import {
 	RecordingPlaybackFfmpegError,
 	RecordingPlaybackSession,
+	recordingPlaybackCachePath,
+	recordingPlaybackCacheSize,
 	type RecordingPlaybackRunner
 } from "./recording-playback-session";
 
@@ -94,7 +96,8 @@ export class RecordingPlaybackSegmentNotFoundError extends Error {
 }
 
 export interface RecordingPlaybackServiceOptions {
-	repository: Pick<RecordingsRepository, "getById">;
+	repository: Pick<RecordingsRepository, "getById"> &
+		Partial<Pick<RecordingsRepository, "update">>;
 	bus?: EventBus;
 	runner?: RecordingPlaybackRunner;
 	tmpRoot?: string;
@@ -118,8 +121,8 @@ interface PendingPlaybackSession {
 	viewerIds: Set<string>;
 	/** Requests from older clients retain the session through idle activity. */
 	legacyOwner: boolean;
-	requestedStartSeconds: number;
 	startSeconds: number;
+	durationSeconds: number | null;
 }
 
 /**
@@ -128,7 +131,8 @@ interface PendingPlaybackSession {
  * cannot spawn duplicate FFmpeg processes.
  */
 export class RecordingPlaybackService {
-	private readonly repository: Pick<RecordingsRepository, "getById">;
+	private readonly repository: Pick<RecordingsRepository, "getById"> &
+		Partial<Pick<RecordingsRepository, "update">>;
 	private readonly bus: EventBus | undefined;
 	private readonly runner: RecordingPlaybackRunner | undefined;
 	private readonly tmpRoot: string | undefined;
@@ -169,7 +173,6 @@ export class RecordingPlaybackService {
 		const { pending, session } = await this.getOrCreate(
 			recordingId,
 			context,
-			normalizedStart,
 			viewerId
 		);
 		if (viewerId && this.viewerSessions.get(viewerId) !== pending) {
@@ -179,7 +182,10 @@ export class RecordingPlaybackService {
 			throw new RecordingPlaybackSessionExpiredError();
 		}
 		try {
-			return await session.readPlaylist(viewerId);
+			return await session.readPlaylist(
+				viewerId,
+				clampStartSeconds(normalizedStart, pending.durationSeconds)
+			);
 		} catch (error) {
 			if (session.getState() === "stopped") {
 				throw new RecordingPlaybackSessionExpiredError();
@@ -223,7 +229,7 @@ export class RecordingPlaybackService {
 		}
 	}
 
-	/** Stop and remove one recording's process and temporary artifacts. */
+	/** Stop one recording's active preparation or viewer session. */
 	async stop(recordingId: string): Promise<void> {
 		const matches = [...this.sessions.values()].filter(
 			(pending) => pending.recordingId === recordingId
@@ -326,13 +332,13 @@ export class RecordingPlaybackService {
 	private async getOrCreate(
 		recordingId: string,
 		context: RecordingPlaybackRequestContext,
-		startSeconds: number,
 		viewerId?: string
 	): Promise<{
 		pending: PendingPlaybackSession;
 		session: RecordingPlaybackSession;
 	}> {
-		const key = playbackKey(recordingId, startSeconds);
+		// A finalized VOD timeline is shared by every start position.
+		const key = playbackKey(recordingId);
 		this.assertNotOperatorStopped(key, recordingId);
 		let pending = this.sessions.get(key);
 		if (!pending) {
@@ -342,16 +348,11 @@ export class RecordingPlaybackService {
 				cancelled: false,
 				viewerIds: new Set<string>(),
 				legacyOwner: false,
-				requestedStartSeconds: startSeconds,
-				startSeconds,
+				startSeconds: 0,
+				durationSeconds: null,
 				ready: Promise.resolve(undefined as never)
 			};
-			pending.ready = this.createSession(
-				recordingId,
-				pending,
-				context,
-				startSeconds
-			);
+			pending.ready = this.createSession(recordingId, pending, context);
 			this.sessions.set(key, pending);
 		}
 		if (viewerId) this.moveViewer(viewerId, pending);
@@ -386,21 +387,15 @@ export class RecordingPlaybackService {
 	private async createSession(
 		recordingId: string,
 		pending: PendingPlaybackSession,
-		context: RecordingPlaybackRequestContext,
-		requestedStartSeconds: number
+		context: RecordingPlaybackRequestContext
 	): Promise<RecordingPlaybackSession> {
 		const recording = await this.loadPlayableRecording(recordingId);
-		const startSeconds = clampStartSeconds(
-			requestedStartSeconds,
-			recording.durationSeconds
-		);
-		pending.startSeconds = startSeconds;
+		pending.durationSeconds = recording.durationSeconds;
 		const hwaccel = await this.resolveHwaccel().catch(() => null);
 		let session = this.createPlaybackSession(
 			recordingId,
 			recording.filePath as string,
-			hwaccel,
-			startSeconds
+			hwaccel
 		);
 		pending.session = session;
 		if (pending.legacyOwner) session.retainForLegacyRequests();
@@ -426,8 +421,7 @@ export class RecordingPlaybackService {
 			session = this.createPlaybackSession(
 				recordingId,
 				recording.filePath as string,
-				null,
-				startSeconds
+				null
 			);
 			pending.session = session;
 			if (pending.legacyOwner) session.retainForLegacyRequests();
@@ -450,10 +444,29 @@ export class RecordingPlaybackService {
 			await session.stop();
 			throw new RecordingPlaybackSessionExpiredError();
 		}
+		await this.updateCachedStorageSize(recording);
 		session.onStopped(() => {
 			this.cleanupPending(pending, session);
 		});
 		return session;
+	}
+
+	/** Persist total source and playback-cache bytes for quota enforcement. */
+	private async updateCachedStorageSize(
+		recording: RecordingRecord
+	): Promise<void> {
+		if (!recording.filePath || !this.repository.update) return;
+		try {
+			const [source, cacheSize] = await Promise.all([
+				stat(recording.filePath),
+				recordingPlaybackCacheSize(recording.filePath)
+			]);
+			await this.repository.update(recording.id, {
+				fileSize: source.size + cacheSize
+			});
+		} catch {
+			// Playback remains valid when nonessential quota bookkeeping races deletion.
+		}
 	}
 
 	/** Emit one terminal summary after fallback decisions have been exhausted. */
@@ -490,13 +503,12 @@ export class RecordingPlaybackService {
 	private createPlaybackSession(
 		recordingId: string,
 		inputPath: string,
-		hwaccel: HwaccelKind | null,
-		startSeconds: number
+		hwaccel: HwaccelKind | null
 	): RecordingPlaybackSession {
 		return new RecordingPlaybackSession({
 			recordingId,
 			inputPath,
-			startSeconds,
+			cacheDir: recordingPlaybackCachePath(inputPath),
 			hwaccel,
 			...(this.bus ? { bus: this.bus } : {}),
 			...(this.runner ? { runner: this.runner } : {}),
@@ -708,12 +720,12 @@ function normalizeStartSeconds(value: number): number {
 	return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
-/** Keep recording and offset identities collision-safe inside process memory. */
-function playbackKey(recordingId: string, startSeconds: number): string {
-	return `${recordingId}\u001f${startSeconds}`;
+/** Keep the recording identity explicit for session and operator-stop indexes. */
+function playbackKey(recordingId: string): string {
+	return recordingId;
 }
 
-/** Keep FFmpeg away from an empty timestamp at the exact end of the file. */
+/** Keep a stale resume point away from the empty timestamp at the exact end. */
 function clampStartSeconds(
 	value: number,
 	durationSeconds: number | null

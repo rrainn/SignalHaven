@@ -290,9 +290,9 @@ describe("RecordingPlayerPage", () => {
 		const skip = await screen.findByRole("button", { name: "Skip Commercial" });
 		fireEvent.click(skip);
 
-		// With no generated seekable range, skipping replaces the lazy window and
-		// resets the media element to that window's relative timestamp zero.
-		expect(currentTime).toBe(0);
+		// The completed VOD keeps one absolute timeline, so native seeking moves
+		// the existing media element directly to the end of the commercial.
+		expect(currentTime).toBe(660);
 		expect(screen.getByTestId("player-time")).toHaveTextContent(
 			"11:00 / 50:00"
 		);
@@ -382,7 +382,7 @@ describe("RecordingPlayerPage", () => {
 		);
 	});
 
-	it("starts the lazy playback window at the persisted resume position", async () => {
+	it("seeks the finalized VOD timeline to the persisted resume position", async () => {
 		renderPage({});
 		const video = screen.getByTestId("player-video") as HTMLVideoElement;
 		Object.defineProperty(video, "duration", {
@@ -390,13 +390,13 @@ describe("RecordingPlayerPage", () => {
 			get: () => 3000
 		});
 		fireEvent(video, new Event("loadedmetadata"));
-		expect(video.currentTime).toBe(0);
+		expect(video.currentTime).toBe(600);
 		expect(screen.getByTestId("player-time")).toHaveTextContent(
 			"10:00 / 50:00"
 		);
 	});
 
-	it("uses the recording duration before the progressive HLS manifest is complete", () => {
+	it("uses the recording duration before finalized VOD metadata arrives", () => {
 		renderPage({});
 		const video = screen.getByTestId("player-video") as HTMLVideoElement;
 		Object.defineProperty(video, "duration", {
@@ -406,7 +406,7 @@ describe("RecordingPlayerPage", () => {
 
 		fireEvent.durationChange(video);
 
-		expect(video.currentTime).toBe(0);
+		expect(video.currentTime).toBe(600);
 		expect(screen.getByRole("slider", { name: "Seek" })).toHaveAttribute(
 			"aria-valuemax",
 			"3000"
@@ -460,9 +460,9 @@ describe("RecordingPlayerPage", () => {
 		fireEvent(video, new Event("loadedmetadata"));
 		patchProgress.mockClear();
 
-		// Tick forward by 12 seconds — past the 10s threshold so a resume
-		// PATCH should fire.
-		cur = 12;
+		// Tick forward by 12 seconds on the absolute VOD timeline so a resume
+		// PATCH should fire without adding a separate playback-window offset.
+		cur = 612;
 		fireEvent(video, new Event("timeupdate"));
 
 		await waitFor(() => {
@@ -495,7 +495,7 @@ describe("RecordingPlayerPage", () => {
 		fireEvent(video, new Event("loadedmetadata"));
 		patchProgress.mockClear();
 
-		currentTime = 12;
+		currentTime = 612;
 		fireEvent(video, new Event("timeupdate"));
 
 		expect(

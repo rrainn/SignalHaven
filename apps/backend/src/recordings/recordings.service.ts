@@ -60,6 +60,10 @@ import {
 	RecordingPlaybackService,
 	type RecordingPlaybackServiceOptions
 } from "./recording-playback.service";
+import {
+	recordingPlaybackCachePath,
+	recordingPlaybackCacheSize
+} from "./recording-playback-session";
 
 /** Job kind registered on the in-process scheduler. */
 export const RECORDING_JOB_KIND = "recording";
@@ -854,7 +858,7 @@ export class RecordingsService {
 		const deleted = await this.repository.delete(id);
 		await this.playback.stop(id);
 		if (!options.keepFile && row.filePath) {
-			await rm(row.filePath, { force: true }).catch(() => undefined);
+			await this.removeRecordingMedia(row.filePath);
 		}
 		if (deleted) {
 			this.publish(RECORDING_EVENT.deleted, deleted);
@@ -948,12 +952,14 @@ export class RecordingsService {
 				});
 				continue;
 			}
+			const storedSize =
+				stats.size + (await recordingPlaybackCacheSize(absolute));
 			if (
 				row.status === "completed" &&
 				stats.size > 0 &&
-				row.fileSize !== stats.size
+				row.fileSize !== storedSize
 			) {
-				await this.repository.update(row.id, { fileSize: stats.size });
+				await this.repository.update(row.id, { fileSize: storedSize });
 				resized += 1;
 			}
 		}
@@ -1002,7 +1008,7 @@ export class RecordingsService {
 			const removed = await this.repository.delete(victim.id);
 			await this.playback.stop(victim.id);
 			if (victim.filePath) {
-				await rm(victim.filePath, { force: true }).catch(() => undefined);
+				await this.removeRecordingMedia(victim.filePath);
 			}
 			if (removed) {
 				this.publish(RECORDING_EVENT.deleted, removed);
@@ -1047,7 +1053,7 @@ export class RecordingsService {
 			const removed = await this.repository.delete(victim.id);
 			await this.playback.stop(victim.id);
 			if (victim.filePath) {
-				await rm(victim.filePath, { force: true }).catch(() => undefined);
+				await this.removeRecordingMedia(victim.filePath);
 			}
 			if (removed) {
 				this.publish(RECORDING_EVENT.deleted, removed);
@@ -1055,6 +1061,17 @@ export class RecordingsService {
 			}
 		}
 		return { deleted };
+	}
+
+	/** Remove the source and its derived HLS cache as one owned media unit. */
+	private async removeRecordingMedia(filePath: string): Promise<void> {
+		await Promise.all([
+			rm(filePath, { force: true }).catch(() => undefined),
+			rm(recordingPlaybackCachePath(filePath), {
+				recursive: true,
+				force: true
+			}).catch(() => undefined)
+		]);
 	}
 
 	/**

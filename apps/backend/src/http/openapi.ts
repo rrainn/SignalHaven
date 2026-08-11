@@ -1069,7 +1069,7 @@ registry.registerPath({
 	path: "/api/v1/recordings/{id}/stream.m3u8",
 	summary: "Prepare and return a recording adaptive HLS master",
 	description:
-		"Validates that the recording completed and its file is readable, then creates or reuses a multivariant VOD HLS window keyed by recording and start timestamp. The existing entry URL returns synchronized applicable 1080p, 720p, and 480p choices. A browser-generated viewerId owns the window across playlist and segment requests, allowing independent tabs to seek without replacing each other.",
+		"Validates that the recording completed and its file is readable, then creates or reuses one finalized multivariant VOD HLS timeline for the recording. The entry URL returns synchronized applicable 1080p, 720p, and 480p choices with native duration and seekability metadata. The optional start timestamp is expressed as a standard HLS start hint and does not truncate or replace the timeline.",
 	tags: ["recordings"],
 	request: {
 		params: z.object({ id: z.string().uuid() }),

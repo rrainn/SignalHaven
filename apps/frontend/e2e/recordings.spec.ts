@@ -619,11 +619,25 @@ test.describe("Recordings library + playback (U8)", () => {
 				'[data-testid="player-video"]'
 			) as HTMLVideoElement | null;
 			if (!video) return -1;
+			Object.defineProperty(video, "duration", {
+				configurable: true,
+				get: () => 3000
+			});
+			let currentTime = 612;
+			Object.defineProperty(video, "currentTime", {
+				configurable: true,
+				get: () => currentTime,
+				set: (value: number) => {
+					currentTime = value;
+				}
+			});
+			// Model browser HLS reporting the absolute VOD start position.
+			video.dispatchEvent(new Event("loadedmetadata"));
+			video.dispatchEvent(new Event("timeupdate"));
 			return video.currentTime;
 		});
-		// Media time is relative to the new FFmpeg window while the controls keep
-		// showing the recording's absolute position and full duration.
-		expect(resumedAt).toBe(0);
+		// The media element and controls now share one absolute recording timeline.
+		expect(resumedAt).toBe(612);
 		await expect(page.getByTestId("player-time")).toHaveText("10:12 / 50:00");
 	});
 });

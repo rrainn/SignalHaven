@@ -395,8 +395,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 		const video = handle?.video ?? null;
 		if (!video || !recording) return;
 
-		// Prefer persisted duration because a progressive HLS playlist initially
-		// reports only the segments FFmpeg has generated so far.
+		// Prefer persisted duration until the finalized VOD metadata arrives.
 		const getPlaybackDuration = () => {
 			const persistedDuration = recording.durationSeconds ?? 0;
 			if (Number.isFinite(persistedDuration) && persistedDuration > 0) {
@@ -409,10 +408,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 		// accidentally clamp the seek to 0.
 		const seedResume = () => {
 			if (seededRef.current) return;
-			const target = Math.max(
-				0,
-				(recording.resumePositionSeconds ?? 0) - playbackStartSeconds
-			);
+			const target = Math.max(0, recording.resumePositionSeconds ?? 0);
 			if (target <= 0) {
 				seededRef.current = true;
 				return;
@@ -434,7 +430,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 
 		const onTime = () => {
 			const dur = getPlaybackDuration();
-			const cur = playbackStartSeconds + video.currentTime;
+			const cur = video.currentTime;
 			if (dur <= 0) return;
 
 			// Mark as watched once past the threshold.
@@ -486,7 +482,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 		video.addEventListener("timeupdate", onTime);
 		video.addEventListener("ended", onEnded);
 		// Persisted recording duration lets the browser retain this as its pending
-		// playback position even before progressive HLS metadata arrives.
+		// playback position even before finalized VOD metadata arrives.
 		seedResume();
 
 		return () => {
@@ -495,7 +491,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 			video.removeEventListener("timeupdate", onTime);
 			video.removeEventListener("ended", onEnded);
 		};
-	}, [status, recording, persistProgress, playbackStartSeconds]);
+	}, [status, recording, persistProgress]);
 
 	// Persist the current position one last time on unmount (so a
 	// navigation away still saves progress without waiting for the
@@ -680,15 +676,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 					mediaSubtitle={episodeLabel ?? "Recording"}
 					isRecording
 					recordingDurationSeconds={recording.durationSeconds}
-					recordingStartSeconds={playbackStartSeconds}
-					onRecordingSeek={(positionSeconds) => {
-						// Changing the URL causes the backend to replace the old lazy
-						// FFmpeg window and begin producing segments at this timestamp.
-						const next = Math.floor(positionSeconds);
-						setPlaybackStartSeconds((current) =>
-							current === next ? current : next
-						);
-					}}
+					recordingStartSeconds={0}
 					commercialMarkers={recording.commercialAnalysis.markers}
 					src={playbackUrl}
 					onPersist={onPlayerPersist}
