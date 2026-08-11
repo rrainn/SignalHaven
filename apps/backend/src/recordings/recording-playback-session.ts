@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 import type { HwaccelKind } from "@signalhaven/shared";
 
@@ -44,6 +44,8 @@ export interface RecordingPlaybackSessionOptions {
 	startTimeoutMs?: number;
 	viewerTimeoutMs?: number;
 	hwaccel?: HwaccelKind | null;
+	/** Persistent finalized HLS cache owned by the source recording. */
+	cacheDir?: string;
 }
 
 export type RecordingPlaybackSessionState = "starting" | "ready" | "stopped";
@@ -68,9 +70,8 @@ export class RecordingPlaybackFfmpegError extends Error {
 }
 
 /**
- * Owns the FFmpeg process and temporary VOD HLS files for one recording.
- * Requests touch the idle timer; the session keeps every generated segment
- * until it expires so seeks and playlist reloads remain stable.
+ * Prepares and serves one immutable recording VOD through a short-lived session.
+ * The finalized cache outlives viewers so AVPlayer always sees one stable timeline.
  */
 export class RecordingPlaybackSession {
 	readonly recordingId: string;
@@ -88,6 +89,7 @@ export class RecordingPlaybackSession {
 	private readonly idleMs: number;
 	private readonly startTimeoutMs: number;
 	private readonly viewerTimeoutMs: number;
+	private readonly cacheDir: string | undefined;
 	private readonly stoppedListeners = new Set<(error?: Error) => void>();
 	/** Stable viewer heartbeats distinguish browser tabs from short HLS requests. */
 	private readonly viewerIds = new Map<string, number>();
@@ -113,6 +115,9 @@ export class RecordingPlaybackSession {
 	private readonly pendingProgress = new Map<string, string>();
 	private pipelineSpeed: number | null = null;
 	private underSpeedSamples = 0;
+	private lastProcessActivityAt = Date.now();
+	private outDirIsPersistent = false;
+	private promotionPromise: Promise<void> | undefined;
 
 	constructor(options: RecordingPlaybackSessionOptions) {
 		this.recordingId = options.recordingId;
@@ -129,12 +134,13 @@ export class RecordingPlaybackSession {
 			options.viewerTimeoutMs ?? DEFAULT_RECORDING_PLAYBACK_VIEWER_TIMEOUT_MS
 		);
 		this.hwaccel = options.hwaccel ?? null;
+		this.cacheDir = options.cacheDir;
 		this.stoppedPromise = new Promise<void>((resolve) => {
 			this.resolveStopped = resolve;
 		});
 	}
 
-	/** Start transcoding once and wait until the first playlist is readable. */
+	/** Start transcoding once and wait until the finalized VOD is seekable. */
 	start(): Promise<void> {
 		this.startPromise ??= this.startInternal();
 		return this.startPromise;
@@ -156,12 +162,15 @@ export class RecordingPlaybackSession {
 	}
 
 	/** Read and rewrite the VOD playlist with this session's opaque token. */
-	async readPlaylist(viewerId?: string): Promise<string> {
+	async readPlaylist(viewerId?: string, startSeconds = 0): Promise<string> {
 		await this.start();
 		if (viewerId) this.attachViewer(viewerId);
 		this.touch();
 		const playlist = await readFile(join(this.outDir, "master.m3u8"), "utf8");
-		return exposeRecordingSegmentUris(playlist, this.sessionId, viewerId);
+		return addRecordingStartHint(
+			exposeRecordingSegmentUris(playlist, this.sessionId, viewerId),
+			startSeconds
+		);
 	}
 
 	/** Read one immutable segment while enforcing output-directory containment. */
@@ -210,7 +219,7 @@ export class RecordingPlaybackSession {
 		return true;
 	}
 
-	/** Number of browser viewers currently retaining this playback window. */
+	/** Number of browser viewers currently retaining this playback session. */
 	getViewerCount(): number {
 		return this.viewerIds.size;
 	}
@@ -334,9 +343,16 @@ export class RecordingPlaybackSession {
 			throw new Error("Recording playback session stopped");
 		}
 		try {
-			this.outDir = await mkdtemp(
-				join(this.tmpRoot, "signalhaven-recording-playback-")
-			);
+			if (await this.useCachedOutputIfValid()) {
+				this.markReady();
+				this.touch();
+				return;
+			}
+			const partialRoot = this.cacheDir ? dirname(this.cacheDir) : this.tmpRoot;
+			const partialPrefix = this.cacheDir
+				? `.${basename(this.cacheDir)}-partial-`
+				: "signalhaven-recording-playback-";
+			this.outDir = await mkdtemp(join(partialRoot, partialPrefix));
 			const codecs = await this.runner.probe(this.inputPath);
 			this.args = buildAdaptiveFfmpegArgs({
 				input: this.inputPath,
@@ -364,6 +380,7 @@ export class RecordingPlaybackSession {
 
 		try {
 			this.process = this.runner.spawn(this.args);
+			this.lastProcessActivityAt = Date.now();
 		} catch (error) {
 			const normalized = normalizeError(error);
 			this.lastError = normalized;
@@ -437,6 +454,7 @@ export class RecordingPlaybackSession {
 			}
 		};
 		child.stderr?.on("data", (chunk: Buffer) => {
+			this.lastProcessActivityAt = Date.now();
 			stderrBuffer += chunk.toString("utf8");
 			const lines = stderrBuffer.split(/\r?\n/);
 			stderrBuffer = lines.pop() ?? "";
@@ -491,7 +509,7 @@ export class RecordingPlaybackSession {
 	private async handleSuccessfulExit(): Promise<void> {
 		if (this.state === "starting") {
 			try {
-				await readFile(join(this.outDir, "master.m3u8"));
+				await this.finalizeVodOutput();
 				this.markReady();
 			} catch {
 				const error = new Error(
@@ -506,16 +524,17 @@ export class RecordingPlaybackSession {
 	}
 
 	private async pollForPlaylist(): Promise<void> {
-		const started = Date.now();
 		while (this.state === "starting" && !this.finalized) {
 			try {
-				await readFile(join(this.outDir, "master.m3u8"));
-				this.markReady();
-				return;
+				if (await hasFinalizedVodPlaylists(this.outDir)) {
+					await this.finalizeVodOutput();
+					this.markReady();
+					return;
+				}
 			} catch {
-				// FFmpeg writes the playlist asynchronously after its first segment.
+				// FFmpeg publishes the finalized playlists after the full transcode.
 			}
-			if (Date.now() - started > this.startTimeoutMs) {
+			if (Date.now() - this.lastProcessActivityAt > this.startTimeoutMs) {
 				const error = new Error("Timed out waiting for recording HLS output");
 				this.setFailureDiagnostic("ffmpeg_start_timeout", error);
 				this.fail(error);
@@ -523,6 +542,45 @@ export class RecordingPlaybackSession {
 			}
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
+	}
+
+	/** Reuse only a closed cache that is at least as new as its immutable source. */
+	private async useCachedOutputIfValid(): Promise<boolean> {
+		if (!this.cacheDir) return false;
+		try {
+			const [source, manifest] = await Promise.all([
+				stat(this.inputPath),
+				stat(join(this.cacheDir, "master.m3u8"))
+			]);
+			if (
+				manifest.mtimeMs < source.mtimeMs ||
+				!(await hasFinalizedVodPlaylists(this.cacheDir))
+			) {
+				return false;
+			}
+			this.outDir = this.cacheDir;
+			this.outDirIsPersistent = true;
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Atomically publish a complete transcode so later viewers never repeat it. */
+	private finalizeVodOutput(): Promise<void> {
+		this.promotionPromise ??= this.promoteVodOutput();
+		return this.promotionPromise;
+	}
+
+	private async promoteVodOutput(): Promise<void> {
+		if (!(await hasFinalizedVodPlaylists(this.outDir))) {
+			throw new Error("Recording HLS output was not finalized");
+		}
+		if (!this.cacheDir || this.outDirIsPersistent) return;
+		await rm(this.cacheDir, { recursive: true, force: true });
+		await rename(this.outDir, this.cacheDir);
+		this.outDir = this.cacheDir;
+		this.outDirIsPersistent = true;
 	}
 
 	private markReady(): void {
@@ -624,7 +682,7 @@ export class RecordingPlaybackSession {
 				// The process may have exited between the state check and signal.
 			}
 		}
-		if (this.outDir) {
+		if (this.outDir && !this.outDirIsPersistent) {
 			await rm(this.outDir, { recursive: true, force: true }).catch(
 				() => undefined
 			);
@@ -654,6 +712,60 @@ export class RecordingPlaybackSession {
 			}
 		});
 	}
+}
+
+/** Keep derived playback media next to the recording for explicit ownership. */
+export function recordingPlaybackCachePath(inputPath: string): string {
+	return `${inputPath}.signalhaven-hls`;
+}
+
+/** Sum finalized cache files so storage quotas include derived playback media. */
+export async function recordingPlaybackCacheSize(
+	inputPath: string
+): Promise<number> {
+	const cacheDir = recordingPlaybackCachePath(inputPath);
+	try {
+		const entries = await readdir(cacheDir, { withFileTypes: true });
+		const sizes = await Promise.all(
+			entries
+				.filter((entry) => entry.isFile())
+				.map((entry) =>
+					stat(join(cacheDir, entry.name)).then((info) => info.size)
+				)
+		);
+		return sizes.reduce((total, size) => total + size, 0);
+	} catch {
+		return 0;
+	}
+}
+
+/** Insert the standard HLS start hint without changing the asset's full duration. */
+function addRecordingStartHint(playlist: string, startSeconds: number): string {
+	if (!Number.isFinite(startSeconds) || startSeconds <= 0) return playlist;
+	const lineBreak = playlist.includes("\r\n") ? "\r\n" : "\n";
+	const hint = `#EXT-X-START:TIME-OFFSET=${startSeconds.toFixed(3)},PRECISE=YES`;
+	const lines = playlist.split(lineBreak);
+	lines.splice(1, 0, hint);
+	return lines.join(lineBreak);
+}
+
+/** Verify that every rendition is a closed VOD playlist before exposing it. */
+async function hasFinalizedVodPlaylists(outDir: string): Promise<boolean> {
+	const master = await readFile(join(outDir, "master.m3u8"), "utf8");
+	const renditions = master
+		.split(/\r?\n/)
+		.filter(
+			(line) => isSafeRecordingSegmentName(line) && line.endsWith(".m3u8")
+		);
+	if (renditions.length === 0) return false;
+	const playlists = await Promise.all(
+		renditions.map((name) => readFile(join(outDir, name), "utf8"))
+	);
+	return playlists.every(
+		(playlist) =>
+			playlist.includes("#EXT-X-PLAYLIST-TYPE:VOD") &&
+			playlist.includes("#EXT-X-ENDLIST")
+	);
 }
 
 /** Only flat adaptive playlist and segment names from our FFmpeg template are valid. */

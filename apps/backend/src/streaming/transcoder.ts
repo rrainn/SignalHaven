@@ -245,6 +245,7 @@ export function buildAdaptiveFfmpegArgs(
 		"2",
 		"-hls_list_size",
 		outputMode === "vod" ? "0" : String(listSize),
+		...(outputMode === "vod" ? ["-hls_playlist_type", "vod"] : []),
 		...(outputMode === "live" ? ["-hls_delete_threshold", "2"] : []),
 		"-hls_flags",
 		outputMode === "vod"

@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { EventBus, type PublishedEvent } from "../src/events/event-bus";
 import type { RemoteImageProxy } from "../src/media/remote-image-proxy";
+import { recordingPlaybackCachePath } from "../src/recordings/recording-playback-session";
 import {
 	RecordingProtectedError,
 	RecordingsService,
@@ -723,6 +724,9 @@ test("delete(): hides the row before stopping playback and unlinking", async () 
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-playback-del-"));
 	const filePath = join(tmp, "playing.mkv");
 	await writeFile(filePath, Buffer.from("video"));
+	const cachePath = recordingPlaybackCachePath(filePath);
+	await mkdir(cachePath);
+	await writeFile(join(cachePath, "master.m3u8"), "#EXTM3U\n");
 	const row = repo.add(makeRow({ filePath, fileSize: 5 }));
 	let rowWasHiddenWhenStopped = false;
 	let sourceExistedWhenStopped = false;
@@ -743,6 +747,7 @@ test("delete(): hides the row before stopping playback and unlinking", async () 
 	assert.equal(rowWasHiddenWhenStopped, true);
 	assert.equal(sourceExistedWhenStopped, true);
 	await assert.rejects(stat(filePath), /ENOENT/);
+	await assert.rejects(stat(cachePath), /ENOENT/);
 	await rm(tmp, { recursive: true, force: true });
 });
 
@@ -1005,6 +1010,9 @@ test("scanLibrary(): detects missing files, refreshes resized rows, counts orpha
 	// One recording whose file exists with a different size than persisted.
 	const resizedPath = join(tmp, "resized.mkv");
 	await writeFile(resizedPath, Buffer.alloc(2048, 0));
+	const playbackCache = recordingPlaybackCachePath(resizedPath);
+	await mkdir(playbackCache);
+	await writeFile(join(playbackCache, "master.m3u8"), Buffer.alloc(128, 0));
 	const resizedRow = repo.add(
 		makeRow({ filePath: resizedPath, fileSize: 1024 })
 	);
@@ -1026,7 +1034,7 @@ test("scanLibrary(): detects missing files, refreshes resized rows, counts orpha
 	assert.equal(result.orphanFiles, 1);
 	assert.equal(result.resized, 1);
 
-	assert.equal(repo.rows.get(resizedRow.id)?.fileSize, 2048);
+	assert.equal(repo.rows.get(resizedRow.id)?.fileSize, 2176);
 	assert.equal(repo.rows.get(missingRow.id)?.fileSize, null);
 	assert.equal(repo.rows.get(missingRow.id)?.errorMessage, "file_missing");
 
