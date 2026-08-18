@@ -7,10 +7,15 @@ import type {
 	TunerList,
 	EpgSourceList
 } from "@signalhaven/shared";
-import { settingsDefaults } from "@signalhaven/shared";
+import { userPreferencesDefaults } from "@signalhaven/shared";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
-import { ApiError, listEpgSources, listTuners } from "../../lib/api-client";
+import {
+	ApiError,
+	getSettings,
+	listEpgSources,
+	listTuners
+} from "../../lib/api-client";
 import { usePreferencesOptional } from "../_preferences/PreferencesProvider";
 import { Button } from "../_ui/Button";
 import { PageHeader } from "../_ui/PageHeader";
@@ -27,9 +32,6 @@ import { TunersSection } from "./TunersSection";
 // is needed until the user clicks the corresponding tab. Radix Tabs
 // unmounts inactive panels, so the dynamic chunks are only fetched on
 // demand.
-const AppearanceSection = lazy(() =>
-	import("./AppearanceSection").then((m) => ({ default: m.AppearanceSection }))
-);
 const AboutSection = lazy(() =>
 	import("./AboutSection").then((module) => ({
 		default: module.AboutSection
@@ -51,6 +53,11 @@ const TimeShiftSection = lazy(() =>
 		default: module.TimeShiftSection
 	}))
 );
+const UsersSection = lazy(() =>
+	import("./UsersSection").then((module) => ({
+		default: module.UsersSection
+	}))
+);
 
 export type SettingsPageProps = {
 	/** Optional injected initial data (used by tests to skip the fetch). */
@@ -67,7 +74,7 @@ export type SettingsTab =
 	| "storage"
 	| "time-shift"
 	| "transcoding"
-	| "appearance"
+	| "users"
 	| "about";
 
 const TABS: ReadonlyArray<{ value: SettingsTab; label: string }> = [
@@ -76,17 +83,16 @@ const TABS: ReadonlyArray<{ value: SettingsTab; label: string }> = [
 	{ value: "storage", label: "Storage" },
 	{ value: "time-shift", label: "Live TV Buffer" },
 	{ value: "transcoding", label: "Transcoding" },
-	{ value: "appearance", label: "Appearance" },
+	{ value: "users", label: "Users" },
 	{ value: "about", label: "About" }
 ];
 
 /**
  * Top-level settings UI (rrainn/SignalHaven#U11-settings).
  *
- * Uses the app-boundary settings state and loads tuners plus EPG sources
- * once on mount. Each section owns its form state and PATCH semantics;
- * this page orchestrates shared loading and refreshes collections when
- * sections mutate them.
+ * Loads administrator-owned settings, tuners, and EPG sources once on mount.
+ * Each section owns its form state and PATCH semantics; this page orchestrates
+ * shared loading while account preferences remain in PreferencesProvider.
  */
 export function SettingsPage(props: SettingsPageProps) {
 	const { initialSettings, initialTuners, initialEpgSources, defaultTab } =
@@ -94,28 +100,26 @@ export function SettingsPage(props: SettingsPageProps) {
 
 	const preferences = usePreferencesOptional();
 	const [settings, setSettings] = useState<Settings | null>(
-		() =>
-			initialSettings ??
-			(preferences && preferences.status !== "loading"
-				? preferences.settings
-				: preferences
-					? null
-					: settingsDefaults)
+		initialSettings ?? null
 	);
 	const [tuners, setTuners] = useState<Tuner[] | null>(initialTuners ?? null);
 	const [epgSources, setEpgSources] = useState<EpgSource[] | null>(
 		initialEpgSources ?? null
 	);
 	const [loadError, setLoadError] = useState<string | null>(null);
-	const replacePreferences = preferences?.replaceSettings;
+	const replacePreferences = preferences?.replacePreferences;
 
-	const onSettingsChanged = useCallback(
-		(next: Settings) => {
-			setSettings(next);
-			replacePreferences?.(next);
-		},
-		[replacePreferences]
-	);
+	const onSettingsChanged = useCallback((next: Settings) => {
+		setSettings(next);
+	}, []);
+
+	const refreshSettings = useCallback(async () => {
+		try {
+			setSettings(await getSettings());
+		} catch (err) {
+			setLoadError(messageOf(err, "Failed to load settings"));
+		}
+	}, []);
 
 	const refreshTuners = useCallback(async () => {
 		try {
@@ -145,33 +149,42 @@ export function SettingsPage(props: SettingsPageProps) {
 		const tasks: Promise<void>[] = [];
 		if (tuners === null) tasks.push(refreshTuners());
 		if (epgSources === null) tasks.push(refreshEpgSources());
+		if (settings === null) tasks.push(refreshSettings());
 		await Promise.all(tasks);
-	}, [epgSources, refreshEpgSources, refreshTuners, tuners]);
-
-	useEffect(() => {
-		if (!initialSettings && preferences) {
-			if (preferences.status !== "loading") {
-				setSettings(preferences.settings);
-			}
-		}
-	}, [initialSettings, preferences]);
+	}, [
+		epgSources,
+		refreshEpgSources,
+		refreshSettings,
+		refreshTuners,
+		settings,
+		tuners
+	]);
 
 	useEffect(() => {
 		const tasks: Promise<unknown>[] = [];
+		if (!initialSettings) tasks.push(refreshSettings());
 		if (!initialTuners) tasks.push(refreshTuners());
 		if (!initialEpgSources) tasks.push(refreshEpgSources());
 		void Promise.all(tasks);
-	}, [initialTuners, initialEpgSources, refreshTuners, refreshEpgSources]);
+	}, [
+		initialSettings,
+		initialTuners,
+		initialEpgSources,
+		refreshSettings,
+		refreshTuners,
+		refreshEpgSources
+	]);
 
 	const resources =
 		settings && tuners && epgSources ? { settings, tuners, epgSources } : null;
+	const userPreferences = preferences?.preferences ?? userPreferencesDefaults;
 
 	return (
 		<section className="space-y-6" data-testid="settings-page">
 			<PageHeader
 				headingId="settings-heading"
 				title="Settings"
-				description="Configure your tuners, guide data, recordings storage, transcoding, appearance, and view system information."
+				description="Configure tuners, guide data, recordings storage, transcoding, local users, and system information."
 			/>
 
 			<Tabs defaultValue={defaultTab ?? "tuners"}>
@@ -239,7 +252,14 @@ export function SettingsPage(props: SettingsPageProps) {
 						<Suspense fallback={<Spinner label="Loading transcoding…" />}>
 							<TranscodingSection
 								settings={resources.settings}
+								playerPreferences={userPreferences.player}
 								onChanged={onSettingsChanged}
+								{...(replacePreferences
+									? { onPlayerPreferencesChanged: replacePreferences }
+									: {})}
+								{...(preferences
+									? { savePreferences: preferences.savePreferences }
+									: {})}
 							/>
 						</Suspense>
 					) : (
@@ -264,23 +284,10 @@ export function SettingsPage(props: SettingsPageProps) {
 						/>
 					)}
 				</TabsContent>
-				<TabsContent value="appearance">
-					{resources ? (
-						<Suspense fallback={<Spinner label="Loading appearance…" />}>
-							<AppearanceSection
-								settings={resources.settings}
-								onChanged={onSettingsChanged}
-								{...(preferences
-									? { saveSettings: preferences.saveSettings }
-									: {})}
-							/>
-						</Suspense>
-					) : (
-						<SettingsResourceState
-							error={loadError}
-							onRetry={retryMissingResources}
-						/>
-					)}
+				<TabsContent value="users">
+					<Suspense fallback={<Spinner label="Loading local users…" />}>
+						<UsersSection />
+					</Suspense>
 				</TabsContent>
 				<TabsContent value="about">
 					<Suspense fallback={<Spinner label="Loading about…" />}>

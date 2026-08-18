@@ -4,8 +4,11 @@ import {
 	transcodingSettingsSchema,
 	transcodeProfileSchema,
 	type ChannelListItem,
+	type PlayerSettings,
 	type Settings,
-	type TranscodeProfile
+	type TranscodeProfile,
+	type UserPreferences,
+	type UserPreferencesPatch
 } from "@signalhaven/shared";
 import { Trash2 } from "lucide-react";
 import {
@@ -16,7 +19,11 @@ import {
 	type FormEvent
 } from "react";
 
-import { listChannels, updateSettings } from "../../lib/api-client";
+import {
+	listChannels,
+	updatePreferences,
+	updateSettings
+} from "../../lib/api-client";
 import { Badge } from "../_ui/Badge";
 import { Button } from "../_ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../_ui/Card";
@@ -35,7 +42,10 @@ import { formatErrorMessage, formatIssue } from "./form-helpers";
 
 export type TranscodingSectionProps = {
 	settings: Settings;
+	playerPreferences: PlayerSettings;
 	onChanged: (next: Settings) => void;
+	onPlayerPreferencesChanged?: (next: UserPreferences) => void;
+	savePreferences?: (patch: UserPreferencesPatch) => Promise<UserPreferences>;
 };
 
 const PROFILE_VALUES = transcodeProfileSchema.options;
@@ -57,7 +67,7 @@ const HWACCEL_OPTIONS = [
  * pin without further wiring).
  */
 export function TranscodingSection(props: TranscodingSectionProps) {
-	const { settings, onChanged } = props;
+	const { settings, playerPreferences, onChanged } = props;
 	const t = settings.transcoding;
 	const [enabled, setEnabled] = useState(t.enabled);
 	const [defaultProfile, setDefaultProfile] = useState<TranscodeProfile>(
@@ -68,7 +78,7 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 	const [audioBitrate, setAudioBitrate] = useState(String(t.audioBitrateKbps));
 	const [captionsEnabled, setCaptionsEnabled] = useState(t.captionsEnabled);
 	const [overrides, setOverrides] = useState<Record<string, TranscodeProfile>>(
-		settings.player.qualityByChannel
+		playerPreferences.qualityByChannel
 	);
 	const [channels, setChannels] = useState<ChannelListItem[]>([]);
 	const [channelRenderLimit, setChannelRenderLimit] = useState(
@@ -129,14 +139,13 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 
 			setSubmitting(true);
 			try {
-				const next = await updateSettings({
-					transcoding: parsed.data,
-					player: {
-						...settings.player,
-						qualityByChannel: overrides
-					}
+				const next = await updateSettings({ transcoding: parsed.data });
+				const savePreferences = props.savePreferences ?? updatePreferences;
+				const nextPreferences = await savePreferences({
+					player: { ...playerPreferences, qualityByChannel: overrides }
 				});
 				onChanged(next);
+				props.onPlayerPreferencesChanged?.(nextPreferences);
 				setSavedAt(new Date().toISOString());
 			} catch (err) {
 				setError(formatErrorMessage(err, "Could not save"));
@@ -152,7 +161,8 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 			hwaccel,
 			onChanged,
 			overrides,
-			settings.player,
+			playerPreferences,
+			props,
 			t.availableHwaccels,
 			t.preset,
 			videoBitrate
@@ -302,7 +312,7 @@ export function TranscodingSection(props: TranscodingSectionProps) {
 												{c.number} · {c.name}
 											</p>
 											<Badge variant="outline">
-												{c.tunerKind.toUpperCase()}
+												{c.tunerKind?.toUpperCase() ?? "CHANNEL"}
 											</Badge>
 										</div>
 										<Select

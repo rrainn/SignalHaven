@@ -106,7 +106,8 @@ export class SearchRepository {
 	 */
 	async searchRecordings(
 		q: string,
-		limit: number
+		limit: number,
+		userId = "00000000-0000-4000-8000-000000000001"
 	): Promise<RecordingSearchRow[]> {
 		// `LIKE`-style wildcard fallback for unlinked rows. We escape `%`,
 		// `_`, and `\` so pasted SQL wildcards in the query don't change
@@ -128,7 +129,8 @@ export class SearchRepository {
         FROM recordings r
         JOIN epg_programs p ON p.id = r.program_id
         CROSS JOIN q
-        WHERE p.search_tsv @@ q.tsq
+		WHERE p.search_tsv @@ q.tsq
+		  AND r.user_id = ${userId}
         UNION ALL
         SELECT
           r.id,
@@ -140,6 +142,7 @@ export class SearchRepository {
           0.05::real AS score
         FROM recordings r
         WHERE r.program_id IS NULL
+		  AND r.user_id = ${userId}
           AND r.title ILIKE ${ilikeNeedle} ESCAPE '\\'
       )
       SELECT

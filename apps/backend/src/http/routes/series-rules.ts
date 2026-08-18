@@ -8,7 +8,10 @@ import {
 } from "@signalhaven/shared";
 import { Router } from "express";
 
-import type { SeriesRuleRecord } from "../../repositories/series-rules.repository";
+import {
+	SeriesRuleLimitError,
+	type SeriesRuleRecord
+} from "../../repositories/series-rules.repository";
 import type { SeriesRulesService } from "../../series/series-rules.service";
 import { HttpError } from "../middleware/errors";
 import { validate } from "../middleware/validate";
@@ -44,10 +47,16 @@ function toPublicSeriesRule(row: SeriesRuleRecord): {
 
 export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 	const router = Router();
+	router.use((_req, res, next) => {
+		res.setHeader("Cache-Control", "private, no-store");
+		next();
+	});
 
-	router.get("/series-rules", async (_req, res, next) => {
+	router.get("/series-rules", async (req, res, next) => {
 		try {
-			const items = (await service.list()).map(toPublicSeriesRule);
+			const items = (await service.list(req.auth!.user.id)).map(
+				toPublicSeriesRule
+			);
 			res.json(seriesRuleListSchema.parse({ items }));
 		} catch (error) {
 			next(error);
@@ -70,6 +79,7 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 					retentionDays?: number | null;
 				};
 				const created = await service.create({
+					userId: req.auth!.user.id,
 					title: body.title,
 					channelId: body.channelId ?? null,
 					epgChannelId: body.epgChannelId ?? null,
@@ -83,7 +93,11 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 					.status(201)
 					.json(seriesRuleSchema.parse(toPublicSeriesRule(created)));
 			} catch (error) {
-				next(error);
+				next(
+					error instanceof SeriesRuleLimitError
+						? new HttpError(429, error.code, error.message)
+						: error
+				);
 			}
 		}
 	);
@@ -93,7 +107,10 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 		validate({ params: seriesRuleIdParamSchema }),
 		async (req, res, next) => {
 			try {
-				const row = await service.getById(req.params["id"] as string);
+				const row = await service.getById(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				if (!row) {
 					throw new HttpError(404, "not_found", "Series rule not found");
 				}
@@ -114,7 +131,8 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 			try {
 				const updated = await service.update(
 					req.params["id"] as string,
-					req.body as Parameters<SeriesRulesService["update"]>[1]
+					req.body as Parameters<SeriesRulesService["update"]>[1],
+					req.auth!.user.id
 				);
 				if (!updated) {
 					throw new HttpError(404, "not_found", "Series rule not found");
@@ -131,7 +149,10 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 		validate({ params: seriesRuleIdParamSchema }),
 		async (req, res, next) => {
 			try {
-				const ok = await service.delete(req.params["id"] as string);
+				const ok = await service.delete(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				if (!ok) {
 					throw new HttpError(404, "not_found", "Series rule not found");
 				}
@@ -149,9 +170,9 @@ export function createSeriesRulesRouter(service: SeriesRulesService): Router {
 	 * to also subscribe to the WS `recordings` topic for real-time
 	 * updates).
 	 */
-	router.get("/recordings/conflicts", (_req, res, next) => {
+	router.get("/recordings/conflicts", (req, res, next) => {
 		try {
-			const items = service.getConflicts();
+			const items = service.getConflicts(req.auth!.user.id);
 			res.json(recordingConflictListSchema.parse({ items }));
 		} catch (error) {
 			next(error);

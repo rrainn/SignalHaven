@@ -8,7 +8,7 @@ import {
 	channelSourceParamsSchema,
 	epgCandidatesResponseSchema
 } from "@signalhaven/shared";
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 
 import { RemoteImageProxy } from "../../media/remote-image-proxy";
 import { HttpError } from "../middleware/errors";
@@ -34,6 +34,7 @@ export function createChannelsRouter(
 	matcher: EpgMatcherService,
 	tunersService: TunersService,
 	channelsRepository: ChannelsRepository,
+	requireAdmin: RequestHandler,
 	onChannelsChanged?: () => void,
 	channelLogoProxy: RemoteImageProxy = new RemoteImageProxy()
 ): Router {
@@ -44,10 +45,13 @@ export function createChannelsRouter(
 	 * their owning tuner (name, kind) and EPG mapping status so the UI
 	 * can render the Channels page without extra round-trips.
 	 */
-	router.get("/channels", async (_req, res, next) => {
+	router.get("/channels", async (req, res, next) => {
 		try {
 			const summary = await channelsRepository.listLogicalChannelSummaries();
-			const items = summary.map(toChannelListItem);
+			const includeTopology = req.auth?.user.role === "admin";
+			const items = summary.map((item) =>
+				toChannelListItem(item, includeTopology)
+			);
 			res.json(channelListSchema.parse({ items }));
 		} catch (error) {
 			next(error);
@@ -72,10 +76,7 @@ export function createChannelsRouter(
 					throw new HttpError(404, "not_found", "Logo not available");
 				}
 				res.setHeader("Content-Type", logo.contentType);
-				res.setHeader(
-					"Cache-Control",
-					`public, max-age=${logo.cacheMaxAgeSeconds}`
-				);
+				res.setHeader("Cache-Control", "private, no-store");
 				res.setHeader("X-Content-Type-Options", "nosniff");
 				res.status(200).send(logo.body);
 			} catch (error) {
@@ -86,6 +87,7 @@ export function createChannelsRouter(
 
 	router.get(
 		"/channels/:id/quality",
+		requireAdmin,
 		validate({ params: channelIdParamSchema }),
 		async (req, res, next) => {
 			try {
@@ -114,6 +116,7 @@ export function createChannelsRouter(
 
 	router.post(
 		"/channels/merge",
+		requireAdmin,
 		validate({ body: channelMergeSchema }),
 		async (req, res, next) => {
 			try {
@@ -124,7 +127,7 @@ export function createChannelsRouter(
 				onChannelsChanged?.();
 				const items = (
 					await channelsRepository.listLogicalChannelSummaries()
-				).map(toChannelListItem);
+				).map((item) => toChannelListItem(item, true));
 				res.json(channelListSchema.parse({ items }));
 			} catch (error) {
 				next(translateGroupingError(error));
@@ -134,6 +137,7 @@ export function createChannelsRouter(
 
 	router.post(
 		"/channels/:id/sources/:sourceId/split",
+		requireAdmin,
 		validate({ params: channelSourceParamsSchema }),
 		async (req, res, next) => {
 			try {
@@ -144,7 +148,7 @@ export function createChannelsRouter(
 				onChannelsChanged?.();
 				const items = (
 					await channelsRepository.listLogicalChannelSummaries()
-				).map(toChannelListItem);
+				).map((item) => toChannelListItem(item, true));
 				res.json(channelListSchema.parse({ items }));
 			} catch (error) {
 				next(translateGroupingError(error));
@@ -154,6 +158,7 @@ export function createChannelsRouter(
 
 	router.post(
 		"/channels/:id/sources/:sourceId/preferred",
+		requireAdmin,
 		validate({ params: channelSourceParamsSchema }),
 		async (req, res, next) => {
 			try {
@@ -163,7 +168,7 @@ export function createChannelsRouter(
 				);
 				const items = (
 					await channelsRepository.listLogicalChannelSummaries()
-				).map(toChannelListItem);
+				).map((item) => toChannelListItem(item, true));
 				res.json(channelListSchema.parse({ items }));
 			} catch (error) {
 				next(translateGroupingError(error));
@@ -173,6 +178,7 @@ export function createChannelsRouter(
 
 	router.get(
 		"/channels/:id/epg-candidates",
+		requireAdmin,
 		validate({ params: channelIdParamSchema }),
 		async (req, res, next) => {
 			try {
@@ -200,6 +206,7 @@ export function createChannelsRouter(
 
 	router.put(
 		"/channels/:id/epg-mapping",
+		requireAdmin,
 		validate({
 			params: channelIdParamSchema,
 			body: channelEpgMappingPutSchema
@@ -246,21 +253,36 @@ async function resolveSourceId(
 function toChannelListItem(
 	summary: Awaited<
 		ReturnType<ChannelsRepository["listLogicalChannelSummaries"]>
-	>[number]
+	>[number],
+	includeTopology = true
 ) {
 	const primary = summary.sources[0];
-	return {
+	const availableSourceCount = summary.sources.filter(
+		(source) => source.sourceStatus !== "unavailable" && source.enabled
+	).length;
+	const item = {
 		id: summary.channel.id,
 		number: summary.channel.number,
 		name: summary.channel.name,
-		logoUrl: summary.channel.logoUrl ?? null,
+		// Provider URLs may contain credentials or private hostnames.
+		logoUrl: summary.channel.logoUrl
+			? `/api/v1/channels/${summary.channel.id}/logo`
+			: null,
+		enabled: summary.channel.enabled,
+		sortOrder: summary.channel.sortOrder,
+		hasMapping: summary.mappedEpgChannelId !== null,
+		// Standard accounts need availability, not the underlying source count.
+		availableSourceCount: includeTopology
+			? availableSourceCount
+			: Math.min(1, availableSourceCount)
+	};
+	if (!includeTopology) return item;
+	return {
+		...item,
 		tvgId: primary?.tvgId ?? null,
 		tunerId: primary?.tunerId ?? summary.channel.id,
 		tunerName: primary?.tunerName ?? "No source",
 		tunerKind: primary?.tunerKind ?? "hdhomerun",
-		enabled: summary.channel.enabled,
-		sortOrder: summary.channel.sortOrder,
-		hasMapping: summary.mappedEpgChannelId !== null,
 		sources: summary.sources.map((source, index) => ({
 			id: source.id,
 			tunerId: source.tunerId,
@@ -271,10 +293,7 @@ function toChannelListItem(
 			status: source.sourceStatus,
 			priority: source.sourcePriority,
 			preferred: index === 0
-		})),
-		availableSourceCount: summary.sources.filter(
-			(source) => source.sourceStatus !== "unavailable" && source.enabled
-		).length
+		}))
 	};
 }
 

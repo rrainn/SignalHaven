@@ -10,6 +10,7 @@ import {
 	RECORDING_FAILED_RETRIES_EXHAUSTED,
 	RECORDING_FAILED_RETRY_WINDOW_EXHAUSTED,
 	RECORDING_FAILED_SOURCE_CONFIGURATION,
+	RECORDING_MAX_DURATION_MS,
 	type Recording,
 	type CommercialAnalysis,
 	type RecordingEventName,
@@ -43,6 +44,7 @@ import type {
 	RecordingsRepository,
 	UpdateRecordingInput
 } from "../repositories/recordings.repository";
+import { RecordingDurationLimitError } from "../repositories/recordings.repository";
 import type { SeriesRulesRepository } from "../repositories/series-rules.repository";
 import {
 	ChannelNotStreamableError,
@@ -99,8 +101,8 @@ export interface RecordingsConfigResolver {
 		/** Seconds to keep recording after `scheduledEnd`. */
 		paddingAfterSec: number;
 		/**
-		 * Storage quota in bytes (sum of `recordings.file_size` allowed
-		 * before automatic eviction kicks in). `null` disables the quota.
+		 * Global storage quota in bytes (sum of completed recording media).
+		 * Automatic cleanup removes media only from the account adding bytes.
 		 */
 		quotaBytes?: number | null;
 	}>;
@@ -116,6 +118,7 @@ export class RecordingNotFoundError extends Error {
 	}
 }
 
+/** Prevents a single recording from reserving the tuner indefinitely. */
 export class RecordingStorageNotConfiguredError extends Error {
 	constructor() {
 		super(
@@ -211,6 +214,8 @@ export interface RecordingsServiceOptions {
 }
 
 export interface ScheduleRecordingInput {
+	/** Account owner; background compatibility defaults to the bootstrap admin. */
+	userId?: string;
 	channelId: string;
 	title: string;
 	/** Absolute start time (ISO or Date). */
@@ -225,6 +230,7 @@ export interface ScheduleRecordingInput {
 }
 
 export interface ScheduleByProgramInput {
+	userId?: string;
 	programId: string;
 	/** Preferred tuner variant when an EPG channel has multiple mappings. */
 	channelId?: string;
@@ -232,6 +238,20 @@ export interface ScheduleByProgramInput {
 
 /** Explicit schedule outcome returned by the by-program API. */
 export type ScheduleByProgramResult = CreateScheduledRecordingResult;
+
+/** Account-scoped process metadata exposed to the administrator's Advanced page. */
+export interface ActiveRecordingFfmpegWork {
+	recordingId: string;
+	title: string;
+	kind: "recording" | "recording-playback";
+	state: string;
+	startedAt: string;
+	playbackSessionId?: string;
+	profile?: string;
+	hwaccel?: string | null;
+	clientCount?: number;
+	pipelineSpeed?: number | null;
+}
 
 /**
  * Coordinates the lifecycle of a one-off recording: persists the row,
@@ -270,6 +290,8 @@ export class RecordingsService {
 	>();
 	/** Covers pre-FFmpeg work so duplicate scheduler rows cannot overlap. */
 	private readonly attemptsInFlight = new Set<string>();
+	/** All automatic library deletion policies share one ordering boundary. */
+	private libraryMaintenanceTail: Promise<unknown> = Promise.resolve();
 	/** Closes the brief transition-to-recording race before a session is stored. */
 	private readonly cancellationRequested = new Set<string>();
 
@@ -298,6 +320,9 @@ export class RecordingsService {
 			options.playbackService ??
 			new RecordingPlaybackService({
 				repository: options.repository,
+				onStorageSizeChanged: (userId) => {
+					void this.enforceStorageQuota(userId).catch(() => undefined);
+				},
 				...(options.bus ? { bus: options.bus } : {}),
 				...(options.logger ? { logger: options.logger } : {}),
 				...(options.playbackOptions ?? {})
@@ -313,49 +338,68 @@ export class RecordingsService {
 		return this.inFlight.size;
 	}
 
-	/** Snapshot active recording FFmpeg work without exposing output paths. */
-	async getActiveFfmpegWork(): Promise<
-		Array<{
-			recordingId: string;
-			title: string;
-			kind: "recording" | "recording-playback";
-			state: string;
-			startedAt: string;
-			playbackSessionId?: string;
-			profile?: string;
-			hwaccel?: string | null;
-			clientCount?: number;
-			pipelineSpeed?: number | null;
-		}>
-	> {
+	/** Snapshot only the requesting administrator's recording FFmpeg work. */
+	async getActiveFfmpegWork(
+		userId: string
+	): Promise<ActiveRecordingFfmpegWork[]> {
 		const captures = await Promise.all(
 			[...this.inFlight.entries()].map(async ([recordingId, entry]) => {
-				const recording = await this.repository.getById(recordingId);
-				return {
+				const recording = await this.repository.getByIdForUser(
 					recordingId,
-					title: recording?.title ?? `Recording ${recordingId}`,
-					kind: "recording" as const,
-					state: "recording",
-					startedAt: entry.session.startedAt.toISOString()
-				};
+					userId
+				);
+				if (!recording) return [];
+				return [
+					{
+						recordingId,
+						title: recording.title,
+						kind: "recording" as const,
+						state: "recording",
+						startedAt: entry.session.startedAt.toISOString()
+					}
+				];
 			})
 		);
 		const playbacks = await Promise.all(
 			this.playback.getActiveSessions().map(async (session) => {
-				const recording = await this.repository.getById(session.recordingId);
-				return {
-					...session,
-					title: recording?.title ?? `Recording ${session.recordingId}`,
-					kind: "recording-playback" as const
-				};
+				const recording = await this.repository.getByIdForUser(
+					session.recordingId,
+					userId
+				);
+				if (!recording) return [];
+				return [
+					{
+						...session,
+						title: recording.title,
+						kind: "recording-playback" as const
+					}
+				];
 			})
 		);
-		return [...captures, ...playbacks];
+		return [...captures.flat(), ...playbacks.flat()];
 	}
 
-	/** Stop one advanced-mode playback process without affecting sibling viewers. */
-	stopPlayback(playbackSessionId: string): boolean {
+	/** Stop an exact playback only when its recording belongs to this account. */
+	async stopOwnedPlayback(
+		playbackSessionId: string,
+		userId: string
+	): Promise<boolean> {
+		const active = this.playback
+			.getActiveSessions()
+			.find((session) => session.playbackSessionId === playbackSessionId);
+		if (!active) return false;
+		const recording = await this.repository.getByIdForUser(
+			active.recordingId,
+			userId
+		);
+		if (!recording) return false;
 		return this.playback.stopSession(playbackSessionId);
+	}
+
+	/** Cancel an exact capture only after resolving it inside this account. */
+	async cancelOwned(id: string, userId: string): Promise<RecordingRecord> {
+		await this.assertOwned(id, userId);
+		return this.cancel(id);
 	}
 
 	/**
@@ -376,12 +420,23 @@ export class RecordingsService {
 			throw new Error("`end` must be strictly after `start`");
 		}
 		const config = await this.config.resolve();
-		const episodeSnapshot = await this.loadEpisodeSnapshot(input.programId);
-		const runAt = new Date(
+		const paddedStart = new Date(
 			input.start.getTime() - config.paddingBeforeSec * 1000
 		);
+		const paddedEnd = new Date(
+			input.end.getTime() + config.paddingAfterSec * 1000
+		);
+		if (
+			paddedEnd.getTime() - paddedStart.getTime() >
+			RECORDING_MAX_DURATION_MS
+		) {
+			throw new RecordingDurationLimitError();
+		}
+		const episodeSnapshot = await this.loadEpisodeSnapshot(input.programId);
+		const runAt = paddedStart;
 		const result = await this.scheduler.schedulePersistedOneOff(() =>
 			this.repository.createScheduledWithJob({
+				...(input.userId ? { userId: input.userId } : {}),
 				channelId: input.channelId,
 				...(input.programId !== undefined
 					? { programId: input.programId }
@@ -439,6 +494,7 @@ export class RecordingsService {
 			throw new ChannelNotMappedError(program.epgChannelId);
 		}
 		return this.scheduleWithResult({
+			...(input.userId ? { userId: input.userId } : {}),
 			channelId: mapping.channelId,
 			title: program.title,
 			start: program.start,
@@ -456,7 +512,10 @@ export class RecordingsService {
 	 * are clamped server-side (default 50, max 200) so a misbehaving
 	 * client can't ask the DB to materialise an unbounded result set.
 	 */
-	async listPage(query: RecordingListQuery): Promise<
+	async listPage(
+		query: RecordingListQuery,
+		userId = "00000000-0000-4000-8000-000000000001"
+	): Promise<
 		Omit<RecordingListPage, "hasMore" | "items"> & {
 			items: Array<RecordingRecord & { metadata: RecordingMetadata | null }>;
 			nextCursor: string | null;
@@ -466,6 +525,7 @@ export class RecordingsService {
 			? decodeRecordingCursor(query.cursor, query.sort, query.direction)
 			: undefined;
 		const page = await this.repository.listPage({
+			userId,
 			...(query.search ? { search: query.search } : {}),
 			...(query.status !== undefined ? { status: query.status } : {}),
 			...(query.channelId !== undefined ? { channelId: query.channelId } : {}),
@@ -513,6 +573,13 @@ export class RecordingsService {
 		return row;
 	}
 
+	/** Ownership mismatches deliberately look identical to unknown ids. */
+	async assertOwned(id: string, userId: string): Promise<RecordingRecord> {
+		const row = await this.repository.getByIdForUser(id, userId);
+		if (!row) throw new RecordingNotFoundError(id);
+		return row;
+	}
+
 	/** Fetch recording artwork through the backend-owned bounded image cache. */
 	async getArtwork(id: string): Promise<ProxiedImage | null> {
 		const record = await this.getById(id);
@@ -526,9 +593,16 @@ export class RecordingsService {
 		id: string,
 		context: { requestId?: string } = {},
 		startSeconds = 0,
-		viewerId?: string
+		viewerId?: string,
+		mediaTicket?: string
 	): Promise<string> {
-		return this.playback.getManifest(id, context, startSeconds, viewerId);
+		return this.playback.getManifest(
+			id,
+			context,
+			startSeconds,
+			viewerId,
+			mediaTicket
+		);
 	}
 
 	/** Read a segment from the exact opaque session referenced by the manifest. */
@@ -536,9 +610,16 @@ export class RecordingsService {
 		id: string,
 		sessionId: string,
 		segment: string,
-		viewerId?: string
+		viewerId?: string,
+		mediaTicket?: string
 	): Promise<Buffer> {
-		return this.playback.getSegment(id, sessionId, segment, viewerId);
+		return this.playback.getSegment(
+			id,
+			sessionId,
+			segment,
+			viewerId,
+			mediaTicket
+		);
 	}
 
 	/** Release one recording viewer after navigation or tab closure. */
@@ -866,6 +947,15 @@ export class RecordingsService {
 	}
 
 	/**
+	 * Delete a completed row only if it is still eligible for automatic
+	 * library maintenance. The database predicate is the authority so a
+	 * concurrent protection change always wins over a stale candidate list.
+	 */
+	async deleteForLibraryMaintenance(id: string): Promise<boolean> {
+		return (await this.removeEvictionCandidate(id)) !== null;
+	}
+
+	/**
 	 * Patch a recording's library bookkeeping fields. Drives the player's
 	 * mark-as-watched + resume-position state and the user's `protect`
 	 * toggle. Returns the updated row.
@@ -988,7 +1078,23 @@ export class RecordingsService {
 	 * the library is already under the limit. Returns the number of
 	 * rows deleted.
 	 */
-	async enforceStorageQuota(): Promise<{ deleted: number }> {
+	async enforceStorageQuota(userId: string): Promise<{ deleted: number }> {
+		return this.runLibraryMaintenance(() =>
+			this.enforceStorageQuotaForUser(userId)
+		);
+	}
+
+	/** Serialize quota, retention, and series keep-count media deletion. */
+	runLibraryMaintenance<T>(operation: () => Promise<T>): Promise<T> {
+		const run = this.libraryMaintenanceTail.then(operation);
+		this.libraryMaintenanceTail = run.catch(() => undefined);
+		return run;
+	}
+
+	/** Enforce the global ceiling without deleting a different account's media. */
+	private async enforceStorageQuotaForUser(
+		userId: string
+	): Promise<{ deleted: number }> {
 		const config = await this.config.resolve().catch(() => null);
 		const quota = config?.quotaBytes ?? null;
 		if (!quota || quota <= 0) {
@@ -998,23 +1104,27 @@ export class RecordingsService {
 		if (total <= quota) {
 			return { deleted: 0 };
 		}
-		const candidates = await this.repository.listEvictionCandidates();
+		const candidates = await this.repository.listEvictionCandidates(userId);
 		let deleted = 0;
 		for (const victim of candidates) {
 			if (total <= quota) break;
-			const size = victim.fileSize ?? 0;
 			// Remove discoverability before stopping readers to close the same
 			// manifest-creation race as an explicit library deletion.
-			const removed = await this.repository.delete(victim.id);
-			await this.playback.stop(victim.id);
-			if (victim.filePath) {
-				await this.removeRecordingMedia(victim.filePath);
+			const removed = await this.removeEvictionCandidate(victim.id);
+			if (!removed) {
+				// A direct delete can race maintenance; refresh global usage so a stale
+				// snapshot cannot cause an unnecessary deletion from this account.
+				total = await this.repository.sumCompletedSize();
+				continue;
 			}
-			if (removed) {
-				this.publish(RECORDING_EVENT.deleted, removed);
-				deleted += 1;
-				total -= size;
-			}
+			deleted += 1;
+			total -= removed.fileSize ?? 0;
+		}
+		if (total > quota) {
+			this.logger.warn(
+				{ userId, quotaBytes: quota, completedBytes: total },
+				"Recording storage remains above quota without an eligible owner recording"
+			);
 		}
 		return { deleted };
 	}
@@ -1027,6 +1137,11 @@ export class RecordingsService {
 	 * series-rule repository was wired in.
 	 */
 	async enforceRetention(): Promise<{ deleted: number }> {
+		return this.runLibraryMaintenance(() => this.enforceRetentionUnlocked());
+	}
+
+	/** Retention implementation used inside the shared maintenance queue. */
+	private async enforceRetentionUnlocked(): Promise<{ deleted: number }> {
 		if (!this.seriesRules) {
 			return { deleted: 0 };
 		}
@@ -1050,17 +1165,24 @@ export class RecordingsService {
 			if (ageMs <= limitMs) continue;
 			// Remove discoverability before stopping readers to prevent a new VOD
 			// session from racing retention cleanup.
-			const removed = await this.repository.delete(victim.id);
-			await this.playback.stop(victim.id);
-			if (victim.filePath) {
-				await this.removeRecordingMedia(victim.filePath);
-			}
-			if (removed) {
-				this.publish(RECORDING_EVENT.deleted, removed);
-				deleted += 1;
-			}
+			const removed = await this.removeEvictionCandidate(victim.id);
+			if (!removed) continue;
+			deleted += 1;
 		}
 		return { deleted };
+	}
+
+	/** Win the row predicate before stopping readers or deleting owned files. */
+	private async removeEvictionCandidate(
+		id: string
+	): Promise<RecordingRecord | null> {
+		const removed = await this.repository.deleteEvictionCandidate(id);
+		if (!removed) return null;
+		await this.commercialAnalysis?.cancel(id);
+		await this.playback.stop(id);
+		if (removed.filePath) await this.removeRecordingMedia(removed.filePath);
+		this.publish(RECORDING_EVENT.deleted, removed);
+		return removed;
 	}
 
 	/** Remove the source and its derived HLS cache as one owned media unit. */
@@ -1089,8 +1211,13 @@ export class RecordingsService {
 		}
 		const detach = this.bus.subscribe("recordings", (event) => {
 			if (event.event !== RECORDING_EVENT.completed) return;
-			void this.enforceStorageQuota().catch(() => undefined);
-			void this.enforceRetention().catch(() => undefined);
+			const userId = event.audience?.userId;
+			// Recording publishers always identify the owner. Failing closed here
+			// prevents a legacy/unscoped event from triggering global deletion.
+			void this.runLibraryMaintenance(async () => {
+				if (userId) await this.enforceStorageQuotaForUser(userId);
+				await this.enforceRetentionUnlocked();
+			}).catch(() => undefined);
 		});
 		this.libraryMaintenanceUnsubscribe = () => {
 			this.libraryMaintenanceUnsubscribe = undefined;
@@ -1176,7 +1303,8 @@ export class RecordingsService {
 			outputPath = await this.prepareOutputPath(
 				config.recordingsDir,
 				row.title,
-				row.scheduledStart
+				row.scheduledStart,
+				row.id
 			);
 		} catch (error) {
 			await this.failScheduledAttempt(
@@ -1573,17 +1701,14 @@ export class RecordingsService {
 	private async prepareOutputPath(
 		recordingsDir: string,
 		title: string,
-		scheduledStart: Date
+		scheduledStart: Date,
+		recordingId: string
 	): Promise<string> {
-		const safeTitle = sanitizeFileNameComponent(title) || "recording";
-		const startIso = scheduledStart
-			.toISOString()
-			.replace(/[:]/g, "-")
-			// Strip the milliseconds (`.123Z` -> `Z`) so on-disk file names
-			// are easier on the eye and shell-friendly across operating
-			// systems.
-			.replace(/\.\d{3}Z$/, "Z");
-		const fileName = `${safeTitle}-${startIso}.mkv`;
+		const fileName = recordingOutputFileName(
+			title,
+			scheduledStart,
+			recordingId
+		);
 		const baseDir = resolve(recordingsDir);
 		const target = resolve(join(baseDir, fileName));
 		if (
@@ -1604,7 +1729,10 @@ export class RecordingsService {
 		this.bus.publish({
 			topic: "recordings",
 			event,
-			data: toPublicRecording(row) as unknown
+			data: toPublicRecording(row) as unknown,
+			audience: {
+				userId: row.userId ?? "00000000-0000-4000-8000-000000000001"
+			}
 		});
 	}
 }
@@ -1630,6 +1758,21 @@ async function assertRecordingDirectoryWritable(
 		throw error;
 	}
 	await rm(probePath, { force: true });
+}
+
+/** Include row identity so two accounts can record the same airing safely. */
+export function recordingOutputFileName(
+	title: string,
+	scheduledStart: Date,
+	recordingId: string
+): string {
+	const safeTitle = sanitizeFileNameComponent(title) || "recording";
+	const startIso = scheduledStart
+		.toISOString()
+		.replace(/[:]/g, "-")
+		// Strip milliseconds so names remain readable and portable.
+		.replace(/\.\d{3}Z$/, "Z");
+	return `${safeTitle}-${startIso}-${recordingId}.mkv`;
 }
 
 /** Strip / replace characters that are unsafe in file names on any OS. */
@@ -1672,16 +1815,35 @@ export function toPublicRecording(row: RecordingRecord): Recording {
 		actualStart: row.actualStart?.toISOString() ?? null,
 		actualEnd: row.actualEnd?.toISOString() ?? null,
 		startReason: publicRecordingStartReason(row),
-		filePath: row.filePath,
+		// Storage paths are machine diagnostics and never belong in user DTOs/events.
+		filePath: null,
 		fileSize: row.fileSize,
 		durationSeconds: row.durationSeconds,
-		errorMessage: row.errorMessage,
+		errorMessage: publicRecordingError(row.errorMessage),
 		seriesRuleId: row.seriesRuleId,
 		manuallyProtected: row.manuallyProtected,
 		watchedAt: row.watchedAt?.toISOString() ?? null,
 		resumePositionSeconds: row.resumePositionSeconds
 	};
 }
+
+/** Preserve actionable stable codes while replacing raw FFmpeg output. */
+function publicRecordingError(error: string | null): string | null {
+	if (error === null) return null;
+	return PUBLIC_RECORDING_ERRORS.has(error)
+		? error
+		: RECORDING_FAILED_PROCESS_TERMINATED;
+}
+
+const PUBLIC_RECORDING_ERRORS = new Set<string>([
+	RECORDING_FAILED_PROCESS_TERMINATED,
+	RECORDING_FAILED_MISSED_WINDOW,
+	RECORDING_FAILED_RETRY_WINDOW_EXHAUSTED,
+	RECORDING_FAILED_RETRIES_EXHAUSTED,
+	RECORDING_FAILED_CONFIGURATION,
+	RECORDING_FAILED_SOURCE_CONFIGURATION,
+	"file_missing"
+]);
 
 /** Detail fallback used when commercial analysis is not wired in tests. */
 function notRequestedAnalysis(): CommercialAnalysis {

@@ -23,3 +23,4 @@ export * from "./schemas/search";
 export * from "./schemas/series-rules";
 export * from "./schemas/advanced";
 export * from "./schemas/playback";
+export * from "./schemas/auth";

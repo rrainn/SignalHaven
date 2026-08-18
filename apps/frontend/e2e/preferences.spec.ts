@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 const CHANNEL_A = "00000000-0000-4000-8000-00000000000a";
 const CHANNEL_B = "00000000-0000-4000-8000-00000000000b";
@@ -40,7 +40,13 @@ const baseSettings = {
 	observability: { debugBundleEnabled: false }
 };
 
-type SettingsFixture = typeof baseSettings;
+const basePreferences = {
+	ui: baseSettings.ui,
+	channels: baseSettings.channels,
+	player: baseSettings.player
+};
+
+type PreferencesFixture = typeof basePreferences;
 
 function channel(id: string, number: string, name: string, sortOrder: number) {
 	return {
@@ -59,7 +65,7 @@ function channel(id: string, number: string, name: string, sortOrder: number) {
 }
 
 async function mockBackend(page: Page) {
-	let current: SettingsFixture = structuredClone(baseSettings);
+	let current: PreferencesFixture = structuredClone(basePreferences);
 
 	// Keep the app-boundary live subscription open without requiring the
 	// backend event server; HTTP settings responses drive this scenario.
@@ -77,9 +83,18 @@ async function mockBackend(page: Page) {
 		})
 	);
 	await page.route("**/api/v1/settings", async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify(baseSettings)
+		});
+	});
+	await page.route("**/api/v1/preferences", async (route) => {
 		if (route.request().method() === "PATCH") {
-			const patch = route.request().postDataJSON() as Partial<SettingsFixture>;
-			current = { ...current, ...patch } as SettingsFixture;
+			const patch = route
+				.request()
+				.postDataJSON() as Partial<PreferencesFixture>;
+			current = { ...current, ...patch } as PreferencesFixture;
 		}
 		await route.fulfill({
 			status: 200,
@@ -125,7 +140,7 @@ async function mockBackend(page: Page) {
 	);
 
 	return {
-		get settings() {
+		get preferences() {
 			return current;
 		}
 	};
@@ -161,8 +176,7 @@ test("preferences update Guide and Watch immediately and survive reload", async 
 	page
 }) => {
 	const backend = await mockBackend(page);
-	await page.goto("/settings");
-	await page.getByRole("tab", { name: /appearance/i }).click();
+	await page.goto("/preferences");
 
 	const saveButton = page.getByRole("button", { name: /^save$/i });
 	const comfortableHeight = await saveButton.evaluate(
@@ -176,7 +190,7 @@ test("preferences update Guide and Watch immediately and survive reload", async 
 	await expect(page.getByRole("status")).toHaveText("Saved.");
 	// Assert the user-owned setting at the persisted API boundary. Guide data
 	// requests may include adjacent prefetch buffers for seamless scrolling.
-	await expect.poll(() => backend.settings.ui.epgHoursVisible).toBe(6);
+	await expect.poll(() => backend.preferences.ui.epgHoursVisible).toBe(6);
 	await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
 	const compactHeight = await saveButton.evaluate(
 		(element) => element.getBoundingClientRect().height
@@ -187,22 +201,22 @@ test("preferences update Guide and Watch immediately and survive reload", async 
 	await expect(page.getByTestId("channels-list")).toBeVisible();
 	await page.getByTestId(`favorite-${CHANNEL_A}`).click();
 	await expect
-		.poll(() => backend.settings.channels.favorites)
+		.poll(() => backend.preferences.channels.favorites)
 		.toEqual([CHANNEL_A]);
 	await page.getByTestId(`favorite-${CHANNEL_C}`).click();
 	await expect
-		.poll(() => backend.settings.channels.favorites)
+		.poll(() => backend.preferences.channels.favorites)
 		.toEqual([CHANNEL_A, CHANNEL_C]);
 	await page.getByTestId(`hide-${CHANNEL_B}`).click();
 	await expect
-		.poll(() => backend.settings.channels.hidden)
+		.poll(() => backend.preferences.channels.hidden)
 		.toEqual([CHANNEL_B]);
 
 	await page
 		.getByRole("button", { name: "Drag to reorder Charlie" })
 		.dragTo(page.locator(`[data-channel-row-id="${CHANNEL_A}"]`));
 	await expect
-		.poll(() => backend.settings.channels.order.slice(0, 2))
+		.poll(() => backend.preferences.channels.order.slice(0, 2))
 		.toEqual([CHANNEL_C, CHANNEL_A]);
 
 	await page.getByRole("link", { name: "Guide" }).first().click();

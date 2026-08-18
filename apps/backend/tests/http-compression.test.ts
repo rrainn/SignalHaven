@@ -4,9 +4,11 @@ import test from "node:test";
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 
 test("large JSON responses are compressed for the Next.js proxy", async () => {
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		configureV1Router: (router) => {
 			// This mirrors a large Guide response without coupling the assertion to
 			// the compression middleware's default one-kilobyte threshold.

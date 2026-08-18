@@ -203,6 +203,48 @@ describe("ChannelsPage", () => {
 		);
 	});
 
+	it("keeps personal channel controls while hiding lineup mutations for users", async () => {
+		const user = userEvent.setup();
+		const persistPrefs = vi.fn().mockResolvedValue(undefined);
+		const [primary, backup] = buildChannelsFixture();
+		const grouped = {
+			...primary!,
+			sources: [
+				primary!.sources![0]!,
+				{
+					...backup!.sources![0]!,
+					preferred: false,
+					priority: 1
+				}
+			],
+			availableSourceCount: 2
+		};
+		render(
+			<ChannelsPage
+				initialChannels={[grouped, backup!]}
+				persistPrefs={persistPrefs}
+				canManageLineup={false}
+			/>
+		);
+
+		await user.click(screen.getByTestId(`favorite-${grouped.id}`));
+		expect(persistPrefs).toHaveBeenCalled();
+		for (const row of screen.getAllByTestId("channel-row")) {
+			await user.click(within(row).getByRole("checkbox"));
+		}
+		expect(screen.queryByRole("button", { name: /merge sources/i })).toBeNull();
+
+		expect(screen.queryByRole("button", { name: "2 sources" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /make preferred/i })
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: /^separate$/i })).toBeNull();
+		expect(screen.queryByText("Group")).toBeNull();
+		expect(screen.queryByText("Tuner")).toBeNull();
+		expect(screen.queryByText(/antenna/i)).toBeNull();
+		expect(screen.queryByText(/\d+ sources?/i)).toBeNull();
+	});
+
 	// Concurrent coverage work can make this intentionally large fixture exceed Vitest's default timeout.
 	it("bounds the initial render for large channel lineups", async () => {
 		const user = userEvent.setup();

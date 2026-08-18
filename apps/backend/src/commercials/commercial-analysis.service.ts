@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { CommercialAnalysis } from "@signalhaven/shared";
 
 import type { EventBus } from "../events/event-bus";
+import { BOOTSTRAP_ADMIN_USER_ID } from "../db/schema";
 import type {
 	RecordingRecord,
 	RecordingsRepository
@@ -24,6 +25,9 @@ import {
 
 /** Commercial detector work is serialized separately from recording jobs. */
 export const COMMERCIAL_ANALYSIS_JOB_KIND = "commercial-analysis";
+/** Stable public failure copy that cannot contain detector stderr or paths. */
+const COMMERCIAL_ANALYSIS_FAILED_MESSAGE =
+	"Commercial analysis failed. Try again or ask an administrator for help.";
 
 export interface CommercialAnalysisConfig {
 	enabled: boolean;
@@ -60,6 +64,11 @@ export interface ActiveCommercialAnalysisWork {
 	startedAt: string;
 }
 
+/** Internal ownership metadata is retained only long enough to scope diagnostics. */
+interface OwnedActiveCommercialAnalysisWork extends ActiveCommercialAnalysisWork {
+	userId: string;
+}
+
 export class CommercialAnalysisNotAvailableError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -75,7 +84,10 @@ export class CommercialAnalysisService {
 	private readonly resolveConfig: () => Promise<CommercialAnalysisConfig>;
 	private readonly bus: EventBus | undefined;
 	private readonly createDetector: (executable: string) => CommercialDetector;
-	private readonly activeWork = new Map<string, ActiveCommercialAnalysisWork>();
+	private readonly activeWork = new Map<
+		string,
+		OwnedActiveCommercialAnalysisWork
+	>();
 
 	constructor(options: CommercialAnalysisServiceOptions) {
 		this.repository = options.repository;
@@ -96,10 +108,16 @@ export class CommercialAnalysisService {
 		return toPublicAnalysis(await this.repository.get(recordingId));
 	}
 
-	/** Return stable, path-free snapshots for the Advanced tasks page. */
-	getActiveWork(): ActiveCommercialAnalysisWork[] {
+	/** Return stable, path-free snapshots owned by the requesting administrator. */
+	getActiveWork(userId: string): ActiveCommercialAnalysisWork[] {
 		return [...this.activeWork.values()]
-			.map((work) => ({ ...work }))
+			.filter((work) => work.userId === userId)
+			.map((work) => ({
+				recordingId: work.recordingId,
+				label: work.label,
+				state: work.state,
+				startedAt: work.startedAt
+			}))
 			.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
 	}
 
@@ -135,8 +153,13 @@ export class CommercialAnalysisService {
 				force
 			)
 		);
-		if (result.created)
-			this.publish("commercial.analysis.queued", recording.id);
+		if (result.created) {
+			this.publish(
+				"commercial.analysis.queued",
+				recording.id,
+				recording.userId ?? BOOTSTRAP_ADMIN_USER_ID
+			);
+		}
 		return result.created;
 	}
 
@@ -172,9 +195,15 @@ export class CommercialAnalysisService {
 		if (!recordingId) return;
 		const analysis = await this.repository.markRunning(recordingId);
 		if (!analysis) return;
-		this.publish("commercial.analysis.running", recordingId);
 
 		const recording = await this.recordings.getById(recordingId);
+		if (recording) {
+			this.publish(
+				"commercial.analysis.running",
+				recordingId,
+				recording.userId ?? BOOTSTRAP_ADMIN_USER_ID
+			);
+		}
 		if (
 			!recording ||
 			recording.status !== "completed" ||
@@ -183,16 +212,13 @@ export class CommercialAnalysisService {
 		) {
 			await this.fail(
 				recordingId,
-				"The completed recording file is no longer available"
+				"The recording is no longer available for commercial analysis."
 			);
 			return;
 		}
 		const config = await this.resolveConfig();
 		if (!config.enabled) {
-			await this.fail(
-				recordingId,
-				"Commercial detection was disabled before analysis began"
-			);
+			await this.fail(recordingId, "Commercial analysis is unavailable.");
 			return;
 		}
 
@@ -201,6 +227,7 @@ export class CommercialAnalysisService {
 		);
 		this.activeWork.set(recordingId, {
 			recordingId,
+			userId: recording.userId ?? BOOTSTRAP_ADMIN_USER_ID,
 			label: recording.title,
 			state: "running",
 			startedAt: analysis.startedAt?.toISOString() ?? new Date().toISOString()
@@ -218,12 +245,14 @@ export class CommercialAnalysisService {
 				recording.durationSeconds
 			);
 			await this.repository.complete(recordingId, markers);
-			this.publish("commercial.analysis.completed", recordingId);
-		} catch (error) {
-			await this.fail(
+			this.publish(
+				"commercial.analysis.completed",
 				recordingId,
-				publicDiagnostic(error, recording.filePath, config.executablePath)
+				recording.userId ?? BOOTSTRAP_ADMIN_USER_ID
 			);
+		} catch {
+			// Detector stderr is untrusted and may include host paths or secrets.
+			await this.fail(recordingId, COMMERCIAL_ANALYSIS_FAILED_MESSAGE);
 		} finally {
 			// Remove the snapshot before cleanup so completed work disappears promptly.
 			this.activeWork.delete(recordingId);
@@ -236,11 +265,23 @@ export class CommercialAnalysisService {
 
 	private async fail(recordingId: string, message: string): Promise<void> {
 		await this.repository.fail(recordingId, message);
-		this.publish("commercial.analysis.failed", recordingId);
+		const recording = await this.recordings.getById(recordingId);
+		if (recording) {
+			this.publish(
+				"commercial.analysis.failed",
+				recordingId,
+				recording.userId ?? BOOTSTRAP_ADMIN_USER_ID
+			);
+		}
 	}
 
-	private publish(event: string, recordingId: string): void {
-		this.bus?.publish({ topic: "recordings", event, data: { recordingId } });
+	private publish(event: string, recordingId: string, userId: string): void {
+		this.bus?.publish({
+			topic: "recordings",
+			event,
+			data: { recordingId },
+			audience: { userId }
+		});
 	}
 }
 
@@ -251,21 +292,6 @@ function configurationVersion(config: CommercialAnalysisConfig): string {
 		.digest("hex")
 		.slice(0, 12);
 	return `${config.detectorVersion}:${executableHash}`;
-}
-
-/** Keep diagnostics useful without exposing a recording's filesystem path. */
-function publicDiagnostic(
-	error: unknown,
-	recordingPath: string,
-	executablePath: string
-): string {
-	const message = error instanceof Error ? error.message : String(error);
-	return message
-		.split(recordingPath)
-		.join("the recording file")
-		.split(executablePath)
-		.join("the detector executable")
-		.slice(0, 500);
 }
 
 /** Map nullable persistence into the explicit not-requested API state. */
@@ -291,8 +317,23 @@ function toPublicAnalysis(
 		startedAt: analysis.startedAt?.toISOString() ?? null,
 		completedAt: analysis.completedAt?.toISOString() ?? null,
 		failedAt: analysis.failedAt?.toISOString() ?? null,
-		diagnosticMessage: analysis.diagnosticMessage,
-		detectorVersion: analysis.detectorVersion,
+		// Sanitize legacy rows too; older releases persisted bounded stderr.
+		diagnosticMessage:
+			analysis.status === "failed" && analysis.diagnosticMessage
+				? COMMERCIAL_ANALYSIS_FAILED_MESSAGE
+				: null,
+		detectorVersion: publicDetectorVersion(analysis.detectorVersion),
 		markers: detail.markers
 	};
+}
+
+/** Hide the executable-path fingerprint used only for internal requeue checks. */
+function publicDetectorVersion(version: string | null): string | null {
+	if (!version) return null;
+	const match = /^(.*):[a-f0-9]{12}$/.exec(version);
+	if (match?.[1]) return match[1];
+	if (version.includes("/") || version.includes("\\")) {
+		return version.split(":", 1)[0] ?? null;
+	}
+	return version;
 }

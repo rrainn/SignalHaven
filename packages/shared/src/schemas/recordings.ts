@@ -29,9 +29,8 @@ export const recordingStartReasonSchema = z.enum(["late_start"]);
 export type RecordingStartReason = z.infer<typeof recordingStartReasonSchema>;
 
 /**
- * Persisted recording row, as returned by the API. Date-typed fields are
- * serialised as ISO 8601 strings so JSON consumers don't have to
- * special-case them.
+ * Account-owned recording returned by the API. Internal filesystem paths and
+ * raw recorder output are never serialized. Date-typed fields use ISO 8601.
  */
 export const recordingSchema = z.object({
 	id: z.string().uuid(),
@@ -44,10 +43,18 @@ export const recordingSchema = z.object({
 	actualStart: z.string().nullable(),
 	actualEnd: z.string().nullable(),
 	startReason: recordingStartReasonSchema.nullable().default(null),
-	filePath: z.string().nullable(),
+	filePath: z
+		.string()
+		.nullable()
+		.describe(
+			"Compatibility placeholder that is always null; storage paths are private"
+		),
 	fileSize: z.number().nullable(),
 	durationSeconds: z.number().nullable(),
-	errorMessage: z.string().nullable(),
+	errorMessage: z
+		.string()
+		.nullable()
+		.describe("Stable recording failure code; never raw FFmpeg output"),
 	/** Set when the row was created by a series rule (rrainn/SignalHaven#R3-series). */
 	seriesRuleId: z.string().uuid().nullable().default(null),
 	/** When true, automatic `keepCount` eviction will leave this row alone. */
@@ -118,8 +125,14 @@ export const commercialAnalysisSchema = z.object({
 	startedAt: z.string().nullable(),
 	completedAt: z.string().nullable(),
 	failedAt: z.string().nullable(),
-	diagnosticMessage: z.string().nullable(),
-	detectorVersion: z.string().nullable(),
+	diagnosticMessage: z
+		.string()
+		.nullable()
+		.describe("Stable, path-free commercial-analysis failure message"),
+	detectorVersion: z
+		.string()
+		.nullable()
+		.describe("Public detector version without executable-path fingerprints"),
 	markers: z.array(commercialMarkerSchema)
 });
 
@@ -256,6 +269,9 @@ export const recordingListSchema = z.object({
 
 export type RecordingList = z.infer<typeof recordingListSchema>;
 
+/** Bounds one-off recordings to protect tuner capacity. */
+export const RECORDING_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
+
 /**
  * POST body. `start` / `end` are ISO 8601 timestamps; `end` must be
  * strictly after `start` (and at least one second long so we never
@@ -272,6 +288,12 @@ export const recordingCreateSchema = z
 	.refine(
 		(value) => new Date(value.end).getTime() > new Date(value.start).getTime(),
 		{ message: "`end` must be strictly after `start`", path: ["end"] }
+	)
+	.refine(
+		(value) =>
+			new Date(value.end).getTime() - new Date(value.start).getTime() <=
+			RECORDING_MAX_DURATION_MS,
+		{ message: "Recording duration cannot exceed 24 hours", path: ["end"] }
 	);
 
 export type RecordingCreate = z.infer<typeof recordingCreateSchema>;

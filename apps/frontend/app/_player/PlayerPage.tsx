@@ -1,9 +1,12 @@
 "use client";
 
-import { settingsDefaults, type PlayerSettings } from "@signalhaven/shared";
+import {
+	userPreferencesDefaults,
+	type PlayerSettings
+} from "@signalhaven/shared";
 import { useCallback, useEffect, useState } from "react";
 
-import { updateSettings } from "../../lib/api-client";
+import { updatePreferences } from "../../lib/api-client";
 import { usePreferencesOptional } from "../_preferences/PreferencesProvider";
 import { Player, type PlayerSavePayload } from "./Player";
 
@@ -20,7 +23,7 @@ export interface PlayerPageProps {
 	 */
 	initialPlayerSettings?: PlayerSettings | undefined;
 	/**
-	 * Persistence override for tests. Defaults to PATCH /api/v1/settings
+	 * Persistence override for tests. Defaults to PATCH /api/v1/preferences
 	 * with the merged `player` payload.
 	 */
 	persist?: ((next: PlayerSettings) => Promise<void>) | undefined;
@@ -30,7 +33,7 @@ export interface PlayerPageProps {
 
 /**
  * Route-level wrapper around {@link Player} that handles persistence of
- * player preferences via the settings API. Splits the network concerns
+ * player preferences via the account preferences API. Splits network concerns
  * out of the player itself so the player stays pure / testable.
  */
 export function PlayerPage(props: PlayerPageProps) {
@@ -50,19 +53,19 @@ export function PlayerPage(props: PlayerPageProps) {
 			(preferences
 				? preferences.status === "loading"
 					? null
-					: preferences.settings.player
-				: settingsDefaults.player)
+					: preferences.preferences.player
+				: userPreferencesDefaults.player)
 	);
 
 	useEffect(() => {
 		if (initialPlayerSettings) return;
 		if (preferences) {
 			if (preferences.status !== "loading") {
-				setSettings(preferences.settings.player);
+				setSettings(preferences.preferences.player);
 			}
 			return;
 		}
-		setSettings(settingsDefaults.player);
+		setSettings(userPreferencesDefaults.player);
 	}, [initialPlayerSettings, preferences]);
 
 	const onPersist = useCallback(
@@ -86,9 +89,9 @@ export function PlayerPage(props: PlayerPageProps) {
 				if (persist) {
 					await persist(next);
 				} else if (preferences) {
-					await preferences.saveSettings({ player: next });
+					await preferences.savePreferences({ player: next });
 				} else {
-					await updateSettings({ player: next });
+					await updatePreferences({ player: next });
 				}
 			} catch (err) {
 				// Roll back optimistic state on a hard failure so the UI shows

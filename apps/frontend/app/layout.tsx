@@ -1,11 +1,10 @@
 import type { Metadata, Viewport } from "next";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import "./globals.css";
-import { AdvancedModeProvider } from "./_advanced/AdvancedModeProvider";
-import { AppShell } from "./_layout/AppShell";
-import { OnboardingProvider } from "./_onboarding/OnboardingProvider";
-import { PreferencesProvider } from "./_preferences/PreferencesProvider";
+import { AuthGate } from "./_auth/AuthGate";
+import { AuthProvider } from "./_auth/AuthProvider";
+import { AuthCheckingSurface } from "./_auth/AuthSurface";
 import { ServiceWorkerRegistrar } from "./_pwa/ServiceWorkerRegistrar";
 import { appearanceBootstrapScript } from "./_settings/appearance";
 import { themeBootstrapScript } from "./_theme/theme";
@@ -84,13 +83,11 @@ export default function RootLayout({ children }: RootLayoutProps) {
 			</head>
 			<body className="antialiased">
 				<ThemeProvider>
-					<PreferencesProvider>
-						<AdvancedModeProvider>
-							<OnboardingProvider>
-								<AppShell>{children}</AppShell>
-							</OnboardingProvider>
-						</AdvancedModeProvider>
-					</PreferencesProvider>
+					<AuthProvider>
+						<Suspense fallback={<AuthCheckingSurface />}>
+							<AuthGate>{children}</AuthGate>
+						</Suspense>
+					</AuthProvider>
 				</ThemeProvider>
 				<ServiceWorkerRegistrar />
 			</body>

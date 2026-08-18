@@ -1,4 +1,9 @@
 import {
+	authLoginSchema,
+	authMeSchema,
+	authSessionSchema,
+	authSetupSchema,
+	authStatusSchema,
 	channelListSchema,
 	channelMergeSchema,
 	channelQualitySchema,
@@ -39,6 +44,16 @@ import {
 	tunerSchema,
 	tunerStatusSchema,
 	tunerSyncResponseSchema,
+	userCreateSchema,
+	userListSchema,
+	userPreferencesPatchSchema,
+	userPreferencesSchema,
+	userSchema,
+	type AuthLogin,
+	type AuthMe,
+	type AuthSession,
+	type AuthSetup,
+	type AuthStatus,
 	type ChannelList,
 	type ChannelMerge,
 	type ChannelQuality,
@@ -80,9 +95,17 @@ import {
 	type TunerList,
 	type TunerPatch,
 	type TunerStatus,
-	type TunerSyncResponse
+	type TunerSyncResponse,
+	type User,
+	type UserCreate,
+	type UserList,
+	type UserPreferences,
+	type UserPreferencesPatch
 } from "@signalhaven/shared";
 import { z, type ZodType } from "zod";
+
+import { SESSION_EXPIRED_EVENT } from "./app-events";
+import { mayShowAdvancedDiagnostics } from "./account-browser-state";
 
 /**
  * Typed `fetch` wrapper for the SignalHaven backend.
@@ -145,6 +168,9 @@ export async function apiRequest<T>(
 
 	const res = await fetch(buildUrl(path), {
 		...rest,
+		// Browser authentication is cookie-backed. Keeping this explicit protects
+		// future API-base changes from silently dropping the session cookie.
+		credentials: rest.credentials ?? "same-origin",
 		headers: finalHeaders,
 		body
 	});
@@ -164,9 +190,12 @@ export async function apiRequest<T>(
 	}
 
 	if (!res.ok) {
+		if (res.status === 401 && typeof window !== "undefined") {
+			window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+		}
 		const generic = `Request failed: ${res.status} ${res.statusText}`;
 		throw new ApiError(
-			advancedModeEnabled()
+			mayShowAdvancedDiagnostics()
 				? detailedApiMessage(payload, generic, res.status)
 				: generic,
 			res.status,
@@ -183,19 +212,6 @@ export async function apiRequest<T>(
 	}
 	return parsed.data;
 }
-
-/** Read the local-only switch without coupling the API layer to React. */
-function advancedModeEnabled(): boolean {
-	if (typeof window === "undefined") return false;
-	try {
-		return (
-			window.localStorage.getItem("signalhaven.advanced-mode.v1") === "true"
-		);
-	} catch {
-		return false;
-	}
-}
-
 /** Attach safe server diagnostics that make support reports actionable. */
 function detailedApiMessage(
 	payload: unknown,
@@ -223,6 +239,92 @@ export function getHealth(init?: ApiRequestInit): Promise<HealthResponse> {
 
 export function getSystemStatus(init?: ApiRequestInit): Promise<SystemStatus> {
 	return apiRequest("/api/v1/system/status", systemStatusSchema, init);
+}
+
+/** Resolve account bootstrap and current-session state without exposing secrets. */
+export function getAuthStatus(init?: ApiRequestInit): Promise<AuthStatus> {
+	return apiRequest("/api/v1/auth/status", authStatusSchema, {
+		...init,
+		cache: "no-store"
+	});
+}
+
+/** Create the only administrator that may be provisioned without a session. */
+export function setupInitialAdmin(
+	body: Pick<AuthSetup, "username" | "password">,
+	init?: ApiRequestInit
+): Promise<AuthSession> {
+	const payload = authSetupSchema.parse({ ...body, transport: "cookie" });
+	return apiRequest("/api/v1/auth/setup", authSessionSchema, {
+		...init,
+		method: "POST",
+		json: payload
+	});
+}
+
+/** Start a cookie-backed browser session. Bearer tokens remain native-only. */
+export function login(
+	body: Pick<AuthLogin, "username" | "password">,
+	init?: ApiRequestInit
+): Promise<AuthSession> {
+	const payload = authLoginSchema.parse({ ...body, transport: "cookie" });
+	return apiRequest("/api/v1/auth/login", authSessionSchema, {
+		...init,
+		method: "POST",
+		json: payload
+	});
+}
+
+/** Re-read the current authenticated identity. */
+export function getCurrentUser(init?: ApiRequestInit): Promise<AuthMe> {
+	return apiRequest("/api/v1/auth/me", authMeSchema, {
+		...init,
+		cache: "no-store"
+	});
+}
+
+/** End the cookie session before client-owned account state is discarded. */
+export async function logout(init?: ApiRequestInit): Promise<void> {
+	await apiRequest("/api/v1/auth/logout", z.unknown(), {
+		...init,
+		method: "POST"
+	});
+}
+
+/** List local accounts. The backend restricts this operation to administrators. */
+export function listUsers(init?: ApiRequestInit): Promise<UserList> {
+	return apiRequest("/api/v1/users", userListSchema, init);
+}
+
+/** Create a standard local account; callers cannot elevate the requested role. */
+export function createUser(
+	body: UserCreate,
+	init?: ApiRequestInit
+): Promise<User> {
+	return apiRequest("/api/v1/users", userSchema, {
+		...init,
+		method: "POST",
+		json: userCreateSchema.parse(body)
+	});
+}
+
+/** Load only the guide, playback, and appearance state owned by this user. */
+export function getPreferences(
+	init?: ApiRequestInit
+): Promise<UserPreferences> {
+	return apiRequest("/api/v1/preferences", userPreferencesSchema, init);
+}
+
+/** Patch the signed-in user's preferences without granting system settings access. */
+export function updatePreferences(
+	body: UserPreferencesPatch,
+	init?: ApiRequestInit
+): Promise<UserPreferences> {
+	return apiRequest("/api/v1/preferences", userPreferencesSchema, {
+		...init,
+		method: "PATCH",
+		json: userPreferencesPatchSchema.parse(body)
+	});
 }
 
 /** Load build metadata independently of database-backed system status. */
@@ -603,9 +705,17 @@ export async function prepareRecordingPlayback(
 	const path = buildRecordingPlaybackUrl(recordingId, startSeconds, viewerId);
 	const headers = new Headers(init.headers);
 	headers.set("Accept", "application/vnd.apple.mpegurl");
-	const response = await fetch(buildUrl(path), { ...init, headers });
+	const response = await fetch(buildUrl(path), {
+		...init,
+		credentials: init.credentials ?? "same-origin",
+		cache: init.cache ?? "no-store",
+		headers
+	});
 	const body = await response.text();
 	if (!response.ok) {
+		if (response.status === 401 && typeof window !== "undefined") {
+			window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+		}
 		let payload: unknown = body;
 		try {
 			payload = body.length > 0 ? JSON.parse(body) : undefined;

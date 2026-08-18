@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 /**
  * End-to-end smoke test for the first-run onboarding wizard.

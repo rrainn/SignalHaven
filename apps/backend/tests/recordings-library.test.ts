@@ -23,6 +23,8 @@ import type {
 import { Scheduler } from "../src/scheduler/scheduler";
 import { TunerAllocator } from "../src/tuners/tuner-allocator";
 
+const DEFAULT_USER_ID = "00000000-0000-4000-8000-000000000001";
+
 /**
  * In-memory `RecordingsRepository` stand-in covering the surface area
  * exercised by the library-management tests (filtered listing, quota
@@ -193,17 +195,37 @@ class FakeRecordingsRepo {
 		return row;
 	}
 
-	async sumCompletedSize(): Promise<number> {
+	async deleteEvictionCandidate(id: string): Promise<RecordingRecord | null> {
+		const row = this.rows.get(id);
+		if (!row || row.status !== "completed" || row.manuallyProtected) {
+			return null;
+		}
+		this.rows.delete(id);
+		return row;
+	}
+
+	async sumCompletedSize(userId?: string): Promise<number> {
 		let total = 0;
 		for (const row of this.rows.values()) {
-			if (row.status === "completed" && row.fileSize) total += row.fileSize;
+			if (
+				row.status === "completed" &&
+				row.fileSize &&
+				(userId === undefined || row.userId === userId)
+			) {
+				total += row.fileSize;
+			}
 		}
 		return total;
 	}
 
-	async listEvictionCandidates(): Promise<RecordingRecord[]> {
+	async listEvictionCandidates(userId?: string): Promise<RecordingRecord[]> {
 		return [...this.rows.values()]
-			.filter((r) => r.status === "completed" && !r.manuallyProtected)
+			.filter(
+				(r) =>
+					r.status === "completed" &&
+					!r.manuallyProtected &&
+					(userId === undefined || r.userId === userId)
+			)
 			.sort((a, b) => {
 				const av = a.actualStart ?? a.scheduledStart;
 				const bv = b.actualStart ?? b.scheduledStart;
@@ -349,6 +371,7 @@ function makeRow(input: Partial<RecordingRecord> = {}): RecordingRecord {
 	const now = new Date();
 	return {
 		id: randomUUID(),
+		userId: DEFAULT_USER_ID,
 		channelId: randomUUID(),
 		programId: null,
 		title: "Show",
@@ -790,6 +813,37 @@ test("patch(): updates resumePositionSeconds + manuallyProtected", async () => {
 	await rm(tmp, { recursive: true, force: true });
 });
 
+test("deleteForLibraryMaintenance(): loses safely to protection or an explicit keep-file delete", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-maint-race-"));
+	const protectedPath = join(tmp, "protected.mkv");
+	const retainedPath = join(tmp, "retained.mkv");
+	await Promise.all([
+		writeFile(protectedPath, "protected"),
+		writeFile(retainedPath, "retained")
+	]);
+	const protectedRow = repo.add(
+		makeRow({ filePath: protectedPath, manuallyProtected: false })
+	);
+	const explicitlyDeleted = repo.add(makeRow({ filePath: retainedPath }));
+	const svc = buildService({ repo, tmp });
+
+	// These changes happen after a maintenance candidate snapshot was taken.
+	protectedRow.manuallyProtected = true;
+	await repo.delete(explicitlyDeleted.id);
+
+	assert.equal(await svc.deleteForLibraryMaintenance(protectedRow.id), false);
+	assert.equal(
+		await svc.deleteForLibraryMaintenance(explicitlyDeleted.id),
+		false
+	);
+	assert.equal(repo.rows.has(protectedRow.id), true);
+	assert.equal((await stat(protectedPath)).isFile(), true);
+	assert.equal((await stat(retainedPath)).isFile(), true);
+
+	await rm(tmp, { recursive: true, force: true });
+});
+
 // ---------- enforceStorageQuota ----------
 
 test("enforceStorageQuota(): evicts oldest non-protected recordings until under quota", async () => {
@@ -834,7 +888,7 @@ test("enforceStorageQuota(): evicts oldest non-protected recordings until under 
 	);
 
 	const svc = buildService({ repo, tmp, quotaBytes: 2048 });
-	const result = await svc.enforceStorageQuota();
+	const result = await svc.enforceStorageQuota(DEFAULT_USER_ID);
 
 	assert.equal(result.deleted, 1);
 	assert.equal(repo.rows.has(oldest.id), false, "oldest should be evicted");
@@ -887,7 +941,7 @@ test("enforceStorageQuota(): skips manuallyProtected rows even when oldest", asy
 	);
 
 	const svc = buildService({ repo, tmp, quotaBytes: 2048 });
-	const result = await svc.enforceStorageQuota();
+	const result = await svc.enforceStorageQuota(DEFAULT_USER_ID);
 
 	assert.equal(result.deleted, 1);
 	assert.ok(
@@ -901,16 +955,118 @@ test("enforceStorageQuota(): skips manuallyProtected rows even when oldest", asy
 	await rm(tmp, { recursive: true, force: true });
 });
 
+test("enforceStorageQuota(): an account can never evict another account's library", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-quota-owner-"));
+	const firstUserId = randomUUID();
+	const secondUserId = randomUUID();
+	const createFile = async (name: string): Promise<string> => {
+		const path = join(tmp, name);
+		await writeFile(path, Buffer.alloc(1024, 0));
+		return path;
+	};
+	const otherUsersOldest = repo.add(
+		makeRow({
+			userId: firstUserId,
+			filePath: await createFile("first-user.mkv"),
+			fileSize: 1024,
+			actualStart: new Date("2024-01-01"),
+			scheduledStart: new Date("2024-01-01")
+		})
+	);
+	const triggeringUsersRecording = repo.add(
+		makeRow({
+			userId: secondUserId,
+			filePath: await createFile("second-user-old.mkv"),
+			fileSize: 1024,
+			actualStart: new Date("2025-01-01"),
+			scheduledStart: new Date("2025-01-01")
+		})
+	);
+	const triggeringUsersNewest = repo.add(
+		makeRow({
+			userId: secondUserId,
+			filePath: await createFile("second-user-new.mkv"),
+			fileSize: 1024,
+			actualStart: new Date("2026-01-01"),
+			scheduledStart: new Date("2026-01-01")
+		})
+	);
+	const svc = buildService({ repo, tmp, quotaBytes: 1024 });
+
+	const result = await svc.enforceStorageQuota(secondUserId);
+
+	assert.equal(result.deleted, 2);
+	assert.equal(repo.rows.has(otherUsersOldest.id), true);
+	assert.equal(repo.rows.has(triggeringUsersRecording.id), false);
+	assert.equal(repo.rows.has(triggeringUsersNewest.id), false);
+	await rm(tmp, { recursive: true, force: true });
+});
+
+test("enforceStorageQuota(): global usage evicts only the account that adds bytes", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-quota-isolated-"));
+	const firstUserId = randomUUID();
+	const secondUserId = randomUUID();
+	for (let index = 0; index < 3; index += 1) {
+		repo.add(
+			makeRow({
+				userId: firstUserId,
+				fileSize: 1024,
+				scheduledStart: new Date(2025, 0, index + 1)
+			})
+		);
+	}
+	const secondUsersOnlyRecording = repo.add(
+		makeRow({ userId: secondUserId, fileSize: 1024 })
+	);
+	const svc = buildService({ repo, tmp, quotaBytes: 1024 });
+
+	assert.equal((await svc.enforceStorageQuota(secondUserId)).deleted, 1);
+	assert.equal(repo.rows.has(secondUsersOnlyRecording.id), false);
+	assert.equal(
+		[...repo.rows.values()].every((row) => row.userId === firstUserId),
+		true,
+		"global cleanup must not delete another account's private library"
+	);
+	await rm(tmp, { recursive: true, force: true });
+});
+
+test("runLibraryMaintenance(): serializes destructive library decisions", async () => {
+	const repo = new FakeRecordingsRepo();
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-maintenance-"));
+	const svc = buildService({ repo, tmp });
+	const order: string[] = [];
+	let releaseFirst: (() => void) | undefined;
+	const firstCanFinish = new Promise<void>((resolve) => {
+		releaseFirst = resolve;
+	});
+	const first = svc.runLibraryMaintenance(async () => {
+		order.push("first:start");
+		await firstCanFinish;
+		order.push("first:end");
+	});
+	const second = svc.runLibraryMaintenance(async () => {
+		order.push("second");
+	});
+	await Promise.resolve();
+	assert.deepEqual(order, ["first:start"]);
+	releaseFirst?.();
+	await Promise.all([first, second]);
+	assert.deepEqual(order, ["first:start", "first:end", "second"]);
+	await rm(tmp, { recursive: true, force: true });
+});
+
 test("enforceStorageQuota(): no-op when under quota or quota disabled", async () => {
 	const repo = new FakeRecordingsRepo();
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-lib-quota-noop-"));
 	repo.add(makeRow({ fileSize: 1024 }));
 
 	const svc1 = buildService({ repo, tmp, quotaBytes: 1_000_000 });
-	assert.equal((await svc1.enforceStorageQuota()).deleted, 0);
+	assert.equal((await svc1.enforceStorageQuota(DEFAULT_USER_ID)).deleted, 0);
 
 	const svc2 = buildService({ repo, tmp, quotaBytes: null });
-	assert.equal((await svc2.enforceStorageQuota()).deleted, 0);
+	assert.equal((await svc2.enforceStorageQuota(DEFAULT_USER_ID)).deleted, 0);
 
 	await rm(tmp, { recursive: true, force: true });
 });
@@ -1070,7 +1226,8 @@ test("attachLibraryMaintenance(): runs quota enforcement on recording.completed"
 	bus.publish({
 		topic: "recordings",
 		event: RECORDING_EVENT.completed,
-		data: {}
+		data: {},
+		audience: { userId: DEFAULT_USER_ID }
 	});
 	// Allow the queued microtask to drain.
 	await new Promise((r) => setTimeout(r, 50));

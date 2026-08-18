@@ -4,6 +4,7 @@ import { access, stat } from "node:fs/promises";
 import type { HwaccelKind } from "@signalhaven/shared";
 
 import type { EventBus } from "../events/event-bus";
+import { BOOTSTRAP_ADMIN_USER_ID } from "../db/schema";
 import type {
 	RecordingRecord,
 	RecordingsRepository
@@ -109,6 +110,22 @@ export interface RecordingPlaybackServiceOptions {
 	logger?: RecordingPlaybackLogger;
 	/** Resolve current hardware acceleration without coupling sessions to settings. */
 	resolveHwaccel?: () => Promise<HwaccelKind | null>;
+	/** Re-evaluate the owner's quota after persistent playback cache growth. */
+	onStorageSizeChanged?: (userId: string) => void;
+	maxSessions?: number;
+	maxSessionsPerUser?: number;
+}
+
+export const MAX_RECORDING_PLAYBACK_SESSIONS = 8;
+export const MAX_RECORDING_PLAYBACK_SESSIONS_PER_USER = 3;
+
+export class RecordingPlaybackCapacityError extends Error {
+	readonly statusCode = 429;
+	readonly code = "recording_playback_capacity";
+	constructor() {
+		super("Recording playback capacity is currently in use; try again shortly");
+		this.name = "RecordingPlaybackCapacityError";
+	}
 }
 
 interface PendingPlaybackSession {
@@ -142,6 +159,10 @@ export class RecordingPlaybackService {
 	private readonly operatorStopQuietMs: number;
 	private readonly logger: RecordingPlaybackLogger | undefined;
 	private readonly resolveHwaccel: () => Promise<HwaccelKind | null>;
+	private readonly onStorageSizeChanged: ((userId: string) => void) | undefined;
+	private readonly maxSessions: number;
+	private readonly maxSessionsPerUser: number;
+	private readonly reservationsByUser = new Map<string, number>();
 	private readonly sessions = new Map<string, PendingPlaybackSession>();
 	private readonly viewerSessions = new Map<string, PendingPlaybackSession>();
 	private readonly operatorStopBarriers = new Map<
@@ -160,6 +181,10 @@ export class RecordingPlaybackService {
 		this.operatorStopQuietMs = options.operatorStopQuietMs ?? 10_000;
 		this.logger = options.logger;
 		this.resolveHwaccel = options.resolveHwaccel ?? (async () => null);
+		this.onStorageSizeChanged = options.onStorageSizeChanged;
+		this.maxSessions = options.maxSessions ?? MAX_RECORDING_PLAYBACK_SESSIONS;
+		this.maxSessionsPerUser =
+			options.maxSessionsPerUser ?? MAX_RECORDING_PLAYBACK_SESSIONS_PER_USER;
 	}
 
 	/** Create or reuse a session and return its recording-scoped media playlist. */
@@ -167,7 +192,8 @@ export class RecordingPlaybackService {
 		recordingId: string,
 		context: RecordingPlaybackRequestContext = {},
 		startSeconds = 0,
-		viewerId?: string
+		viewerId?: string,
+		mediaTicket?: string
 	): Promise<string> {
 		const normalizedStart = normalizeStartSeconds(startSeconds);
 		const { pending, session } = await this.getOrCreate(
@@ -184,7 +210,8 @@ export class RecordingPlaybackService {
 		try {
 			return await session.readPlaylist(
 				viewerId,
-				clampStartSeconds(normalizedStart, pending.durationSeconds)
+				clampStartSeconds(normalizedStart, pending.durationSeconds),
+				mediaTicket
 			);
 		} catch (error) {
 			if (session.getState() === "stopped") {
@@ -199,7 +226,8 @@ export class RecordingPlaybackService {
 		recordingId: string,
 		sessionId: string,
 		segment: string,
-		viewerId?: string
+		viewerId?: string,
+		mediaTicket?: string
 	): Promise<Buffer> {
 		const pending = [...this.sessions.values()].find(
 			(entry) =>
@@ -220,7 +248,7 @@ export class RecordingPlaybackService {
 			throw new RecordingPlaybackSessionExpiredError();
 		}
 		try {
-			return await session.readSegment(segment, viewerId);
+			return await session.readSegment(segment, viewerId, mediaTicket);
 		} catch {
 			if (session.getState() === "stopped") {
 				throw new RecordingPlaybackSessionExpiredError();
@@ -342,6 +370,11 @@ export class RecordingPlaybackService {
 		this.assertNotOperatorStopped(key, recordingId);
 		let pending = this.sessions.get(key);
 		if (!pending) {
+			// Publish the pending key before any repository I/O so concurrent
+			// requests for one recording can never create duplicate FFmpeg work.
+			if (this.sessions.size >= this.maxSessions) {
+				throw new RecordingPlaybackCapacityError();
+			}
 			pending = {
 				key,
 				recordingId,
@@ -365,9 +398,8 @@ export class RecordingPlaybackService {
 		try {
 			session = await pending.ready;
 		} catch (error) {
-			if (this.sessions.get(key) === pending) {
-				this.sessions.delete(key);
-			}
+			// Failed startup has no session stop callback, so clear every viewer index here.
+			this.cleanupPending(pending);
 			if (
 				error instanceof RecordingPlaybackUnavailableError ||
 				error instanceof RecordingPlaybackNotFoundError ||
@@ -390,65 +422,93 @@ export class RecordingPlaybackService {
 		context: RecordingPlaybackRequestContext
 	): Promise<RecordingPlaybackSession> {
 		const recording = await this.loadPlayableRecording(recordingId);
-		pending.durationSeconds = recording.durationSeconds;
-		const hwaccel = await this.resolveHwaccel().catch(() => null);
-		let session = this.createPlaybackSession(
-			recordingId,
-			recording.filePath as string,
-			hwaccel
-		);
-		pending.session = session;
-		if (pending.legacyOwner) session.retainForLegacyRequests();
+		const userId = recording.userId ?? BOOTSTRAP_ADMIN_USER_ID;
+		const userReservations = this.reservationsByUser.get(userId) ?? 0;
+		if (userReservations >= this.maxSessionsPerUser) {
+			throw new RecordingPlaybackCapacityError();
+		}
+		// Check + reserve share one event-loop turn after ownership resolves.
+		this.reservationsByUser.set(userId, userReservations + 1);
+		let reservationTransferred = false;
 		try {
-			await session.start();
-		} catch (error) {
-			// A failed attempt finalizes asynchronously; wait for artifact cleanup
-			// before assigning the software process to this shared pending session.
-			await session.stop();
-			if (pending.cancelled) {
-				throw new RecordingPlaybackSessionExpiredError();
-			}
-			if (!shouldRetryInSoftware(error, hwaccel)) {
-				const diagnosticLogged = this.logPreparationFailure(
-					recordingId,
-					session,
-					context
-				);
-				throw this.wrapPreparationError(error, diagnosticLogged);
-			}
-
-			this.publishSoftwareFallback(recordingId, session, hwaccel);
-			session = this.createPlaybackSession(
+			pending.durationSeconds = recording.durationSeconds;
+			const hwaccel = await this.resolveHwaccel().catch(() => null);
+			let session = this.createPlaybackSession(
 				recordingId,
+				recording.userId ?? BOOTSTRAP_ADMIN_USER_ID,
 				recording.filePath as string,
-				null
+				hwaccel
 			);
 			pending.session = session;
 			if (pending.legacyOwner) session.retainForLegacyRequests();
 			try {
 				await session.start();
 			} catch (error) {
+				// A failed attempt finalizes asynchronously; wait for artifact cleanup
+				// before assigning the software process to this shared pending session.
 				await session.stop();
 				if (pending.cancelled) {
 					throw new RecordingPlaybackSessionExpiredError();
 				}
-				const diagnosticLogged = this.logPreparationFailure(
+				if (!shouldRetryInSoftware(error, hwaccel)) {
+					const diagnosticLogged = this.logPreparationFailure(
+						recordingId,
+						session,
+						context
+					);
+					throw this.wrapPreparationError(error, diagnosticLogged);
+				}
+
+				this.publishSoftwareFallback(
 					recordingId,
-					session,
-					context
+					recording.userId ?? BOOTSTRAP_ADMIN_USER_ID
 				);
-				throw this.wrapPreparationError(error, diagnosticLogged);
+				session = this.createPlaybackSession(
+					recordingId,
+					recording.userId ?? BOOTSTRAP_ADMIN_USER_ID,
+					recording.filePath as string,
+					null
+				);
+				pending.session = session;
+				if (pending.legacyOwner) session.retainForLegacyRequests();
+				try {
+					await session.start();
+				} catch (error) {
+					await session.stop();
+					if (pending.cancelled) {
+						throw new RecordingPlaybackSessionExpiredError();
+					}
+					const diagnosticLogged = this.logPreparationFailure(
+						recordingId,
+						session,
+						context
+					);
+					throw this.wrapPreparationError(error, diagnosticLogged);
+				}
 			}
+			if (pending.cancelled) {
+				await session.stop();
+				throw new RecordingPlaybackSessionExpiredError();
+			}
+			session.onStopped(() => {
+				this.cleanupPending(pending, session);
+				this.releaseUserReservation(userId);
+			});
+			reservationTransferred = true;
+			await this.updateCachedStorageSize(recording);
+			if (pending.cancelled || session.getState() === "stopped") {
+				throw new RecordingPlaybackSessionExpiredError();
+			}
+			return session;
+		} finally {
+			if (!reservationTransferred) this.releaseUserReservation(userId);
 		}
-		if (pending.cancelled) {
-			await session.stop();
-			throw new RecordingPlaybackSessionExpiredError();
-		}
-		await this.updateCachedStorageSize(recording);
-		session.onStopped(() => {
-			this.cleanupPending(pending, session);
-		});
-		return session;
+	}
+
+	private releaseUserReservation(userId: string): void {
+		const next = (this.reservationsByUser.get(userId) ?? 1) - 1;
+		if (next > 0) this.reservationsByUser.set(userId, next);
+		else this.reservationsByUser.delete(userId);
 	}
 
 	/** Persist total source and playback-cache bytes for quota enforcement. */
@@ -464,6 +524,7 @@ export class RecordingPlaybackService {
 			await this.repository.update(recording.id, {
 				fileSize: source.size + cacheSize
 			});
+			this.onStorageSizeChanged?.(recording.userId ?? BOOTSTRAP_ADMIN_USER_ID);
 		} catch {
 			// Playback remains valid when nonessential quota bookkeeping races deletion.
 		}
@@ -502,11 +563,13 @@ export class RecordingPlaybackService {
 	/** Build one playback attempt while keeping hardware and software plans equal. */
 	private createPlaybackSession(
 		recordingId: string,
+		userId: string,
 		inputPath: string,
 		hwaccel: HwaccelKind | null
 	): RecordingPlaybackSession {
 		return new RecordingPlaybackSession({
 			recordingId,
+			userId,
 			inputPath,
 			cacheDir: recordingPlaybackCachePath(inputPath),
 			hwaccel,
@@ -596,20 +659,15 @@ export class RecordingPlaybackService {
 	}
 
 	/** Publish only the stable category so FFmpeg paths cannot leak to clients. */
-	private publishSoftwareFallback(
-		recordingId: string,
-		session: RecordingPlaybackSession,
-		hwaccel: HwaccelKind
-	): void {
+	private publishSoftwareFallback(recordingId: string, userId: string): void {
 		this.bus?.publish({
 			topic: "recordings",
 			event: "recording.playback.software_fallback",
 			data: {
 				recordingId,
-				playbackSessionId: session.sessionId,
-				hwaccel,
 				reason: "hwaccel_init_failed"
-			}
+			},
+			audience: { userId }
 		});
 	}
 
@@ -686,12 +744,7 @@ function unavailableForStatus(
 				409,
 				RECORDING_PLAYBACK_ERROR_CODE.failed,
 				"This recording failed and has no completed media to play.",
-				{
-					status: recording.status,
-					...(recording.errorMessage
-						? { recordingError: recording.errorMessage }
-						: {})
-				}
+				{ status: recording.status }
 			);
 		case "cancelled":
 			return new RecordingPlaybackUnavailableError(

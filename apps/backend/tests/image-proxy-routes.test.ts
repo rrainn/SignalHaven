@@ -4,6 +4,7 @@ import test from "node:test";
 import express from "express";
 import request from "supertest";
 
+import { createTestAuthentication } from "../src/auth/middleware";
 import { createChannelsRouter } from "../src/http/routes/channels";
 import { createRecordingsRouter } from "../src/http/routes/recordings";
 import type { RemoteImageProxy } from "../src/media/remote-image-proxy";
@@ -13,14 +14,19 @@ const RECORDING_ID = "22222222-2222-4222-8222-222222222222";
 
 test("recording artwork route returns proxied image bytes with safe headers", async () => {
 	const app = express();
+	app.use(createTestAuthentication().optional);
 	app.use(
-		createRecordingsRouter({
-			getArtwork: async () => ({
-				body: Buffer.from([1, 2, 3]),
-				contentType: "image/jpeg",
-				cacheMaxAgeSeconds: 60
-			})
-		} as never)
+		createRecordingsRouter(
+			{
+				assertOwned: async () => undefined,
+				getArtwork: async () => ({
+					body: Buffer.from([1, 2, 3]),
+					contentType: "image/jpeg",
+					cacheMaxAgeSeconds: 60
+				})
+			} as never,
+			createTestAuthentication().admin
+		)
 	);
 
 	const response = await request(app).get(
@@ -29,7 +35,7 @@ test("recording artwork route returns proxied image bytes with safe headers", as
 
 	assert.equal(response.status, 200);
 	assert.equal(response.headers["content-type"], "image/jpeg");
-	assert.equal(response.headers["cache-control"], "public, max-age=60");
+	assert.equal(response.headers["cache-control"], "private, no-store");
 	assert.equal(response.headers["x-content-type-options"], "nosniff");
 	assert.deepEqual(response.body, Buffer.from([1, 2, 3]));
 });
@@ -62,6 +68,7 @@ test("logical channel logo route hides its provider URL behind the API", async (
 			{} as never,
 			{} as never,
 			repository as never,
+			(_req, _res, next) => next(),
 			undefined,
 			proxy
 		)
@@ -79,6 +86,7 @@ test("logical channel logo route hides its provider URL behind the API", async (
 		}
 	]);
 	assert.equal(response.headers["content-type"], "image/png");
+	assert.equal(response.headers["cache-control"], "private, no-store");
 	assert.equal(response.headers["x-content-type-options"], "nosniff");
 	assert.deepEqual(response.body, Buffer.from([4, 5, 6]));
 });

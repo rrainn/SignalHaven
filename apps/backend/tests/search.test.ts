@@ -117,6 +117,7 @@ async function seed() {
 		tunerId: tuner.id,
 		number: "12.1",
 		name: "FOX News",
+		logoUrl: "https://private-provider/logo.png?token=secret",
 		enabled: true,
 		sortOrder: 1
 	});
@@ -233,6 +234,14 @@ test("trigram + prefix matches return the expected channels", async () => {
 	const fuzzy = await service.search({ q: "fox" });
 	// Fuzzy / trigram match — top hit must be FOX News.
 	assert.equal(fuzzy.channels[0]?.id, seeded.fox.id);
+	assert.equal(
+		fuzzy.channels[0]?.logoUrl,
+		`/api/v1/channels/${seeded.fox.id}/logo`
+	);
+	assert.doesNotMatch(
+		JSON.stringify(fuzzy.channels[0]),
+		/private-provider|token=secret/
+	);
 
 	const typo = await service.search({ q: "Fxo News" });
 	// Trigram is typo-tolerant: "Fxo" still matches "FOX".

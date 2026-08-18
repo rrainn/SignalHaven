@@ -38,9 +38,10 @@ import {
 	mergeChannels,
 	preferChannelSource,
 	splitChannelSource,
-	updateSettings
+	updatePreferences
 } from "../../lib/api-client";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
+import { useAuthOptional } from "../_auth/AuthProvider";
 import { Badge } from "../_ui/Badge";
 import { Button } from "../_ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../_ui/Card";
@@ -90,7 +91,7 @@ export interface ChannelsPageProps {
 	/** Optional initial preferences (defaults to empty). */
 	initialPrefs?: ChannelsPrefs | undefined;
 	/**
-	 * Persistence hook for tests. Defaults to `updateSettings({ channels })`.
+	 * Persistence hook for tests. Defaults to the account preferences endpoint.
 	 * Returning a rejected promise surfaces a toast in the UI.
 	 */
 	persistPrefs?: ((prefs: ChannelsPrefs) => Promise<void>) | undefined;
@@ -107,6 +108,8 @@ export interface ChannelsPageProps {
 	preferSource?:
 		| ((channelId: string, sourceId: string) => Promise<ChannelListItem[]>)
 		| undefined;
+	/** Explicit role seam for isolated tests; production derives this from auth. */
+	canManageLineup?: boolean | undefined;
 }
 
 /** Keep initial DOM work predictable even for provider lineups with thousands of channels. */
@@ -115,22 +118,28 @@ const CHANNEL_RENDER_BATCH_SIZE = 100;
 /**
  * Channels list screen (U5-channels).
  *
- * Sources its data from the channels list endpoint + the settings API,
- * then layers user-driven sort/filter/favorite/hide/manual-order state
- * via {@link channelsReducer}. All preference mutations write through
- * to `settings.channels` so the same prefs apply across devices.
+ * Sources its data from the channels list endpoint, then layers account-owned
+ * sort/filter/favorite/hide/manual-order state via {@link channelsReducer}.
+ * Preference mutations travel with the account across clients, while lineup
+ * topology remains an administrator-only capability.
  */
 export function ChannelsPage(props: ChannelsPageProps) {
 	const useFixture = Boolean(props.initialChannels);
 	const preferences = usePreferencesOptional();
 	const advancedMode = useAdvancedModeOptional();
+	const auth = useAuthOptional();
+	const canManageLineup =
+		props.canManageLineup ??
+		(auth?.state.status === "signed-in"
+			? auth.state.user.role === "admin"
+			: Boolean(props.initialChannels));
 
 	const [state, dispatch] = useReducer(channelsReducer, undefined, () => ({
 		...initialChannelsState,
 		channels: props.initialChannels ?? [],
 		prefs:
 			props.initialPrefs ??
-			preferences?.settings.channels ??
+			preferences?.preferences.channels ??
 			initialChannelsState.prefs
 	}));
 
@@ -153,13 +162,13 @@ export function ChannelsPage(props: ChannelsPageProps) {
 		if (
 			pendingSaveCountRef.current > 0 &&
 			lastPrefsRef.current &&
-			!samePrefs(lastPrefsRef.current, preferences.settings.channels)
+			!samePrefs(lastPrefsRef.current, preferences.preferences.channels)
 		) {
 			// An earlier queued response must not replace a newer local edit.
 			return;
 		}
-		lastPrefsRef.current = preferences.settings.channels;
-		dispatch({ type: "set-prefs", prefs: preferences.settings.channels });
+		lastPrefsRef.current = preferences.preferences.channels;
+		dispatch({ type: "set-prefs", prefs: preferences.preferences.channels });
 	}, [preferences, props.initialPrefs]);
 
 	// ── Initial fetch ──────────────────────────────────────────────────
@@ -169,10 +178,10 @@ export function ChannelsPage(props: ChannelsPageProps) {
 		async function load() {
 			setStatus("loading");
 			try {
-				const [channelsRes, tunersRes] = await Promise.all([
-					listChannels(),
-					listTuners()
-				]);
+				const channelsRes = await listChannels();
+				const tunersRes = canManageLineup
+					? await listTuners().catch(() => ({ items: [] }))
+					: { items: [] };
 				if (cancelled) return;
 				dispatch({ type: "set-channels", channels: channelsRes.items });
 				setRenderLimit(CHANNEL_RENDER_BATCH_SIZE);
@@ -188,37 +197,43 @@ export function ChannelsPage(props: ChannelsPageProps) {
 		return () => {
 			cancelled = true;
 		};
-	}, [useFixture]);
+	}, [canManageLineup, useFixture]);
 
 	// Keep an open channel list aligned with background tuner imports.
 	useWebSocketEvents({
 		topics: ["tuners"],
-		enabled: !useFixture,
-		onEvent: useCallback((event: EventMessage) => {
-			if (event.event !== "lineup.synced" && event.event !== "deleted") return;
-			void Promise.all([listChannels(), listTuners()])
-				.then(([channelsRes, tunersRes]) => {
+		enabled: !useFixture && canManageLineup,
+		onEvent: useCallback(
+			(event: EventMessage) => {
+				if (event.event !== "lineup.synced" && event.event !== "deleted")
+					return;
+				void (async () => {
+					const channelsRes = await listChannels();
+					const tunersRes = canManageLineup
+						? await listTuners().catch(() => ({ items: [] }))
+						: { items: [] };
 					dispatch({ type: "set-channels", channels: channelsRes.items });
 					setRenderLimit(CHANNEL_RENDER_BATCH_SIZE);
 					setTuners(tunersRes.items);
-				})
-				.catch((cause: unknown) => {
+				})().catch((cause: unknown) => {
 					setError(cause instanceof Error ? cause : new Error(String(cause)));
 				});
-		}, [])
+			},
+			[canManageLineup]
+		)
 	});
 
 	// ── Persistence ────────────────────────────────────────────────────
 	// Persist prefs (favorites/hidden/order) on every change. Skips the
 	// initial render so we never send a write the user didn't make.
-	const saveAppPreferences = preferences?.saveSettings;
+	const saveAppPreferences = preferences?.savePreferences;
 	const persistPrefs = useCallback(
 		(prefs: ChannelsPrefs): Promise<void> => {
 			if (props.persistPrefs) return props.persistPrefs(prefs);
 			if (saveAppPreferences) {
 				return saveAppPreferences({ channels: prefs }).then(() => undefined);
 			}
-			return updateSettings({ channels: prefs }).then(() => undefined);
+			return updatePreferences({ channels: prefs }).then(() => undefined);
 		},
 		[props.persistPrefs, saveAppPreferences]
 	);
@@ -254,9 +269,10 @@ export function ChannelsPage(props: ChannelsPageProps) {
 		() => visible.slice(0, renderLimit),
 		[renderLimit, visible]
 	);
+	const effectiveGroupBy = canManageLineup ? state.groupBy : "none";
 	const groups = useMemo(
-		() => groupChannels(renderedVisible, state.groupBy),
-		[renderedVisible, state.groupBy]
+		() => groupChannels(renderedVisible, effectiveGroupBy),
+		[effectiveGroupBy, renderedVisible]
 	);
 	const favoriteIds = useMemo(
 		() => new Set(state.prefs.favorites),
@@ -288,7 +304,8 @@ export function ChannelsPage(props: ChannelsPageProps) {
 	}, []);
 
 	const handleMerge = useCallback(async () => {
-		if (!mergePrimaryId || selectedChannels.length < 2) return;
+		if (!canManageLineup || !mergePrimaryId || selectedChannels.length < 2)
+			return;
 		setGroupingPending(true);
 		setGroupingError(null);
 		try {
@@ -321,6 +338,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 	}, [
 		applyGroupingResult,
 		advancedMode?.enabled,
+		canManageLineup,
 		mergePrimaryId,
 		props,
 		selectedChannels,
@@ -329,6 +347,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 
 	const handleSplitSource = useCallback(
 		async (channelId: string, sourceId: string) => {
+			if (!canManageLineup) return;
 			setGroupingPending(true);
 			setGroupingError(null);
 			try {
@@ -348,11 +367,12 @@ export function ChannelsPage(props: ChannelsPageProps) {
 				setGroupingPending(false);
 			}
 		},
-		[applyGroupingResult, props]
+		[applyGroupingResult, canManageLineup, props]
 	);
 
 	const handlePreferSource = useCallback(
 		async (channelId: string, sourceId: string) => {
+			if (!canManageLineup) return;
 			setGroupingPending(true);
 			setGroupingError(null);
 			try {
@@ -372,7 +392,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 				setGroupingPending(false);
 			}
 		},
-		[applyGroupingResult, props]
+		[applyGroupingResult, canManageLineup, props]
 	);
 
 	// ── Drag state ─────────────────────────────────────────────────────
@@ -420,7 +440,8 @@ export function ChannelsPage(props: ChannelsPageProps) {
 				tunerId={state.filters.tunerId}
 				onTuner={(value) => dispatch({ type: "set-tuner", tunerId: value })}
 				tuners={tuners}
-				sourceTuners={uniqueTuners(state.channels)}
+				sourceTuners={canManageLineup ? uniqueTuners(state.channels) : []}
+				canManageLineup={canManageLineup}
 			/>
 
 			{persistenceError ? (
@@ -437,6 +458,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 			{someSelected ? (
 				<BulkActionBar
 					count={state.selection.size}
+					showMerge={canManageLineup}
 					canMerge={state.selection.size >= 2}
 					onMerge={() => {
 						const first = selectedChannels[0];
@@ -476,13 +498,15 @@ export function ChannelsPage(props: ChannelsPageProps) {
 					title="No channels match"
 					description={
 						state.channels.length === 0
-							? "Configure tuners from Settings to populate the channel list."
+							? canManageLineup
+								? "Configure tuners from Settings to populate the channel list."
+								: "Ask your administrator to configure the channel lineup."
 							: "Adjust the filters to see channels."
 					}
 				/>
 			) : (
 				<div className="space-y-4" data-testid="channels-list">
-					{state.groupBy === "tuner" ? null : (
+					{effectiveGroupBy === "tuner" ? null : (
 						<SelectAllRow
 							total={visibleIds.length}
 							allSelected={allSelected}
@@ -491,7 +515,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 					)}
 					{groups.map((group) => (
 						<Card key={group.key}>
-							{state.groupBy === "tuner" ? (
+							{effectiveGroupBy === "tuner" ? (
 								<CardHeader>
 									<CardTitle>{group.label}</CardTitle>
 								</CardHeader>
@@ -539,6 +563,7 @@ export function ChannelsPage(props: ChannelsPageProps) {
 												void handleSplitSource(channel.id, sourceId)
 											}
 											groupingPending={groupingPending}
+											canManageLineup={canManageLineup}
 										/>
 									))}
 								</ul>
@@ -593,16 +618,18 @@ export function ChannelsPage(props: ChannelsPageProps) {
 				</div>
 			)}
 
-			<MergeChannelsDialog
-				open={mergeOpen}
-				onOpenChange={setMergeOpen}
-				channels={selectedChannels}
-				primaryChannelId={mergePrimaryId}
-				onPrimaryChange={setMergePrimaryId}
-				onConfirm={() => void handleMerge()}
-				pending={groupingPending}
-				error={groupingError}
-			/>
+			{canManageLineup ? (
+				<MergeChannelsDialog
+					open={mergeOpen}
+					onOpenChange={setMergeOpen}
+					channels={selectedChannels}
+					primaryChannelId={mergePrimaryId}
+					onPrimaryChange={setMergePrimaryId}
+					onConfirm={() => void handleMerge()}
+					pending={groupingPending}
+					error={groupingError}
+				/>
+			) : null}
 		</section>
 	);
 }
@@ -624,6 +651,7 @@ interface ChannelsToolbarProps {
 	/** Tuners observed in the channel list — used as a fallback when the
 	 * `/tuners` endpoint hasn't loaded yet. */
 	sourceTuners: { id: string; name: string }[];
+	canManageLineup: boolean;
 }
 
 function ChannelsToolbar(props: ChannelsToolbarProps) {
@@ -667,15 +695,17 @@ function ChannelsToolbar(props: ChannelsToolbarProps) {
 						{ value: "manual", label: "Preferred order" }
 					]}
 				/>
-				<ToolbarSelect
-					label="Group"
-					value={props.groupBy}
-					onValueChange={(v) => props.onGroupBy(v as ChannelsGroupBy)}
-					options={[
-						{ value: "none", label: "None" },
-						{ value: "tuner", label: "Tuner" }
-					]}
-				/>
+				{props.canManageLineup ? (
+					<ToolbarSelect
+						label="Group"
+						value={props.groupBy}
+						onValueChange={(v) => props.onGroupBy(v as ChannelsGroupBy)}
+						options={[
+							{ value: "none", label: "None" },
+							{ value: "tuner", label: "Tuner" }
+						]}
+					/>
+				) : null}
 				<ToolbarSelect
 					label="Show"
 					value={props.visibility}
@@ -686,15 +716,17 @@ function ChannelsToolbar(props: ChannelsToolbarProps) {
 						{ value: "hidden", label: "Hidden only" }
 					]}
 				/>
-				<ToolbarSelect
-					label="Tuner"
-					value={props.tunerId ?? "__all__"}
-					onValueChange={(v) => props.onTuner(v === "__all__" ? null : v)}
-					options={[
-						{ value: "__all__", label: "All tuners" },
-						...tunerOptions.map((t) => ({ value: t.id, label: t.name }))
-					]}
-				/>
+				{props.canManageLineup ? (
+					<ToolbarSelect
+						label="Tuner"
+						value={props.tunerId ?? "__all__"}
+						onValueChange={(v) => props.onTuner(v === "__all__" ? null : v)}
+						options={[
+							{ value: "__all__", label: "All tuners" },
+							...tunerOptions.map((t) => ({ value: t.id, label: t.name }))
+						]}
+					/>
+				) : null}
 			</div>
 		</div>
 	);
@@ -734,6 +766,7 @@ function ToolbarSelect(props: ToolbarSelectProps) {
 
 interface BulkActionBarProps {
 	count: number;
+	showMerge: boolean;
 	canMerge: boolean;
 	onUnselect: () => void;
 	onMerge: () => void;
@@ -751,15 +784,17 @@ function BulkActionBar(props: BulkActionBarProps) {
 		>
 			<span className="text-sm text-primary">{props.count} selected</span>
 			<div className="ml-auto flex flex-wrap items-center gap-2">
-				<Button
-					variant="secondary"
-					size="sm"
-					disabled={!props.canMerge}
-					onClick={props.onMerge}
-				>
-					<Combine aria-hidden="true" className="h-4 w-4" />
-					Merge sources
-				</Button>
+				{props.showMerge ? (
+					<Button
+						variant="secondary"
+						size="sm"
+						disabled={!props.canMerge}
+						onClick={props.onMerge}
+					>
+						<Combine aria-hidden="true" className="h-4 w-4" />
+						Merge sources
+					</Button>
+				) : null}
 				<Button variant="secondary" size="sm" onClick={props.onUnhide}>
 					<Eye aria-hidden="true" className="h-4 w-4" />
 					Unhide
@@ -827,6 +862,7 @@ interface ChannelRowProps {
 	onPreferSource: (sourceId: string) => void;
 	onSplitSource: (sourceId: string) => void;
 	groupingPending: boolean;
+	canManageLineup: boolean;
 }
 
 /**
@@ -1041,21 +1077,23 @@ function ChannelRow(props: ChannelRowProps) {
 						) : null}
 						{isHidden ? <Badge variant="default">Hidden</Badge> : null}
 						{availableSourceCount === 0 ? (
-							<Badge variant="outline">No available source</Badge>
+							<Badge variant="outline">Unavailable</Badge>
 						) : null}
 					</div>
-					<div className="text-xs text-secondary">
-						{sources.length > 1
-							? `${sources.length} sources · ${availableSourceCount} available`
-							: channel.tunerName}
-					</div>
+					{props.canManageLineup ? (
+						<div className="text-xs text-secondary">
+							{sources.length > 1
+								? `${sources.length} sources · ${availableSourceCount} available`
+								: channel.tunerName}
+						</div>
+					) : null}
 				</div>
 			</SmartLink>
 
 			{/* Keep management actions together on a second mobile row so the
 			    channel identity remains readable. */}
 			<div className="ml-auto flex items-center gap-1">
-				{sources.length > 0 ? (
+				{props.canManageLineup && sources.length > 0 ? (
 					<Button
 						variant="ghost"
 						size="sm"
@@ -1074,7 +1112,9 @@ function ChannelRow(props: ChannelRowProps) {
 					</Button>
 				) : null}
 
-				{advancedMode?.enabled && channel.tunerKind === "hdhomerun" ? (
+				{props.canManageLineup &&
+				advancedMode?.enabled &&
+				channel.tunerKind === "hdhomerun" ? (
 					<div className="flex items-center gap-2">
 						{quality ? (
 							<span
@@ -1174,13 +1214,14 @@ function ChannelRow(props: ChannelRowProps) {
 				</IconButton>
 			</div>
 
-			{sourcesOpen ? (
+			{props.canManageLineup && sourcesOpen ? (
 				<ChannelSourcesPanel
 					id={`channel-sources-${channel.id}`}
 					sources={sources}
 					disabled={props.groupingPending}
 					onPrefer={props.onPreferSource}
 					onSplit={props.onSplitSource}
+					canManageLineup={props.canManageLineup}
 				/>
 			) : null}
 		</li>
@@ -1193,6 +1234,7 @@ interface ChannelSourcesPanelProps {
 	disabled: boolean;
 	onPrefer: (sourceId: string) => void;
 	onSplit: (sourceId: string) => void;
+	canManageLineup: boolean;
 }
 
 /** Show fallback order and lifecycle state without exposing provider internals. */
@@ -1227,29 +1269,31 @@ function ChannelSourcesPanel(props: ChannelSourcesPanelProps) {
 								</div>
 								<p className="ml-4 text-xs text-secondary">{status.label}</p>
 							</div>
-							<div className="flex items-center gap-2 sm:justify-end">
-								{!source.preferred ? (
-									<Button
-										variant="ghost"
-										size="sm"
-										disabled={props.disabled || source.status !== "active"}
-										onClick={() => props.onPrefer(source.id)}
-									>
-										Make preferred
-									</Button>
-								) : null}
-								{props.sources.length > 1 ? (
-									<Button
-										variant="ghost"
-										size="sm"
-										disabled={props.disabled}
-										onClick={() => props.onSplit(source.id)}
-									>
-										<Unlink aria-hidden="true" className="h-4 w-4" />
-										Separate
-									</Button>
-								) : null}
-							</div>
+							{props.canManageLineup ? (
+								<div className="flex items-center gap-2 sm:justify-end">
+									{!source.preferred ? (
+										<Button
+											variant="ghost"
+											size="sm"
+											disabled={props.disabled || source.status !== "active"}
+											onClick={() => props.onPrefer(source.id)}
+										>
+											Make preferred
+										</Button>
+									) : null}
+									{props.sources.length > 1 ? (
+										<Button
+											variant="ghost"
+											size="sm"
+											disabled={props.disabled}
+											onClick={() => props.onSplit(source.id)}
+										>
+											<Unlink aria-hidden="true" className="h-4 w-4" />
+											Separate
+										</Button>
+									) : null}
+								</div>
+							) : null}
 						</div>
 					);
 				})}
@@ -1418,7 +1462,12 @@ function uniqueTuners(
 		const sources = c.sources ?? [];
 		if (sources.length === 0) {
 			// New responses represent recoverable empty groups explicitly.
-			if (c.sources === undefined && !map.has(c.tunerId)) {
+			if (
+				c.sources === undefined &&
+				c.tunerId !== undefined &&
+				c.tunerName !== undefined &&
+				!map.has(c.tunerId)
+			) {
 				map.set(c.tunerId, c.tunerName);
 			}
 			continue;

@@ -26,6 +26,7 @@ import type {
 	GuideRecordingRecord,
 	RecordingsRepository
 } from "../repositories/recordings.repository";
+import { BOOTSTRAP_ADMIN_USER_ID } from "../db/schema";
 
 /** Priority order when multiple recordings exist for the same program. */
 const STATUS_PRIORITY: Record<string, number> = {
@@ -80,7 +81,11 @@ export class EpgGridService {
 	 * @param from - Inclusive lower bound (programs with `stop > from` qualify).
 	 * @param to   - Exclusive upper bound (programs with `start < to` qualify).
 	 */
-	async getGrid(from: Date, to: Date): Promise<EpgGrid> {
+	async getGrid(
+		from: Date,
+		to: Date,
+		userId = BOOTSTRAP_ADMIN_USER_ID
+	): Promise<EpgGrid> {
 		const { enabledChannels, epgIdByChannelId, channelIdsByEpgId } =
 			await this.getSnapshot();
 
@@ -104,7 +109,7 @@ export class EpgGridService {
 		let recordingByProgramId = new Map<string, GuideRecordingRecord>();
 		if (this.recordings && programs.length > 0) {
 			const programIds = programs.map((p) => p.id);
-			const recs = await this.recordings.listByProgramIds(programIds);
+			const recs = await this.recordings.listByProgramIds(programIds, userId);
 			recordingByProgramId = pickBestRecording(recs);
 		}
 
@@ -113,7 +118,7 @@ export class EpgGridService {
 			id: c.id,
 			number: c.number,
 			name: c.name,
-			logoUrl: c.logoUrl ?? null,
+			logoUrl: c.logoUrl ? `/api/v1/channels/${c.id}/logo` : null,
 			hasMapping: epgIdByChannelId.has(c.id)
 		}));
 
@@ -192,7 +197,10 @@ export class EpgGridService {
 	 * Load one mapped program with the same recording annotation used by the
 	 * Guide so search-driven details never show stale scheduling state.
 	 */
-	async getProgram(programId: string): Promise<EpgProgramDetails | null> {
+	async getProgram(
+		programId: string,
+		userId = BOOTSTRAP_ADMIN_USER_ID
+	): Promise<EpgProgramDetails | null> {
 		const program = await this.epgPrograms.getById(programId);
 		if (!program) return null;
 
@@ -208,7 +216,7 @@ export class EpgGridService {
 		if (!channel || !channel.enabled) return null;
 
 		const recordings = this.recordings
-			? await this.recordings.listByProgramIds([program.id])
+			? await this.recordings.listByProgramIds([program.id], userId)
 			: [];
 		const recording = pickBestRecording(recordings).get(program.id) ?? null;
 
@@ -217,7 +225,7 @@ export class EpgGridService {
 				id: channel.id,
 				number: channel.number,
 				name: channel.name,
-				logoUrl: channel.logoUrl ?? null,
+				logoUrl: channel.logoUrl ? `/api/v1/channels/${channel.id}/logo` : null,
 				hasMapping: true
 			},
 			program: {

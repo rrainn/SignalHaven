@@ -192,11 +192,13 @@ class FakeRecordingsRepo {
 		return row;
 	}
 	async findActiveByProgramId(
-		programId: string
+		programId: string,
+		userId?: string
 	): Promise<RecordingRecord | null> {
 		for (const row of this.rows.values()) {
 			if (
 				row.programId === programId &&
+				row.userId === userId &&
 				(row.status === "scheduled" || row.status === "recording")
 			) {
 				return row;
@@ -205,6 +207,7 @@ class FakeRecordingsRepo {
 		return null;
 	}
 	async findExistingForSeriesEpisode(input: {
+		userId?: string;
 		seriesRuleId?: string | null;
 		title: string;
 		season: number | null;
@@ -212,6 +215,7 @@ class FakeRecordingsRepo {
 	}): Promise<RecordingRecord | null> {
 		if (input.season === null || input.episode === null) return null;
 		for (const row of this.rows.values()) {
+			if (row.userId !== input.userId) continue;
 			if (
 				row.status !== "scheduled" &&
 				row.status !== "recording" &&
@@ -234,11 +238,13 @@ class FakeRecordingsRepo {
 		return null;
 	}
 	async findExistingForEpisodeIdentity(
-		episodeIdentityKey: string
+		episodeIdentityKey: string,
+		userId?: string
 	): Promise<RecordingRecord | null> {
 		return (
 			[...this.rows.values()].find(
 				(row) =>
+					row.userId === userId &&
 					row.episodeIdentityKey === episodeIdentityKey &&
 					(row.status === "scheduled" ||
 						row.status === "recording" ||
@@ -270,6 +276,13 @@ class FakeRecordingsRepo {
 	async delete(id: string): Promise<RecordingRecord | null> {
 		const row = this.rows.get(id);
 		if (!row) return null;
+		this.rows.delete(id);
+		return row;
+	}
+	async deleteEvictionCandidate(id: string): Promise<RecordingRecord | null> {
+		const row = this.rows.get(id);
+		if (!row || row.status !== "completed" || row.manuallyProtected)
+			return null;
 		this.rows.delete(id);
 		return row;
 	}
@@ -373,6 +386,7 @@ function makeService(opts: {
 				const id = randomUUID();
 				const row: RecordingRecord = {
 					id,
+					...(input.userId ? { userId: input.userId } : {}),
 					channelId: input.channelId,
 					programId: input.programId,
 					episodeIdentityKey:
@@ -945,6 +959,95 @@ test("evaluate(): conflict resolver drops lowest-priority candidate when capacit
 	// The conflict was published to the WS bus and is queryable.
 	assert.ok(events.some((e) => e.event === "recording.conflict"));
 	assert.equal(service.getConflicts().length, 1);
+});
+
+test("evaluate(): same airing candidates from two users retain one deterministic winner", async () => {
+	const rules = new FakeRulesRepo();
+	const recordings = new FakeRecordingsRepo();
+	const epg = new FakeEpgProgramsRepo();
+	const channels = new FakeChannelsRepo();
+	const map = new FakeChannelEpgMap();
+	const tunerId = randomUUID();
+	const channelId = randomUUID();
+	const epgChannelId = randomUUID();
+	const highUserId = randomUUID();
+	const lowUserId = randomUUID();
+	channels.add({
+		id: channelId,
+		tunerId,
+		number: "7.1",
+		name: "Seven",
+		logoUrl: null,
+		tvgId: null,
+		enabled: true,
+		sortOrder: 0
+	} as ChannelRecord);
+	map.link(channelId, epgChannelId);
+	const high = rules.add({
+		id: randomUUID(),
+		userId: highUserId,
+		title: "Shared Show",
+		channelId,
+		epgChannelId: null,
+		keepCount: 5,
+		newOnly: false,
+		priority: 50
+	});
+	const low = rules.add({
+		id: randomUUID(),
+		userId: lowUserId,
+		title: "Shared Show",
+		channelId,
+		epgChannelId: null,
+		keepCount: 5,
+		newOnly: false,
+		priority: 5
+	});
+	const start = new Date(Date.now() + 60 * 60 * 1_000);
+	const program = epg.add({
+		title: "Shared Show",
+		epgChannelId,
+		start,
+		stop: new Date(start.getTime() + 30 * 60 * 1_000),
+		season: null,
+		episode: null,
+		episodeIdentityKey: null
+	});
+	const bus = new EventBus();
+	const events = captureEvents(bus);
+	const service = makeService({
+		rules,
+		recordings,
+		epgPrograms: epg,
+		channels,
+		channelEpgMap: map,
+		capacity: async () => 1,
+		bus
+	});
+
+	const result = await service.evaluate();
+	assert.equal(result.scheduled, 1);
+	assert.equal(result.conflicts.length, 1);
+	assert.equal(result.conflicts[0]?.seriesRuleId, low.id);
+	assert.equal(result.conflicts[0]?.programId, program.id);
+	assert.deepEqual(result.conflicts[0]?.conflictsWith, []);
+	assert.doesNotMatch(
+		`${result.conflicts[0]?.message}${JSON.stringify(result.conflicts[0]?.conflictsWith)}`,
+		new RegExp(`${tunerId}|${high.id}|provider`, "i")
+	);
+	assert.equal([...recordings.rows.values()][0]?.seriesRuleId, high.id);
+	assert.equal(service.getConflicts(lowUserId).length, 1);
+	assert.equal(service.getConflicts(highUserId).length, 0);
+	const published = events.find(
+		(event) =>
+			event.event === "recording.conflict" &&
+			event.audience?.userId === lowUserId
+	);
+	assert.ok(published);
+	assert.doesNotMatch(
+		`${(published.data as { message?: string }).message}${JSON.stringify((published.data as { conflictsWith?: string[] }).conflictsWith)}`,
+		new RegExp(`${tunerId}|${high.id}|provider`, "i")
+	);
 });
 
 test("enforceKeepCount(): applies alongside age retention and respects manuallyProtected", async () => {

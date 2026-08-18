@@ -3,6 +3,10 @@ import { closeDatabasePool, db, pool } from "./db/client";
 import { shouldAutoMigrate } from "./db/config";
 import { runMigrations } from "./db/migrate";
 import { attachEventsWebSocket, getEventBus } from "./events";
+import {
+	hasValidIncomingCookieOrigin,
+	readIncomingRequestToken
+} from "./auth/middleware";
 import { SettingsRepository } from "./repositories/settings.repository";
 import { SettingsService } from "./settings/settings.service";
 
@@ -31,7 +35,8 @@ async function main(): Promise<void> {
 		epgService,
 		epgMatcherService,
 		recordingsService,
-		seriesRulesService
+		seriesRulesService,
+		authService
 	} = createAppWithServices();
 
 	// Keep tuner-backed guides in sync before registering recurring refreshes.
@@ -86,7 +91,6 @@ async function main(): Promise<void> {
 		cron: "0 3 * * *",
 		handler: async () => {
 			await recordingsService.scanLibrary();
-			await recordingsService.enforceStorageQuota();
 			await recordingsService.enforceRetention();
 		}
 	});
@@ -97,7 +101,22 @@ async function main(): Promise<void> {
 		console.log(`Server listening on port ${port}`);
 	});
 
-	const events = attachEventsWebSocket({ server, bus: getEventBus() });
+	const events = attachEventsWebSocket({
+		server,
+		bus: getEventBus(),
+		authenticate: async (request) => {
+			const credential = readIncomingRequestToken(request);
+			if (
+				credential?.transport === "cookie" &&
+				!hasValidIncomingCookieOrigin(request)
+			) {
+				return null;
+			}
+			return credential
+				? authService.authenticateToken(credential.token)
+				: null;
+		}
+	});
 
 	const shutdown = async (): Promise<void> => {
 		await events.close();

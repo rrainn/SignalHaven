@@ -81,7 +81,9 @@ Open `.env` and replace the default `PGPASSWORD` with a strong, unique password.
 docker compose up -d
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The first-run wizard will help you add a tuner, connect guide data, choose a recordings folder, and review channel mapping.
+Open [http://localhost:3000](http://localhost:3000). Your first step is to create the local administrator account; SignalHaven stores only its username and password hash. The first-run wizard then helps you add a tuner, connect guide data, choose a recordings folder, and review channel mapping.
+
+The administrator can create password-only standard accounts from Settings. Each account has an independent recording library, series rules, guide annotations, channel preferences, appearance, and playback preferences. Standard accounts cannot open global Settings or manage tuners, guide sources, channel topology, diagnostics, or other accounts. See [Local accounts and sessions](docs/accounts.md) for the complete security and upgrade behavior.
 
 On a Linux Docker host, enable automatic iOS and macOS discovery with the
 optional Bonjour sidecar:
@@ -99,7 +101,7 @@ migration contract.
 Your database and recordings persist in Docker volumes. To use an existing PostgreSQL server or change storage and playback behavior, see the [configuration reference](docs/configuration.md).
 
 > [!IMPORTANT]
-> SignalHaven is designed for a trusted home network. Bonjour clients still require an HTTPS reverse proxy, but HTTPS alone does not make an internet-facing deployment safe; add authentication and appropriate network controls before exposing it outside the trusted network.
+> SignalHaven is designed for a trusted home network. Local accounts protect libraries and administrative APIs, and Bonjour clients still require an HTTPS reverse proxy. Built-in authentication and HTTPS do not by themselves make an internet-facing DVR safe; use a carefully maintained reverse proxy, rate limits, firewall or VPN controls, and an appropriate threat model before exposing it outside the trusted network.
 
 ### Update
 
@@ -137,6 +139,7 @@ SignalHaven can also use additional remote or local XMLTV sources when your tune
 | Resource                                                           | Use it for                                                                                                 |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | [Configuration](docs/configuration.md)                             | Environment variables, storage, transcoding, time shifting, lineup sync, UI preferences, and observability |
+| [Accounts](docs/accounts.md)                                       | Account bootstrap, roles, sessions, private libraries, upgrades, and security boundaries                   |
 | [Architecture](docs/architecture.md)                               | Services, runtime flow, recording lifecycle, and repository design                                         |
 | [Design and brand guide](DESIGN.md)                                | Product voice, visual system, and brand assets                                                             |
 | [Contributing guide](CONTRIBUTING.md)                              | Local development, validation commands, and pull request expectations                                      |

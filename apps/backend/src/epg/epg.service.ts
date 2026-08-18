@@ -486,6 +486,24 @@ export class EpgService {
 			event: "epg.refresh",
 			data: { phase, sourceId, ...data }
 		});
+		if (phase === "completed") {
+			// Guide consumers need only affected bounds; source identity and
+			// diagnostics remain in the unscoped administrator event above.
+			this.bus.publish({
+				topic: "epg",
+				event: "epg.refresh",
+				data: {
+					phase,
+					...(typeof data["affectedFrom"] === "string"
+						? { affectedFrom: data["affectedFrom"] }
+						: {}),
+					...(typeof data["affectedTo"] === "string"
+						? { affectedTo: data["affectedTo"] }
+						: {})
+				},
+				audience: { role: "user" }
+			});
+		}
 	}
 }
 

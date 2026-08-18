@@ -39,6 +39,20 @@ export function badRequest(message: string, details?: unknown): HttpError {
 	return new HttpError(400, "bad_request", message, details);
 }
 
+export function unauthorized(message = "Authentication required"): HttpError {
+	return new HttpError(401, "unauthorized", message);
+}
+
+export function forbidden(
+	message = "Administrator access required"
+): HttpError {
+	return new HttpError(403, "forbidden", message);
+}
+
+export function conflict(message: string): HttpError {
+	return new HttpError(409, "conflict", message);
+}
+
 export function notFoundHandler(
 	_req: Request,
 	_res: Response,

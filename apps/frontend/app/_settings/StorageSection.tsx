@@ -23,7 +23,7 @@ export type StorageSectionProps = {
 
 /**
  * Settings section for the recordings library storage location, the
- * library quota, and DVR recording padding
+ * global recordings-volume quota, and DVR recording padding
  * (rrainn/SignalHaven#U11-settings).
  *
  * Validates against the shared settings schemas so invalid storage or
@@ -169,7 +169,8 @@ export function StorageSection(props: StorageSectionProps) {
 
 			<label className="block space-y-1 text-sm">
 				<span className="text-primary">
-					Quota (GB) <span className="text-muted">— blank for unlimited</span>
+					Storage quota (GB){" "}
+					<span className="text-muted">— blank for unlimited</span>
 				</span>
 				<Input
 					type="number"
@@ -178,6 +179,10 @@ export function StorageSection(props: StorageSectionProps) {
 					onChange={(e) => setQuota(e.target.value)}
 					placeholder="e.g. 500"
 				/>
+				<span className="block text-xs leading-5 text-secondary">
+					Applies across the recordings volume. Cleanup never deletes a
+					different user's private library.
+				</span>
 			</label>
 
 			<fieldset className="space-y-3">

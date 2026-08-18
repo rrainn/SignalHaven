@@ -5,6 +5,21 @@ import { AppShell, NAV_ITEMS } from "../app/_layout/AppShell";
 import { ThemeProvider } from "../app/_theme/ThemeProvider";
 
 let pathname = "/guide";
+let authRole: "admin" | "user" = "admin";
+
+vi.mock("../app/_auth/AuthProvider", () => ({
+	useAuth: () => ({
+		state: {
+			status: "signed-in" as const,
+			user: {
+				id: "00000000-0000-4000-8000-000000000001",
+				username: authRole === "admin" ? "operator" : "viewer",
+				role: authRole
+			}
+		},
+		signOut: vi.fn()
+	})
+}));
 
 vi.mock("next/navigation", () => ({
 	usePathname: () => pathname
@@ -23,6 +38,7 @@ function renderShell() {
 describe("AppShell", () => {
 	beforeEach(() => {
 		pathname = "/guide";
+		authRole = "admin";
 	});
 
 	it("renders the brand, theme toggle, and primary navigation", () => {
@@ -92,5 +108,19 @@ describe("AppShell", () => {
 		expect(within(mobileNav).getAllByTestId("nav-icon")).toHaveLength(
 			NAV_ITEMS.length
 		);
+	});
+
+	it("shows the active identity and removes administrator destinations for users", () => {
+		authRole = "user";
+		renderShell();
+
+		expect(screen.getByTestId("active-username")).toHaveTextContent("viewer");
+		expect(
+			screen.getByRole("button", { name: /sign out viewer/i })
+		).toBeVisible();
+		for (const nav of screen.getAllByRole("navigation", { name: /primary/i })) {
+			expect(within(nav).queryByText("Settings")).toBeNull();
+			expect(within(nav).queryByText("Advanced")).toBeNull();
+		}
 	});
 });

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 const CHANNEL_ID = "10000000-0000-4000-8000-000000000001";
 const PROGRAM_ID = "20000000-0000-4000-8000-000000000001";

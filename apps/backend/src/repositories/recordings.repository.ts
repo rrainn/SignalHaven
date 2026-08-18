@@ -26,6 +26,7 @@ import type {
 
 import type { DatabaseClient } from "../db/client";
 import {
+	BOOTSTRAP_ADMIN_USER_ID,
 	commercialAnalyses,
 	epgPrograms,
 	recordings,
@@ -49,6 +50,8 @@ export type RecordingStatus =
 	| "cancelled";
 
 export type CreateRecordingInput = {
+	/** Routes always supply the owner; the bootstrap fallback supports recovery. */
+	userId?: string;
 	channelId: string;
 	programId?: string;
 	title: string;
@@ -88,6 +91,7 @@ export type CreateScheduledRecordingInput = Omit<
 
 export type RecordingRecord = {
 	id: string;
+	userId?: string;
 	channelId: string;
 	/** Physical source used for capture; absent on legacy and synthetic records. */
 	sourceChannelId?: string | null;
@@ -130,6 +134,7 @@ export interface GuideRecordingRecord {
 function toRecord(row: typeof recordings.$inferSelect): RecordingRecord {
 	return {
 		id: row.id,
+		userId: row.userId,
 		channelId: row.channelId,
 		sourceChannelId: row.sourceChannelId ?? null,
 		programId: row.programId ?? null,
@@ -182,6 +187,8 @@ export type UpdateRecordingInput = Partial<{
 }>;
 
 export type RecordingListFilter = {
+	/** Account scope is mandatory for every library-facing query. */
+	userId?: string;
 	/** Literal, case-insensitive title search. */
 	search?: string;
 	status?: RecordingStatus;
@@ -227,6 +234,28 @@ export type CreateScheduledRecordingResult = {
 	created: boolean;
 };
 
+/** Bound scheduler rows and tuner reservations owned by one account. */
+export const MAX_ACTIVE_RECORDINGS_PER_USER = 256;
+
+/** Identifies padded schedules that exceed the supported recording window. */
+export class RecordingDurationLimitError extends Error {
+	readonly code = "recording_duration_limit";
+
+	constructor() {
+		super("The recording duration exceeds the 24-hour limit.");
+		this.name = "RecordingDurationLimitError";
+	}
+}
+
+export class RecordingScheduleLimitError extends Error {
+	readonly code = "recording_schedule_limit";
+
+	constructor() {
+		super("Too many active recordings are already scheduled for this account");
+		this.name = "RecordingScheduleLimitError";
+	}
+}
+
 export class RecordingsRepository {
 	constructor(private readonly database: DatabaseClient) {}
 
@@ -245,10 +274,38 @@ export class RecordingsRepository {
 		const jobId = randomUUID();
 
 		return this.database.transaction(async (tx) => {
+			const userId = input.userId ?? BOOTSTRAP_ADMIN_USER_ID;
+			await tx.execute(
+				sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 2))`
+			);
+			// Preserve idempotency at capacity by resolving an existing airing first.
+			if (input.programId) {
+				const [existing] = await tx
+					.select()
+					.from(recordings)
+					.where(activeProgramCondition(input.programId, userId))
+					.limit(1);
+				if (existing) {
+					return { recording: toRecord(existing), created: false };
+				}
+			}
+			const [usage] = await tx
+				.select({ value: count() })
+				.from(recordings)
+				.where(
+					and(
+						eq(recordings.userId, userId),
+						inArray(recordings.status, ["scheduled", "recording"])
+					)
+				);
+			if (Number(usage?.value ?? 0) >= MAX_ACTIVE_RECORDINGS_PER_USER) {
+				throw new RecordingScheduleLimitError();
+			}
 			const [created] = await tx
 				.insert(recordings)
 				.values({
 					id: recordingId,
+					userId,
 					channelId: input.channelId,
 					programId: input.programId,
 					title: input.title,
@@ -280,7 +337,12 @@ export class RecordingsRepository {
 				const [existing] = await tx
 					.select()
 					.from(recordings)
-					.where(activeProgramCondition(input.programId))
+					.where(
+						activeProgramCondition(
+							input.programId,
+							input.userId ?? BOOTSTRAP_ADMIN_USER_ID
+						)
+					)
 					.limit(1);
 				if (!existing) {
 					throw new Error("Active recording conflict could not be resolved");
@@ -316,6 +378,7 @@ export class RecordingsRepository {
 				.insert(recordings)
 				.values({
 					id: randomUUID(),
+					userId: input.userId ?? BOOTSTRAP_ADMIN_USER_ID,
 					channelId: input.channelId,
 					programId: input.programId,
 					title: input.title,
@@ -356,6 +419,18 @@ export class RecordingsRepository {
 			.where(eq(recordings.id, id))
 			.limit(1);
 
+		return record ? toRecord(record) : null;
+	}
+
+	async getByIdForUser(
+		id: string,
+		userId: string
+	): Promise<RecordingRecord | null> {
+		const [record] = await this.database
+			.select()
+			.from(recordings)
+			.where(and(eq(recordings.id, id), eq(recordings.userId, userId)))
+			.limit(1);
 		return record ? toRecord(record) : null;
 	}
 
@@ -453,6 +528,9 @@ export class RecordingsRepository {
 
 	private buildListConditions(filter: RecordingListFilter): SQL[] {
 		const conditions: SQL[] = [];
+		if (filter.userId) {
+			conditions.push(eq(recordings.userId, filter.userId));
+		}
 		const search = filter.search?.trim();
 		if (search) {
 			// PostgreSQL's default LIKE escape is a backslash, so escaped wildcard
@@ -728,25 +806,28 @@ export class RecordingsRepository {
 	 * duplicate rows for the same airing.
 	 */
 	async findActiveByProgramId(
-		programId: string
+		programId: string,
+		userId = BOOTSTRAP_ADMIN_USER_ID
 	): Promise<RecordingRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(recordings)
-			.where(activeProgramCondition(programId))
+			.where(activeProgramCondition(programId, userId))
 			.limit(1);
 		return row ? toRecord(row) : null;
 	}
 
 	/** Find durable prior work without joining a guide row that may be pruned. */
 	async findExistingForEpisodeIdentity(
-		episodeIdentityKey: string
+		episodeIdentityKey: string,
+		userId = BOOTSTRAP_ADMIN_USER_ID
 	): Promise<RecordingRecord | null> {
 		const [record] = await this.database
 			.select()
 			.from(recordings)
 			.where(
 				and(
+					eq(recordings.userId, userId),
 					eq(recordings.episodeIdentityKey, episodeIdentityKey),
 					inArray(recordings.status, ["scheduled", "recording", "completed"])
 				)
@@ -770,6 +851,7 @@ export class RecordingsRepository {
 	 * cardinality.
 	 */
 	async findExistingForSeriesEpisode(input: {
+		userId?: string;
 		seriesRuleId?: string | null;
 		title: string;
 		season: number | null;
@@ -787,6 +869,7 @@ export class RecordingsRepository {
 			.innerJoin(epgPrograms, eq(epgPrograms.id, recordings.programId))
 			.where(
 				and(
+					eq(recordings.userId, input.userId ?? BOOTSTRAP_ADMIN_USER_ID),
 					inArray(recordings.status, ["scheduled", "recording", "completed"]),
 					eq(epgPrograms.season, input.season),
 					eq(epgPrograms.episode, input.episode)
@@ -858,17 +941,36 @@ export class RecordingsRepository {
 		return deleted ? toRecord(deleted) : null;
 	}
 
+	/** Delete only a row that is still eligible for automatic eviction. */
+	async deleteEvictionCandidate(id: string): Promise<RecordingRecord | null> {
+		const [deleted] = await this.database
+			.delete(recordings)
+			.where(
+				and(
+					eq(recordings.id, id),
+					eq(recordings.status, "completed"),
+					eq(recordings.manuallyProtected, false)
+				)
+			)
+			.returning();
+		return deleted ? toRecord(deleted) : null;
+	}
+
 	/**
 	 * Sum of `file_size` across all completed recordings (the rows that
 	 * actually consume storage). Returned as bytes; `0` when the library
 	 * is empty. Used by storage-quota enforcement to decide whether to
 	 * evict.
 	 */
-	async sumCompletedSize(): Promise<number> {
+	async sumCompletedSize(userId?: string): Promise<number> {
+		const conditions = [eq(recordings.status, "completed")];
+		if (userId !== undefined) {
+			conditions.push(eq(recordings.userId, userId));
+		}
 		const [row] = await this.database
 			.select({ value: sum(recordings.fileSize) })
 			.from(recordings)
-			.where(eq(recordings.status, "completed"));
+			.where(and(...conditions));
 		if (!row?.value) return 0;
 		// `sum()` returns a string for `bigint`-typed columns under
 		// node-postgres; coerce defensively.
@@ -881,16 +983,18 @@ export class RecordingsRepository {
 	 * automatic eviction (i.e. `manuallyProtected = false`). Used by
 	 * storage-quota and series-rule retention enforcement.
 	 */
-	async listEvictionCandidates(): Promise<RecordingRecord[]> {
+	async listEvictionCandidates(userId?: string): Promise<RecordingRecord[]> {
+		const conditions = [
+			eq(recordings.status, "completed"),
+			eq(recordings.manuallyProtected, false)
+		];
+		if (userId !== undefined) {
+			conditions.push(eq(recordings.userId, userId));
+		}
 		const rows = await this.database
 			.select()
 			.from(recordings)
-			.where(
-				and(
-					eq(recordings.status, "completed"),
-					eq(recordings.manuallyProtected, false)
-				)
-			)
+			.where(and(...conditions))
 			.orderBy(asc(recordings.actualStart), asc(recordings.scheduledStart));
 		return rows.map(toRecord);
 	}
@@ -918,7 +1022,8 @@ export class RecordingsRepository {
 	 * program; the grid service picks the most informative status.
 	 */
 	async listByProgramIds(
-		programIds: string[]
+		programIds: string[],
+		userId = BOOTSTRAP_ADMIN_USER_ID
 	): Promise<GuideRecordingRecord[]> {
 		if (programIds.length === 0) {
 			return [];
@@ -930,7 +1035,12 @@ export class RecordingsRepository {
 				status: recordings.status
 			})
 			.from(recordings)
-			.where(inArray(recordings.programId, programIds))
+			.where(
+				and(
+					eq(recordings.userId, userId),
+					inArray(recordings.programId, programIds)
+				)
+			)
 			.orderBy(desc(recordings.updatedAt));
 		return rows.map((row) => ({
 			...row,
@@ -940,8 +1050,9 @@ export class RecordingsRepository {
 }
 
 /** Shared predicate for the database-backed active-program invariant. */
-function activeProgramCondition(programId: string): SQL {
+function activeProgramCondition(programId: string, userId: string): SQL {
 	return and(
+		eq(recordings.userId, userId),
 		eq(recordings.programId, programId),
 		inArray(recordings.status, ["scheduled", "recording"])
 	) as SQL;

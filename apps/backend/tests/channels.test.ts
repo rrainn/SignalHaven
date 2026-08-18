@@ -26,6 +26,7 @@ import {
 	createDatabasePool,
 	type DatabaseClient
 } from "../src/db/client";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { resolveMigrationsFolder } from "../src/db/config";
 import { runMigrations } from "../src/db/migrate";
 import { EpgMatcherService } from "../src/epg/epg-matcher.service";
@@ -33,8 +34,8 @@ import { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.rep
 import { ChannelsRepository } from "../src/repositories/channels.repository";
 import { EpgChannelsRepository } from "../src/repositories/epg-channels.repository";
 import { EpgSourcesRepository } from "../src/repositories/epg-sources.repository";
-import { SettingsRepository } from "../src/repositories/settings.repository";
 import { TunersRepository } from "../src/repositories/tuners.repository";
+import { UserPreferencesRepository } from "../src/repositories/user-preferences.repository";
 import { createApp } from "../src/app";
 import { getEventBus } from "../src/events";
 import { createDefaultTunerRegistry } from "../src/tuners/registry";
@@ -146,6 +147,7 @@ function buildApp() {
 	});
 	const epgMatcherService = buildMatcher();
 	return createApp({
+		authentication: createTestAuthentication(),
 		tunersService,
 		epgMatcherService,
 		channelsRepository: new ChannelsRepository(db)
@@ -356,40 +358,55 @@ test("POST /api/v1/channels/merge groups sources under the primary channel", asy
 	);
 });
 
-test("merging channels reconciles channel and playback preferences", async () => {
+test("merging channels reconciles every user's channel and playback preferences", async () => {
 	const primaryTuner = await seedTuner("Primary");
 	const backupTuner = await seedTuner("Backup");
 	const primary = await seedChannel(primaryTuner.id, { sortOrder: 1 });
 	const backup = await seedChannel(backupTuner.id, { sortOrder: 2 });
-	const settings = new SettingsRepository(db);
-	await settings.upsert("channels", {
-		favorites: [backup.id],
-		hidden: [primary.id, backup.id],
-		order: [backup.id, primary.id]
-	});
-	await settings.upsert("player", {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: { [backup.id]: "720p" }
-	});
+	const preferences = new UserPreferencesRepository(db);
+	const adminId = "00000000-0000-4000-8000-000000000001";
+	const secondUserId = randomUUID();
+	await pool.query(
+		`INSERT INTO users (
+			id, username, username_normalized, password_hash, role, activated_at
+		 ) VALUES ($1, 'viewer', 'viewer', 'test-hash', 'user', now())`,
+		[secondUserId]
+	);
+	for (const userId of [adminId, secondUserId]) {
+		await preferences.upsertManyForUser(userId, {
+			channels: {
+				favorites: [backup.id],
+				hidden: [primary.id, backup.id],
+				order: [backup.id, primary.id]
+			},
+			player: {
+				volume: 1,
+				muted: false,
+				captionsEnabled: false,
+				qualityByChannel: { [backup.id]: "720p" }
+			}
+		});
+	}
 
 	await new ChannelsRepository(db).mergeLogicalChannels(
 		[primary.id, backup.id],
 		primary.id
 	);
 
-	assert.deepEqual((await settings.getByKey("channels"))?.value, {
-		favorites: [primary.id],
-		hidden: [primary.id],
-		order: [primary.id]
-	});
-	assert.deepEqual((await settings.getByKey("player"))?.value, {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: { [primary.id]: "720p" }
-	});
+	for (const userId of [adminId, secondUserId]) {
+		const stored = await preferences.listForUser(userId);
+		assert.deepEqual(stored["channels"], {
+			favorites: [primary.id],
+			hidden: [primary.id],
+			order: [primary.id]
+		});
+		assert.deepEqual(stored["player"], {
+			volume: 1,
+			muted: false,
+			captionsEnabled: false,
+			qualityByChannel: { [primary.id]: "720p" }
+		});
+	}
 });
 
 test("source preference and split operations preserve physical source identity", async () => {

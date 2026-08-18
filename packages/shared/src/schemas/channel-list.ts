@@ -46,11 +46,11 @@ export const channelListItemSchema = z.object({
 	name: z.string(),
 	logoUrl: z.string().nullable(),
 	/** Optional tvg-id (XMLTV identifier); `null` when not set. */
-	tvgId: z.string().nullable(),
+	tvgId: z.string().nullable().optional(),
 	/** Owning tuner — used by the UI to group / filter the list. */
-	tunerId: z.string().uuid(),
-	tunerName: z.string(),
-	tunerKind: tunerKindSchema,
+	tunerId: z.string().uuid().optional(),
+	tunerName: z.string().optional(),
+	tunerKind: tunerKindSchema.optional(),
 	/** Whether the channel is currently surfaced in the guide / streams. */
 	enabled: z.boolean(),
 	/** Canonical default sort key (server-assigned). */

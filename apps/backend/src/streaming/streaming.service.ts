@@ -172,6 +172,10 @@ interface PendingSession {
  * profile-specific sessions as recovery paths for under-capacity servers.
  */
 export class StreamingService {
+	/** Verifies that a logical channel has an enabled source without reserving it. */
+	async assertStreamable(channelId: string): Promise<void> {
+		await this.resolver.resolve(channelId);
+	}
 	private readonly allocator: TunerAllocator;
 	private readonly resolver: StreamSourceResolver;
 	private readonly bus: EventBus | undefined;
@@ -193,6 +197,10 @@ export class StreamingService {
 	 * fully torn down.
 	 */
 	private readonly sessions = new Map<string, PendingSession>();
+	/** Reserves a profile key before tuner allocation can yield to another attach. */
+	private readonly sessionCreations = new Map<string, Promise<StreamSession>>();
+	/** Shutdown closes admission before waiting for pre-session allocation work. */
+	private stopping = false;
 	/** Restart barriers keep stale HLS retries from undoing an operator stop. */
 	private readonly operatorStopBarriers = new Map<
 		string,
@@ -253,6 +261,12 @@ export class StreamingService {
 		channelId: string,
 		requestedProfile?: PlaybackProfile
 	): Promise<StreamSession> {
+		if (this.stopping) {
+			throw new ChannelNotStreamableError(
+				channelId,
+				"Streaming service is stopping"
+			);
+		}
 		const sources = this.resolver.resolveCandidates
 			? await this.resolver.resolveCandidates(channelId)
 			: [await this.resolver.resolve(channelId)];
@@ -287,94 +301,111 @@ export class StreamingService {
 			session.attach();
 			return session;
 		}
+		const pendingCreation = this.sessionCreations.get(key);
+		if (pendingCreation) {
+			const session = await pendingCreation;
+			session.attach();
+			return session;
+		}
 
-		let source = firstSource;
-		let lease: TunerLease | undefined;
-		let allocationError: unknown;
-		for (const candidate of sources) {
+		const creation = (async (): Promise<StreamSession> => {
+			let source = firstSource;
+			let lease: TunerLease | undefined;
+			let allocationError: unknown;
+			for (const candidate of sources) {
+				try {
+					lease = await this.allocator.acquire({
+						providerId: candidate.providerId,
+						channelId: candidate.providerChannelId,
+						purpose: this.purpose,
+						priority: this.livePriority
+					});
+					source = candidate;
+					break;
+				} catch (error) {
+					allocationError = error;
+				}
+			}
+			if (!lease) {
+				throw allocationError ?? new ChannelNotStreamableError(channelId);
+			}
 			try {
-				lease = await this.allocator.acquire({
-					providerId: candidate.providerId,
-					channelId: candidate.providerChannelId,
-					purpose: this.purpose,
-					priority: this.livePriority
-				});
-				source = candidate;
-				break;
+				// Stop may race with tuner allocation, so check again before spawning.
+				this.assertNotOperatorStopped(key, channelId);
 			} catch (error) {
-				allocationError = error;
+				this.allocator.release(lease.leaseId);
+				throw error;
 			}
-		}
-		if (!lease)
-			throw allocationError ?? new ChannelNotStreamableError(channelId);
-		try {
-			// Stop may race with tuner allocation, so check again before spawning.
-			this.assertNotOperatorStopped(key, channelId);
-		} catch (error) {
-			this.allocator.release(lease.leaseId);
-			throw error;
-		}
 
-		const sessionOptions = {
-			sessionId: key,
-			channelId,
-			upstreamUrl: source.upstreamUrl,
-			lease,
-			releaseLease: () => this.allocator.release(lease.leaseId),
-			lingerMs: timeShift.enabled ? timeShift.idleGraceMs : this.lingerMs,
-			bus: this.bus,
-			profile: playbackProfile,
-			hwaccel: transcoding.hwaccel,
-			captionsEnabled: transcoding.captionsEnabled,
-			...(source.inputCodecs ? { inputCodecs: source.inputCodecs } : {}),
-			...(this.runner ? { runner: this.runner } : {}),
-			...(this.logger ? { logger: this.logger } : {}),
-			...(this.viewerTimeoutMs !== undefined
-				? { viewerTimeoutMs: this.viewerTimeoutMs }
-				: {}),
-			...(bufferRoot
-				? { tmpRoot: bufferRoot }
-				: this.tmpRoot
-					? { tmpRoot: this.tmpRoot }
+			const sessionOptions = {
+				sessionId: key,
+				channelId,
+				upstreamUrl: source.upstreamUrl,
+				lease,
+				releaseLease: () => this.allocator.release(lease.leaseId),
+				lingerMs: timeShift.enabled ? timeShift.idleGraceMs : this.lingerMs,
+				bus: this.bus,
+				profile: playbackProfile,
+				hwaccel: transcoding.hwaccel,
+				captionsEnabled: transcoding.captionsEnabled,
+				...(source.inputCodecs ? { inputCodecs: source.inputCodecs } : {}),
+				...(this.runner ? { runner: this.runner } : {}),
+				...(this.logger ? { logger: this.logger } : {}),
+				...(this.viewerTimeoutMs !== undefined
+					? { viewerTimeoutMs: this.viewerTimeoutMs }
 					: {}),
-			...(timeShift.enabled
-				? {
-						timeShiftWindowSeconds: timeShift.durationSeconds,
-						maxBufferBytes: timeShift.maxDiskBytes,
-						onBufferUsage: (active: StreamSession, bytes: number) =>
-							this.updateBufferUsage(active, bytes, timeShift.maxDiskBytes)
-					}
-				: {})
-		};
-		const session = new StreamSession(sessionOptions);
+				...(bufferRoot
+					? { tmpRoot: bufferRoot }
+					: this.tmpRoot
+						? { tmpRoot: this.tmpRoot }
+						: {}),
+				...(timeShift.enabled
+					? {
+							timeShiftWindowSeconds: timeShift.durationSeconds,
+							maxBufferBytes: timeShift.maxDiskBytes,
+							onBufferUsage: (active: StreamSession, bytes: number) =>
+								this.updateBufferUsage(active, bytes, timeShift.maxDiskBytes)
+						}
+					: {})
+			};
+			const session = new StreamSession(sessionOptions);
 
-		session.onStopped(() => {
-			this.bufferUsage.delete(session);
-			// Drop the session entry only if it hasn't already been replaced.
-			const current = this.sessions.get(key);
-			if (current && current.session === session) {
-				this.sessions.delete(key);
-			}
-		});
-
-		const ready: Promise<StreamSession> = session
-			.start()
-			.then(() => session)
-			.catch((err) => {
-				// Start failed: ensure we don't leak an entry pointing at a dead
-				// session. The session itself releases the lease in `finalize()`.
+			session.onStopped(() => {
+				this.bufferUsage.delete(session);
+				// Drop the session entry only if it hasn't already been replaced.
 				const current = this.sessions.get(key);
 				if (current && current.session === session) {
 					this.sessions.delete(key);
 				}
-				throw err;
 			});
 
-		this.sessions.set(key, { session, ready });
+			const ready: Promise<StreamSession> = session
+				.start()
+				.then(() => session)
+				.catch((err) => {
+					// Start failed: ensure we don't leak an entry pointing at a dead
+					// session. The session itself releases the lease in `finalize()`.
+					const current = this.sessions.get(key);
+					if (current && current.session === session) {
+						this.sessions.delete(key);
+					}
+					throw err;
+				});
 
-		const resolved = await ready;
-		resolved.attach();
-		return resolved;
+			this.sessions.set(key, { session, ready });
+			return ready;
+		})();
+		this.sessionCreations.set(key, creation);
+
+		try {
+			const resolved = await creation;
+			resolved.attach();
+			return resolved;
+		} finally {
+			if (this.sessionCreations.get(key) === creation) {
+				this.sessionCreations.delete(key);
+			}
+		}
 	}
 
 	/**
@@ -433,10 +464,14 @@ export class StreamingService {
 
 	/** Tear down every active session. Used during shutdown. */
 	async stopAll(): Promise<void> {
+		this.stopping = true;
 		for (const timer of this.operatorStopBarriers.values()) {
 			clearTimeout(timer);
 		}
 		this.operatorStopBarriers.clear();
+		// Allocation can precede publication in `sessions`; let those bounded
+		// creations settle so shutdown cannot orphan a lease or FFmpeg process.
+		await Promise.allSettled([...this.sessionCreations.values()]);
 		const pending: Promise<void>[] = [];
 		for (const entry of [...this.sessions.values()]) {
 			pending.push(

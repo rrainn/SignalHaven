@@ -3,9 +3,16 @@ import express from "express";
 import request from "supertest";
 import { test } from "node:test";
 
+import { createTestAuthentication } from "../src/auth/middleware";
 import { errorHandler } from "../src/http/middleware/errors";
 import { createAdvancedRouter } from "../src/http/routes/advanced";
-import type { RecordingsService } from "../src/recordings/recordings.service";
+import {
+	RecordingNotFoundError,
+	type RecordingsService
+} from "../src/recordings/recordings.service";
+
+const ADMIN_ID = "00000000-0000-4000-8000-000000000011";
+const OTHER_USER_ID = "00000000-0000-4000-8000-000000000012";
 
 test("advanced external IP route is disabled unless explicitly enabled", async () => {
 	const app = express();
@@ -74,6 +81,7 @@ test("advanced external IP route accepts the lookup's JSON response", async () =
 
 test("advanced Comskip route returns active commercial-analysis work", async () => {
 	const app = express();
+	app.use(createTestAuthentication().optional);
 	app.use(
 		"/api/v1",
 		createAdvancedRouter({
@@ -123,12 +131,13 @@ test("advanced FFmpeg controls address exact recording playback sessions", async
 				clientCount: 2
 			}
 		],
-		stopPlayback: (id: string) => {
+		stopOwnedPlayback: async (id: string) => {
 			stopped.push(id);
 			return true;
 		}
 	} as unknown as RecordingsService;
 	const app = express();
+	app.use(createTestAuthentication().optional);
 	app.use("/api/v1", createAdvancedRouter({ recordings }));
 	app.use(errorHandler());
 
@@ -153,4 +162,160 @@ test("advanced FFmpeg controls address exact recording playback sessions", async
 	);
 	assert.equal(removed.status, 204);
 	assert.deepEqual(stopped, ["playback-session-1"]);
+});
+
+test("advanced recording diagnostics stay inside the administrator's library", async () => {
+	const cancelled: string[] = [];
+	const stopped: string[] = [];
+	const recordingWork = [
+		{
+			ownerId: ADMIN_ID,
+			work: {
+				recordingId: "recording-admin",
+				title: "Admin recording",
+				kind: "recording" as const,
+				state: "recording",
+				startedAt: "2026-07-20T12:00:00.000Z"
+			}
+		},
+		{
+			ownerId: OTHER_USER_ID,
+			work: {
+				recordingId: "recording-other",
+				title: "Private recording",
+				kind: "recording" as const,
+				state: "recording",
+				startedAt: "2026-07-20T12:01:00.000Z"
+			}
+		},
+		{
+			ownerId: ADMIN_ID,
+			work: {
+				recordingId: "recording-admin",
+				playbackSessionId: "playback-admin",
+				title: "Admin playback",
+				kind: "recording-playback" as const,
+				state: "ready",
+				startedAt: "2026-07-20T12:02:00.000Z"
+			}
+		},
+		{
+			ownerId: OTHER_USER_ID,
+			work: {
+				recordingId: "recording-other",
+				playbackSessionId: "playback-other",
+				title: "Private playback",
+				kind: "recording-playback" as const,
+				state: "ready",
+				startedAt: "2026-07-20T12:03:00.000Z"
+			}
+		}
+	];
+	const recordings = {
+		getActiveFfmpegWork: async (userId?: string) =>
+			recordingWork
+				.filter((entry) => userId === undefined || entry.ownerId === userId)
+				.map((entry) => entry.work),
+		cancel: async (id: string) => {
+			cancelled.push(id);
+		},
+		cancelOwned: async (id: string, userId: string) => {
+			if (
+				!recordingWork.some(
+					(entry) => entry.ownerId === userId && entry.work.recordingId === id
+				)
+			) {
+				throw new RecordingNotFoundError(id);
+			}
+			cancelled.push(id);
+		},
+		stopPlayback: (id: string) => {
+			stopped.push(id);
+			return true;
+		},
+		stopOwnedPlayback: async (id: string, userId: string) => {
+			if (
+				!recordingWork.some(
+					(entry) =>
+						entry.ownerId === userId &&
+						entry.work.kind === "recording-playback" &&
+						entry.work.playbackSessionId === id
+				)
+			) {
+				return false;
+			}
+			stopped.push(id);
+			return true;
+		}
+	} as unknown as RecordingsService;
+	const commercialWork = [
+		{
+			ownerId: ADMIN_ID,
+			work: {
+				recordingId: "recording-admin",
+				label: "Admin recording",
+				state: "running" as const,
+				startedAt: "2026-07-20T12:04:00.000Z"
+			}
+		},
+		{
+			ownerId: OTHER_USER_ID,
+			work: {
+				recordingId: "recording-other",
+				label: "Private recording",
+				state: "running" as const,
+				startedAt: "2026-07-20T12:05:00.000Z"
+			}
+		}
+	];
+	const authentication = createTestAuthentication({
+		id: ADMIN_ID,
+		username: "admin",
+		role: "admin"
+	});
+	const app = express();
+	app.use(authentication.optional, authentication.required);
+	app.use(
+		"/api/v1",
+		createAdvancedRouter({
+			recordings,
+			commercialAnalysis: {
+				getActiveWork: (userId?: string) =>
+					commercialWork
+						.filter((entry) => userId === undefined || entry.ownerId === userId)
+						.map((entry) => entry.work)
+			} as never
+		})
+	);
+	app.use(errorHandler());
+
+	const ffmpeg = await request(app).get("/api/v1/advanced/ffmpeg");
+	const comskip = await request(app).get("/api/v1/advanced/comskip");
+	const otherRecording = await request(app).delete(
+		"/api/v1/advanced/ffmpeg/recording:recording-other"
+	);
+	const ownRecording = await request(app).delete(
+		"/api/v1/advanced/ffmpeg/recording:recording-admin"
+	);
+	const otherPlayback = await request(app).delete(
+		"/api/v1/advanced/ffmpeg/playback:playback-other"
+	);
+	const ownPlayback = await request(app).delete(
+		"/api/v1/advanced/ffmpeg/playback:playback-admin"
+	);
+
+	assert.deepEqual(
+		ffmpeg.body.items.map((item: { id: string }) => item.id),
+		["recording:recording-admin", "playback:playback-admin"]
+	);
+	assert.deepEqual(
+		comskip.body.items.map((item: { id: string }) => item.id),
+		["commercial:recording-admin"]
+	);
+	assert.equal(otherRecording.status, 404);
+	assert.equal(ownRecording.status, 204);
+	assert.equal(otherPlayback.status, 404);
+	assert.equal(ownPlayback.status, 204);
+	assert.deepEqual(cancelled, ["recording-admin"]);
+	assert.deepEqual(stopped, ["playback-admin"]);
 });

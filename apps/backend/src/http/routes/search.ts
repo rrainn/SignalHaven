@@ -28,10 +28,13 @@ export function createSearchRouter(service: SearchService): Router {
 				// not reuse a response after its underlying program has disappeared.
 				res.setHeader("Cache-Control", "no-store");
 				const query = req.query as unknown as SearchQuery;
-				const result = await service.search({
-					q: query.q,
-					limit: query.limit
-				});
+				const result = await service.search(
+					{
+						q: query.q,
+						limit: query.limit
+					},
+					req.auth!.user.id
+				);
 				res.json(searchResponseSchema.parse(result));
 			} catch (error) {
 				next(error);

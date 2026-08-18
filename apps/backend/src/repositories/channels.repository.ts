@@ -16,8 +16,8 @@ import {
 	logicalChannels,
 	recordings,
 	seriesRules,
-	settings,
-	tuners
+	tuners,
+	userPreferences
 } from "../db/schema";
 
 export type ChannelSourceStatus = "active" | "missing" | "unavailable";
@@ -371,16 +371,16 @@ export class ChannelsRepository {
 
 			const preferenceRows = await tx
 				.select()
-				.from(settings)
-				.where(inArray(settings.key, ["channels", "player"]))
-				.orderBy(asc(settings.key))
+				.from(userPreferences)
+				.where(inArray(userPreferences.key, ["channels", "player"]))
+				.orderBy(asc(userPreferences.userId), asc(userPreferences.key))
 				.for("update");
 			for (const row of preferenceRows) {
 				if (row.key === "channels") {
 					const parsed = channelsSettingsSchema.safeParse(row.value);
 					if (parsed.success) {
 						await tx
-							.update(settings)
+							.update(userPreferences)
 							.set({
 								value: reconcileChannelPreferences(
 									parsed.data,
@@ -388,14 +388,19 @@ export class ChannelsRepository {
 									primaryLogicalChannelId
 								)
 							})
-							.where(eq(settings.key, row.key));
+							.where(
+								and(
+									eq(userPreferences.userId, row.userId),
+									eq(userPreferences.key, row.key)
+								)
+							);
 					}
 				}
 				if (row.key === "player") {
 					const parsed = playerSettingsSchema.safeParse(row.value);
 					if (parsed.success) {
 						await tx
-							.update(settings)
+							.update(userPreferences)
 							.set({
 								value: reconcilePlayerPreferences(
 									parsed.data,
@@ -403,7 +408,12 @@ export class ChannelsRepository {
 									primaryLogicalChannelId
 								)
 							})
-							.where(eq(settings.key, row.key));
+							.where(
+								and(
+									eq(userPreferences.userId, row.userId),
+									eq(userPreferences.key, row.key)
+								)
+							);
 					}
 				}
 			}

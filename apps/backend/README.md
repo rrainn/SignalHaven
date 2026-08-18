@@ -13,6 +13,7 @@ infrastructure that all endpoints get:
   tests).
 - **CORS**: permissive in development, same-origin only in production.
 - **JSON body limit** of 1 MB.
+- **Mandatory authentication** for every route except health, auth bootstrap/login/status, and API discovery. Protected responses use `Cache-Control: private, no-store` so browser caches cannot cross account switches.
 - **Centralized error envelope**:
 
   ```json
@@ -40,6 +41,17 @@ infrastructure that all endpoints get:
   [`@asteasolutions/zod-to-openapi`](https://github.com/asteasolutions/zod-to-openapi).
 - `GET /api/v1/docs` — interactive Swagger UI (development only;
   disabled in production).
+- `GET /api/v1/auth/status` — reports independent account-bootstrap and system-setup state, plus the current cookie session when present.
+- `POST /api/v1/auth/setup` — atomically activates the one pending administrator. It accepts `{ username, password, transport }` exactly once.
+- `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, and `POST /api/v1/auth/logout` — create, inspect, and revoke sessions.
+- `GET|POST /api/v1/users` — administrator-only account listing and standard-user creation.
+- `GET|PATCH /api/v1/preferences` — the current user's `ui`, `channels`, and `player` groups.
+- `GET|PATCH /api/v1/settings` — administrator-only global machine configuration.
+- `POST /api/v1/stream/:channelId/media-ticket` and `POST /api/v1/recordings/:id/media-ticket` — issue session-bound HLS playback URLs for native clients.
+
+Browser setup/login requests use `transport: "cookie"` and receive a 30-day opaque session in an HttpOnly, SameSite=Strict cookie. Cookie mutations require a complete same-scheme, same-host Origin match; `Secure` follows the actual HTTPS request, including trusted loopback reverse-proxy headers. Native Apple clients use `transport: "bearer"` and receive the same opaque session token in the response body. The database stores only SHA-256 token digests, while passwords use salted scrypt hashes. Authentication endpoints are process-local rate limited; multi-replica deployments must enforce an equivalent shared or proxy limit.
+
+WebSocket event connections authenticate with the same cookie or bearer session. Cookie upgrades enforce the same origin policy, audiences are filtered per account/role, and heartbeat revalidation closes expired or revoked sessions with code `4401`.
 
 Shared request/response schemas live in `packages/shared` so backend and
 frontend can import them.
@@ -82,6 +94,8 @@ All timestamps are stored as UTC `timestamptz`.
 - Automatic at backend startup unless `SIGNALHAVEN_DB_AUTO_MIGRATE=false`
 - Manual run: `pnpm --filter @signalhaven/backend db:migrate`
 - Migration files: `apps/backend/migrations`
+
+Migration `0020_user_accounts.sql` creates an unactivated bootstrap administrator and atomically assigns every existing recording, series rule, and former global `ui`/`channels`/`player` preference to it. An upgraded configured install therefore asks for an administrator account on the next visit without losing its existing library. The down migration refuses to run after any additional activated account exists because the legacy schema cannot preserve those account records or preferences.
 
 ## Local development with Docker Compose
 

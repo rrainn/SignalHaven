@@ -14,7 +14,10 @@ import type { SearchRepository } from "../repositories/search.repository";
 export class SearchService {
 	constructor(private readonly repository: SearchRepository) {}
 
-	async search(input: { q: string; limit?: number }): Promise<SearchResponse> {
+	async search(
+		input: { q: string; limit?: number },
+		userId = "00000000-0000-4000-8000-000000000001"
+	): Promise<SearchResponse> {
 		const q = input.q.trim();
 		const limit = clampLimit(input.limit);
 
@@ -26,7 +29,7 @@ export class SearchService {
 		const [channels, programs, recordings] = await Promise.all([
 			this.repository.searchChannels(q, limit),
 			this.repository.searchPrograms(q, limit, now),
-			this.repository.searchRecordings(q, limit)
+			this.repository.searchRecordings(q, limit, userId)
 		]);
 
 		return {
@@ -36,7 +39,7 @@ export class SearchService {
 				id: row.id,
 				number: row.number,
 				name: row.name,
-				logoUrl: row.logoUrl ?? null,
+				logoUrl: row.logoUrl ? `/api/v1/channels/${row.id}/logo` : null,
 				score: Number(row.score)
 			})),
 			programs: programs.map((row) => ({

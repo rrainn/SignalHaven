@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 /**
  * Frontend perf gate — asserts FCP < 1.5s on `/guide` under a Slow-3G

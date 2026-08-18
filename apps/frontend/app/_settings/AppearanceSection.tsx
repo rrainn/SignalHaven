@@ -3,12 +3,13 @@
 import {
 	uiSettingsSchema,
 	type Density,
-	type Settings,
-	type SettingsPatch
+	type UserPreferences,
+	type UserPreferencesPatch
 } from "@signalhaven/shared";
-import { useCallback, useState, type FormEvent } from "react";
+import { CircleCheck } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-import { updateSettings } from "../../lib/api-client";
+import { updatePreferences } from "../../lib/api-client";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
 import { Button } from "../_ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../_ui/Card";
@@ -29,10 +30,12 @@ import { applyAppearance, persistAppearance } from "./appearance";
 import { formatErrorMessage, formatIssue } from "./form-helpers";
 
 export type AppearanceSectionProps = {
-	settings: Settings;
-	onChanged: (next: Settings) => void;
+	preferences: UserPreferences["ui"];
+	onChanged: (next: UserPreferences) => void;
+	/** Diagnostics are an administrator capability, not a personal preference. */
+	showAdvancedMode?: boolean;
 	/** App-owned persistence path; isolated tests fall back to the API client. */
-	saveSettings?: (patch: SettingsPatch) => Promise<Settings>;
+	savePreferences?: (patch: UserPreferencesPatch) => Promise<UserPreferences>;
 };
 
 const THEME_LABELS: Record<ThemeMode, string> = {
@@ -47,32 +50,42 @@ const DENSITY_LABELS: Record<Density, string> = {
 };
 
 /**
- * Settings section for appearance (rrainn/SignalHaven#U11-settings):
+ * Account preference form for appearance and guide presentation:
  * theme, density, and animations on/off.
  *
  * Theme persistence is shared with the existing `useTheme()` hook so the
  * `themeBootstrapScript` continues to prevent flash-of-wrong-theme on
  * reload. Density and animations are mirrored to `localStorage` for
- * instant application + persisted via `PATCH /api/v1/settings` for
+ * instant application + persisted via `PATCH /api/v1/preferences` for
  * cross-device sync; both are validated against `uiSettingsSchema`
  * client-side.
  */
 export function AppearanceSection(props: AppearanceSectionProps) {
-	const { settings, onChanged } = props;
+	const { preferences, onChanged } = props;
 	const { mode: themeMode, setMode: setThemeMode } = useTheme();
 	const advancedMode = useAdvancedModeOptional();
 
-	const [density, setDensity] = useState<Density>(settings.ui.density);
-	const [animations, setAnimations] = useState<boolean>(settings.ui.animations);
+	const [density, setDensity] = useState<Density>(preferences.density);
+	const [animations, setAnimations] = useState<boolean>(preferences.animations);
 	const [epgHoursVisible, setEpgHoursVisible] = useState(
-		String(settings.ui.epgHoursVisible)
+		String(preferences.epgHoursVisible)
 	);
 	const [use24HourClock, setUse24HourClock] = useState(
-		settings.ui.use24HourClock
+		preferences.use24HourClock
 	);
 	const [submitting, setSubmitting] = useState(false);
+	const [dirty, setDirty] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [savedAt, setSavedAt] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (dirty || submitting) return;
+		setDensity(preferences.density);
+		setAnimations(preferences.animations);
+		setEpgHoursVisible(String(preferences.epgHoursVisible));
+		setUse24HourClock(preferences.use24HourClock);
+		setThemeMode(preferences.theme);
+	}, [dirty, preferences, setThemeMode, submitting]);
 
 	const onSubmit = useCallback(
 		async (event: FormEvent<HTMLFormElement>) => {
@@ -96,9 +109,10 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 
 			setSubmitting(true);
 			try {
-				const save = props.saveSettings ?? updateSettings;
+				const save = props.savePreferences ?? updatePreferences;
 				const next = await save({ ui: parsed.data });
 				onChanged(next);
+				setDirty(false);
 				// Apply + persist locally so the next reload picks up the new
 				// density / animation choice without waiting for the network.
 				applyAppearance({ density, animations });
@@ -115,7 +129,7 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 			density,
 			epgHoursVisible,
 			onChanged,
-			props.saveSettings,
+			props.savePreferences,
 			themeMode,
 			use24HourClock
 		]
@@ -149,7 +163,10 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 										type="button"
 										aria-pressed={active}
 										data-testid={`appearance-theme-${m}`}
-										onClick={() => setThemeMode(m)}
+										onClick={() => {
+											setDirty(true);
+											setThemeMode(m);
+										}}
 										className={
 											"rounded-full px-3 py-1 transition-colors " +
 											(active
@@ -171,6 +188,7 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 							onValueChange={(value) => {
 								const next = value as Density;
 								setDensity(next);
+								setDirty(true);
 								applyAppearance({ density: next, animations });
 							}}
 						>
@@ -193,6 +211,7 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 							checked={animations}
 							onCheckedChange={(value: boolean) => {
 								setAnimations(value);
+								setDirty(true);
 								applyAppearance({ density, animations: value });
 							}}
 							aria-label="Animations"
@@ -211,7 +230,10 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 							min={1}
 							max={24}
 							value={epgHoursVisible}
-							onChange={(e) => setEpgHoursVisible(e.target.value)}
+							onChange={(e) => {
+								setDirty(true);
+								setEpgHoursVisible(e.target.value);
+							}}
 						/>
 					</label>
 
@@ -219,36 +241,41 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 						<span className="text-primary">24-hour clock</span>
 						<Switch
 							checked={use24HourClock}
-							onCheckedChange={(value: boolean) => setUse24HourClock(value)}
+							onCheckedChange={(value: boolean) => {
+								setDirty(true);
+								setUse24HourClock(value);
+							}}
 							aria-label="24-hour clock"
 						/>
 					</label>
 				</CardContent>
 			</Card>
 
-			<Card>
-				<CardHeader>
-					<CardTitle>Advanced mode</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<label className="flex items-start justify-between gap-4 text-sm">
-						<span className="space-y-1">
-							<span className="block text-primary">Enable advanced mode</span>
-							<span className="block text-xs text-secondary">
-								Adds FFmpeg controls, HDHomeRun signal quality, detailed
-								playback statistics, and diagnostic error details on this
-								browser.
+			{props.showAdvancedMode !== false ? (
+				<Card>
+					<CardHeader>
+						<CardTitle>Advanced mode</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<label className="flex items-start justify-between gap-4 text-sm">
+							<span className="space-y-1">
+								<span className="block text-primary">Enable advanced mode</span>
+								<span className="block text-xs text-secondary">
+									Adds FFmpeg controls, HDHomeRun signal quality, detailed
+									playback statistics, and diagnostic error details on this
+									browser.
+								</span>
 							</span>
-						</span>
-						<Switch
-							checked={advancedMode?.enabled ?? false}
-							onCheckedChange={(enabled) => advancedMode?.setEnabled(enabled)}
-							aria-label="Advanced mode"
-							data-testid="advanced-mode-toggle"
-						/>
-					</label>
-				</CardContent>
-			</Card>
+							<Switch
+								checked={advancedMode?.enabled ?? false}
+								onCheckedChange={(enabled) => advancedMode?.setEnabled(enabled)}
+								aria-label="Advanced mode"
+								data-testid="advanced-mode-toggle"
+							/>
+						</label>
+					</CardContent>
+				</Card>
+			) : null}
 
 			{error ? (
 				<p role="alert" className="text-sm text-danger">
@@ -256,7 +283,11 @@ export function AppearanceSection(props: AppearanceSectionProps) {
 				</p>
 			) : null}
 			{savedAt && !error ? (
-				<p role="status" className="text-sm text-success">
+				<p
+					role="status"
+					className="flex items-center gap-2 text-sm text-primary"
+				>
+					<CircleCheck aria-hidden="true" className="h-4 w-4 text-accent" />
 					Saved.
 				</p>
 			) : null}

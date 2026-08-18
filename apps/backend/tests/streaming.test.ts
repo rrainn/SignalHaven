@@ -14,6 +14,7 @@ import test from "node:test";
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { EventBus } from "../src/events/event-bus";
 import type { HealthRepository } from "../src/repositories/health.repository";
 import { StreamSession } from "../src/streaming/stream-session";
@@ -142,6 +143,7 @@ test(
 		});
 
 		const app = createApp({
+			authentication: createTestAuthentication(),
 			env: { ...process.env, NODE_ENV: "test" },
 			healthRepository: stubHealthRepository(),
 			tunersService,
@@ -276,6 +278,116 @@ test("StreamSession runs ffmpeg once for many concurrent attaches", async () => 
 			"lease released after tear-down"
 		);
 	} finally {
+		await rm(tmpRoot, { recursive: true, force: true });
+	}
+});
+
+test("StreamingService serializes simultaneous first attaches before tuner allocation", async () => {
+	const tmpRoot = await mkdtemp(join(tmpdir(), "signalhaven-stream-race-"));
+	let streaming: StreamingService | undefined;
+	try {
+		let spawnCount = 0;
+		const providerId = randomUUID();
+		const allocator = new TunerAllocator({ capacity: async () => 1 });
+		streaming = new StreamingService({
+			allocator,
+			resolver: {
+				resolve: async () => ({
+					providerId,
+					providerChannelId: "race-channel",
+					upstreamUrl: "fake://race"
+				})
+			},
+			lingerMs: 0,
+			tmpRoot,
+			runner: {
+				spawn: (args) => {
+					spawnCount += 1;
+					const pattern = args[
+						args.indexOf("-hls_segment_filename") + 1
+					] as string;
+					return makeFakeProcess(
+						pattern.substring(0, pattern.lastIndexOf("/"))
+					);
+				}
+			}
+		});
+
+		const [first, second] = await Promise.all([
+			streaming.attach("logical-channel", "direct"),
+			streaming.attach("logical-channel", "direct")
+		]);
+		assert.equal(first, second);
+		assert.equal(first.getRefCount(), 2);
+		assert.equal(spawnCount, 1);
+		assert.equal(allocator.getActivity().length, 1);
+
+		const stopped = new Promise<void>((resolve) =>
+			first.onStopped(() => resolve())
+		);
+		first.detach();
+		second.detach();
+		await stopped;
+		assert.equal(streaming.getActiveSessionCount(), 0);
+		assert.equal(allocator.getActivity().length, 0);
+	} finally {
+		await streaming?.stopAll();
+		await rm(tmpRoot, { recursive: true, force: true });
+	}
+});
+
+test("StreamingService shutdown waits for a pre-publication allocation", async () => {
+	const tmpRoot = await mkdtemp(
+		join(tmpdir(), "signalhaven-stream-stop-race-")
+	);
+	let releaseCapacity: (() => void) | undefined;
+	const capacityCanFinish = new Promise<void>((resolve) => {
+		releaseCapacity = resolve;
+	});
+	let notifyCapacityStarted: (() => void) | undefined;
+	const capacityStarted = new Promise<void>((resolve) => {
+		notifyCapacityStarted = resolve;
+	});
+	const allocator = new TunerAllocator({
+		capacity: async () => {
+			notifyCapacityStarted?.();
+			await capacityCanFinish;
+			return 1;
+		}
+	});
+	const providerId = randomUUID();
+	const streaming = new StreamingService({
+		allocator,
+		resolver: {
+			resolve: async () => ({
+				providerId,
+				providerChannelId: "shutdown-channel",
+				upstreamUrl: "fake://shutdown"
+			})
+		},
+		lingerMs: 0,
+		tmpRoot,
+		runner: {
+			spawn: (args) => {
+				const pattern = args[
+					args.indexOf("-hls_segment_filename") + 1
+				] as string;
+				return makeFakeProcess(pattern.substring(0, pattern.lastIndexOf("/")));
+			}
+		}
+	});
+	try {
+		const attaching = streaming.attach("logical-channel", "direct");
+		await capacityStarted;
+		const stopping = streaming.stopAll();
+		releaseCapacity?.();
+		await Promise.allSettled([attaching, stopping]);
+
+		assert.equal(streaming.getActiveSessionCount(), 0);
+		assert.equal(allocator.getActivity().length, 0);
+	} finally {
+		releaseCapacity?.();
+		await streaming.stopAll();
 		await rm(tmpRoot, { recursive: true, force: true });
 	}
 });
@@ -415,6 +527,7 @@ test("viewer release stops the stream immediately after the last viewer leaves",
 		const firstViewerId = randomUUID();
 		const secondViewerId = randomUUID();
 		const app = createApp({
+			authentication: createTestAuthentication(),
 			env: { ...process.env, NODE_ENV: "test" },
 			healthRepository: stubHealthRepository(),
 			tunersService: stubTunersService(allocator),
@@ -1040,26 +1153,33 @@ test("media playlist segment URLs are served by the streaming route", async () =
 			tmpRoot
 		});
 		const app = createApp({
+			authentication: createTestAuthentication(),
 			env: { ...process.env, NODE_ENV: "test" },
 			healthRepository: stubHealthRepository(),
 			tunersService: stubTunersService(allocator),
 			streamingService: streaming
 		});
 		const channelId = "ch-segment-route";
+		const mediaTicket = "m".repeat(43);
+		const viewerId = randomUUID();
 
 		// Start the session through the same entry point used by the player.
 		const master = await request(app).get(
-			`/api/v1/stream/${channelId}/master.m3u8?profile=direct`
+			`/api/v1/stream/${channelId}/master.m3u8?profile=direct&viewerId=${viewerId}&mediaTicket=${mediaTicket}`
 		);
 		assert.equal(master.status, 200);
+		assert.match(master.text, new RegExp(`mediaTicket=${mediaTicket}`));
 
-		const playlistPath = `/api/v1/stream/${channelId}/playlist.m3u8?profile=direct`;
+		const playlistPath = `/api/v1/stream/${channelId}/playlist.m3u8?profile=direct&viewerId=${viewerId}&mediaTicket=${mediaTicket}`;
 		const playlist = await request(app).get(playlistPath);
 		assert.equal(playlist.status, 200);
 		const segmentUri = playlist.text
 			.split(/\r?\n/)
 			.find((line) => line.length > 0 && !line.startsWith("#"));
-		assert.equal(segmentUri, "segments/seg-00000.ts?profile=direct");
+		assert.equal(
+			segmentUri,
+			`segments/seg-00000.ts?profile=direct&mediaTicket=${mediaTicket}&viewerId=${viewerId}`
+		);
 
 		// Resolve the playlist URI exactly as an HLS client does.
 		const segmentUrl = new URL(segmentUri, `http://localhost${playlistPath}`);
@@ -1109,6 +1229,7 @@ test("master.m3u8?profile=720p selects the 720p profile per session", async () =
 
 		const tunersService = stubTunersService(allocator);
 		const app = createApp({
+			authentication: createTestAuthentication(),
 			env: { ...process.env, NODE_ENV: "test" },
 			healthRepository: stubHealthRepository(),
 			tunersService,

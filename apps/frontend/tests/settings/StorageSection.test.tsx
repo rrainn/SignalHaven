@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { Settings } from "@signalhaven/shared";
+import { settingsDefaults, type Settings } from "@signalhaven/shared";
 
 import { StorageSection } from "../../app/_settings/StorageSection";
 
@@ -25,6 +25,7 @@ beforeEach(() => {
 });
 
 const baseSettings: Settings = {
+	...settingsDefaults,
 	storage: { path: "/var/lib/signalhaven/recordings", quotaGb: null },
 	transcoding: {
 		enabled: false,
@@ -36,21 +37,7 @@ const baseSettings: Settings = {
 		availableHwaccels: [],
 		captionsEnabled: true
 	},
-	ui: {
-		theme: "system",
-		epgHoursVisible: 4,
-		use24HourClock: false,
-		density: "comfortable",
-		animations: true
-	},
 	recordings: { paddingBeforeSec: 15, paddingAfterSec: 30 },
-	channels: { favorites: [], hidden: [], order: [] },
-	player: {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: {}
-	},
 	timeShift: {
 		enabled: true,
 		bufferPath: null,

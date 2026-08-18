@@ -18,6 +18,9 @@ import { CompactThemeAction } from "../_theme/CompactThemeAction";
 import { ThemeToggle } from "../_theme/ThemeToggle";
 import { cn } from "../_ui/cn";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
+import { AccountControls } from "../_auth/AccountControls";
+import { useAuth } from "../_auth/AuthProvider";
+import { Button } from "../_ui/Button";
 
 import { BrandMark } from "./BrandMark";
 import { SmartLink } from "./SmartLink";
@@ -87,18 +90,25 @@ export function isNavItemActive(pathname: string, href: string): boolean {
 export function AppShell({ children }: { children: React.ReactNode }) {
 	const preferences = usePreferencesOptional();
 	const advancedMode = useAdvancedModeOptional();
+	const auth = useAuth();
 	const pathname = usePathname();
-	const navItems = advancedMode?.enabled
-		? [
-				...NAV_ITEMS,
-				{
-					href: "/advanced",
-					label: "Advanced",
-					shortLabel: "Tools",
-					icon: Wrench
-				}
-			]
-		: NAV_ITEMS;
+	const isAdmin =
+		auth.state.status === "signed-in" && auth.state.user.role === "admin";
+	const permittedItems = isAdmin
+		? NAV_ITEMS
+		: NAV_ITEMS.filter((item) => item.href !== "/settings");
+	const navItems =
+		advancedMode?.enabled && isAdmin
+			? [
+					...permittedItems,
+					{
+						href: "/advanced",
+						label: "Advanced",
+						shortLabel: "Tools",
+						icon: Wrench
+					}
+				]
+			: permittedItems;
 
 	return (
 		<div className="flex min-h-dvh flex-col bg-background text-primary">
@@ -118,10 +128,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 					data-testid="preferences-error"
 					className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
 				>
-					{preferences.status === "error"
-						? "Saved preferences could not be loaded. Safe defaults are in use."
-						: "A preference change could not be saved."}{" "}
-					{preferences.error.message}
+					<div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2">
+						<span>
+							{preferences.status === "error"
+								? "Personal preferences are unavailable."
+								: "A preference change could not be saved."}{" "}
+							{preferences.error.message}
+						</span>
+						{preferences.status === "error" ? (
+							<Button
+								size="sm"
+								variant="outline"
+								onClick={() => void preferences.retry()}
+							>
+								Try again
+							</Button>
+						) : null}
+					</div>
 				</div>
 			) : null}
 
@@ -155,7 +178,7 @@ function TopAppBar({
 					className="group flex shrink-0 items-center gap-2 text-base font-semibold tracking-[-0.025em] text-primary"
 				>
 					<BrandMark className="h-8 w-8 transition-transform duration-200 group-hover:scale-[1.04] motion-reduce:transition-none" />
-					<span>SignalHaven</span>
+					<span className="hidden sm:inline">SignalHaven</span>
 				</Link>
 
 				<nav
@@ -184,6 +207,7 @@ function TopAppBar({
 					<GlobalSearch />
 					<ThemeToggle className="hidden md:inline-flex" />
 					<CompactThemeAction className="md:hidden" />
+					<AccountControls />
 				</div>
 			</div>
 		</header>
