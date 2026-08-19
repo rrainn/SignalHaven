@@ -9,7 +9,6 @@ import {
 	Wrench,
 	type LucideIcon
 } from "lucide-react";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { usePreferencesOptional } from "../_preferences/PreferencesProvider";
@@ -23,7 +22,7 @@ import { useAuth } from "../_auth/AuthProvider";
 import { Button } from "../_ui/Button";
 
 import { BrandMark } from "./BrandMark";
-import { SmartLink } from "./SmartLink";
+import { IntentPrefetchLink } from "./SmartLink";
 
 /**
  * Mobile-first app shell.
@@ -172,21 +171,21 @@ function TopAppBar({
 	return (
 		<header className="sticky top-0 z-30 border-b border-border bg-surface/80 backdrop-blur">
 			<div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
-				<Link
+				<IntentPrefetchLink
 					href="/"
 					aria-label="SignalHaven home"
 					className="group flex shrink-0 items-center gap-2 text-base font-semibold tracking-[-0.025em] text-primary"
 				>
 					<BrandMark className="h-8 w-8 transition-transform duration-200 group-hover:scale-[1.04] motion-reduce:transition-none" />
 					<span className="hidden sm:inline">SignalHaven</span>
-				</Link>
+				</IntentPrefetchLink>
 
 				<nav
 					aria-label="Primary"
 					className="hidden flex-1 items-center gap-1 md:flex"
 				>
 					{items.map((item) => (
-						<SmartLink
+						<IntentPrefetchLink
 							key={item.href}
 							href={item.href}
 							aria-current={
@@ -199,7 +198,7 @@ function TopAppBar({
 							)}
 						>
 							{item.label}
-						</SmartLink>
+						</IntentPrefetchLink>
 					))}
 				</nav>
 
@@ -235,7 +234,7 @@ function BottomNav({
 					const Icon = item.icon;
 					return (
 						<li key={item.href} className="min-w-0 flex-1">
-							<SmartLink
+							<IntentPrefetchLink
 								href={item.href}
 								aria-current={active ? "page" : undefined}
 								className={cn(
@@ -251,7 +250,7 @@ function BottomNav({
 								<span className="max-w-full truncate">
 									{item.shortLabel ?? item.label}
 								</span>
-							</SmartLink>
+							</IntentPrefetchLink>
 						</li>
 					);
 				})}

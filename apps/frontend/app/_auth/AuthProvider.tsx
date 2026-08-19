@@ -31,6 +31,7 @@ import {
 	clearAuthenticatedClientRole,
 	setAuthenticatedClientRole
 } from "../../lib/account-browser-state";
+import type { AuthBootstrap } from "./auth-bootstrap";
 
 export type AccountPreferencesBootstrap = {
 	userId: User["id"];
@@ -67,9 +68,20 @@ export type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 /** Owns cookie authentication and its account-bound preference bootstrap. */
-export function AuthProvider({ children }: { children: ReactNode }) {
-	const [state, setState] = useState<AuthState>({ status: "checking" });
-	const refreshGeneration = useRef(0);
+export function AuthProvider({
+	children,
+	initialBootstrap
+}: {
+	children: ReactNode;
+	initialBootstrap?: AuthBootstrap;
+}) {
+	const [state, setState] = useState<AuthState>(() =>
+		initialBootstrap
+			? stateFromBootstrap(initialBootstrap)
+			: { status: "checking" }
+	);
+	const initialBootstrapRef = useRef(initialBootstrap);
+	const refreshGeneration = useRef(initialBootstrap ? 1 : 0);
 
 	const refresh = useCallback(async () => {
 		const generation = ++refreshGeneration.current;
@@ -154,7 +166,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	useEffect(() => {
-		void refresh();
+		const bootstrap = initialBootstrapRef.current;
+		if (bootstrap) {
+			// The role stays memory-only and is established from the validated snapshot.
+			if (bootstrap.status === "signed-in") {
+				setAuthenticatedClientRole(bootstrap.user.role);
+			} else {
+				clearAuthenticatedClientRole();
+			}
+		} else {
+			void refresh();
+		}
 		return () => {
 			refreshGeneration.current += 1;
 		};
@@ -232,4 +254,32 @@ export function useAuthOptional(): AuthContextValue | null {
 
 function normalizeError(failure: unknown, fallback: string): Error {
 	return failure instanceof Error ? failure : new Error(fallback);
+}
+
+/** Converts the serializable server result into the provider's runtime state. */
+function stateFromBootstrap(bootstrap: AuthBootstrap): AuthState {
+	if (bootstrap.status === "account-required") return bootstrap;
+	if (bootstrap.status === "signed-out") return bootstrap;
+	if (bootstrap.status === "unavailable") {
+		return { status: "unavailable", error: new Error(bootstrap.message) };
+	}
+	return {
+		status: "signed-in",
+		user: bootstrap.user,
+		generation: 1,
+		preferencesBootstrap:
+			bootstrap.preferences.status === "ready"
+				? {
+						userId: bootstrap.user.id,
+						generation: 1,
+						status: "ready",
+						preferences: bootstrap.preferences.preferences
+					}
+				: {
+						userId: bootstrap.user.id,
+						generation: 1,
+						status: "error",
+						error: new Error(bootstrap.preferences.message)
+					}
+	};
 }

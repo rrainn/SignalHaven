@@ -1,13 +1,14 @@
 /* SignalHaven service worker — minimal app-shell cache. */
 /* eslint-env serviceworker */
 
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL_CACHE = `signalhaven-shell-${VERSION}`;
 const RUNTIME_CACHE = `signalhaven-runtime-${VERSION}`;
 
 // Files that make up the offline-capable shell. Kept short — Next.js asset
 // URLs are content-hashed, so we let runtime caching handle them lazily.
-const SHELL_URLS = ["/", "/manifest.webmanifest", "/offline.html"];
+// Root HTML is account-owned, so only user-neutral offline assets are shared.
+const SHELL_URLS = ["/manifest.webmanifest", "/offline.html"];
 
 self.addEventListener("install", (event) => {
 	event.waitUntil(
@@ -51,28 +52,36 @@ self.addEventListener("fetch", (event) => {
 	// Never cache API calls — they must always hit the network.
 	if (url.pathname.startsWith("/api/")) return;
 
-	// Navigation requests: network-first with offline fallback so users see
-	// fresh HTML when online but still get the shell when offline.
+	// Next RSC payloads can contain account-owned route state and are never shared.
+	if (url.searchParams.has("_rsc") || req.headers.get("RSC") === "1") return;
+
+	// Navigation HTML is private. Use the network or a user-neutral offline page.
 	if (req.mode === "navigate") {
 		event.respondWith(
-			fetch(req)
-				.then((res) => {
-					const clone = res.clone();
-					caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, clone));
-					return res;
-				})
-				.catch(() =>
-					caches
-						.match(req)
-						.then(
-							(m) => m || caches.match("/offline.html") || caches.match("/")
-						)
-				)
+			fetch(req).catch(async () => {
+				const offline = await caches.match("/offline.html");
+				return (
+					offline ||
+					new Response("SignalHaven is offline.", {
+						status: 503,
+						headers: { "Content-Type": "text/plain; charset=utf-8" }
+					})
+				);
+			})
 		);
 		return;
 	}
 
-	// Static assets: cache-first.
+	// Cache only immutable/user-neutral assets, never arbitrary same-origin GETs.
+	const cacheableAsset =
+		url.pathname.startsWith("/_next/static/") ||
+		url.pathname.startsWith("/icons/") ||
+		url.pathname === "/manifest.webmanifest" ||
+		url.pathname === "/offline.html" ||
+		url.pathname === "/favicon.ico";
+	if (!cacheableAsset) return;
+
+	// User-neutral static assets remain cache-first for a useful offline surface.
 	event.respondWith(
 		caches.match(req).then(
 			(cached) =>

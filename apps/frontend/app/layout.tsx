@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { Suspense, type ReactNode } from "react";
 
 import "./globals.css";
 import { AuthGate } from "./_auth/AuthGate";
 import { AuthProvider } from "./_auth/AuthProvider";
 import { AuthCheckingSurface } from "./_auth/AuthSurface";
+import { loadServerAuthBootstrap } from "./_auth/server-auth-bootstrap";
 import { ServiceWorkerRegistrar } from "./_pwa/ServiceWorkerRegistrar";
 import { appearanceBootstrapScript } from "./_settings/appearance";
 import { themeBootstrapScript } from "./_theme/theme";
@@ -53,11 +55,19 @@ export const viewport: Viewport = {
 	]
 };
 
+// Account-owned HTML must be resolved per request and must never enter a shared cache.
+export const dynamic = "force-dynamic";
+
 type RootLayoutProps = {
 	children: ReactNode;
 };
 
-export default function RootLayout({ children }: RootLayoutProps) {
+export default async function RootLayout({ children }: RootLayoutProps) {
+	const requestHeaders = await headers();
+	const initialBootstrap = await loadServerAuthBootstrap({
+		cookie: requestHeaders.get("cookie")
+	});
+
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<head>
@@ -83,7 +93,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
 			</head>
 			<body className="antialiased">
 				<ThemeProvider>
-					<AuthProvider>
+					<AuthProvider initialBootstrap={initialBootstrap}>
 						<Suspense fallback={<AuthCheckingSurface />}>
 							<AuthGate>{children}</AuthGate>
 						</Suspense>

@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthenticatedApplication } from "../../app/_auth/AuthenticatedApplication";
+import type { AuthBootstrap } from "../../app/_auth/auth-bootstrap";
 import { AuthProvider, useAuth } from "../../app/_auth/AuthProvider";
 import { usePreferences } from "../../app/_preferences/PreferencesProvider";
 import { ThemeProvider } from "../../app/_theme/ThemeProvider";
@@ -131,10 +132,12 @@ function PreferencesProbe() {
 	);
 }
 
-function renderBootstrap() {
+function renderBootstrap(initialBootstrap?: AuthBootstrap) {
 	return render(
 		<ThemeProvider>
-			<AuthProvider>
+			<AuthProvider
+				{...(initialBootstrap === undefined ? {} : { initialBootstrap })}
+			>
 				<BootstrapProbe />
 			</AuthProvider>
 		</ThemeProvider>
@@ -148,6 +151,22 @@ beforeEach(() => {
 });
 
 describe("account-safe preference bootstrap", () => {
+	it("adopts a server snapshot without repeating auth or preference reads", async () => {
+		renderBootstrap({
+			status: "signed-in",
+			user: admin,
+			preferences: {
+				status: "ready",
+				preferences: adminPreferences
+			}
+		});
+
+		expect(await screen.findByTestId("protected-content")).toBeInTheDocument();
+		expect(screen.getByTestId("clock")).toHaveTextContent("true");
+		expect(getAuthStatusMock).not.toHaveBeenCalled();
+		expect(getPreferencesMock).not.toHaveBeenCalled();
+	});
+
 	it("revokes a stale administrator diagnostic role while bootstrap is pending", async () => {
 		const statusRequest = deferred<AuthStatus>();
 		const preferencesRequest = deferred<UserPreferences>();

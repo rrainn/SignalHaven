@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { IconButton } from "../_ui/IconButton";
 import { Spinner } from "../_ui/Spinner";
-import { SmartLink } from "../_layout/SmartLink";
+import { IntentPrefetchLink } from "../_layout/SmartLink";
 import { useAuth } from "./AuthProvider";
 
 /** Keeps the active local identity and session exit visible in compact chrome. */
@@ -29,7 +29,7 @@ export function AccountControls() {
 
 	return (
 		<div className="relative flex min-w-0 items-center gap-1">
-			<SmartLink
+			<IntentPrefetchLink
 				href="/preferences"
 				aria-label={`Preferences for ${auth.state.user.username}`}
 				className="max-w-20 truncate rounded px-1 py-1 text-xs font-medium text-secondary hover:bg-surface-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -37,7 +37,7 @@ export function AccountControls() {
 				data-testid="active-username"
 			>
 				{auth.state.user.username}
-			</SmartLink>
+			</IntentPrefetchLink>
 			<IconButton
 				variant="ghost"
 				size="sm"

@@ -111,11 +111,11 @@ stopping one session does not interrupt viewers using a different seek window.
 
 ### Frontend runtime
 
-| Variable                     | Default                 | Description                                                 |
-| ---------------------------- | ----------------------- | ----------------------------------------------------------- |
-| `SIGNALHAVEN_BACKEND_ORIGIN` | `http://localhost:3000` | Dev/proxy backend origin used by Next.js `/api/*` rewrites. |
-| `NEXT_PUBLIC_API_BASE_URL`   | _empty_                 | Optional API base URL override for frontend requests.       |
-| `NEXT_PUBLIC_DISABLE_SW`     | _unset_                 | Set to `1` to disable service worker registration.          |
+| Variable                     | Default                 | Description                                                                                                                                                                                                  |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SIGNALHAVEN_BACKEND_ORIGIN` | `http://localhost:3001` | Trusted backend origin used by Next.js API rewrites and uncached server-side account bootstrap. Set the same value at build and runtime; the container pins both paths to its internal backend on port 3001. |
+| `NEXT_PUBLIC_API_BASE_URL`   | _empty_                 | Optional API base URL override for frontend requests.                                                                                                                                                        |
+| `NEXT_PUBLIC_DISABLE_SW`     | _unset_                 | Set to `1` to disable service worker registration.                                                                                                                                                           |
 
 ### Test and CI helpers
 

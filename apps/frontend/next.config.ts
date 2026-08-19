@@ -7,7 +7,7 @@ import type { NextConfig } from "next";
  * backend on a non-default port.
  */
 const backendOrigin =
-	process.env.SIGNALHAVEN_BACKEND_ORIGIN ?? "http://localhost:3000";
+	process.env.SIGNALHAVEN_BACKEND_ORIGIN ?? "http://localhost:3001";
 const isSafePreviewBuild = process.env.SIGNALHAVEN_SAFE_PREVIEW === "1";
 
 const nextConfig: NextConfig = {

@@ -105,12 +105,13 @@ run_as_signalhaven env PORT=3001 node /app/apps/backend/dist/src/index.js &
 # Hand off to the Next.js standalone server, which becomes PID 2 and inherits
 # tini's signal handling via `exec`. Any env vars set on the container are
 # forwarded automatically. The /api/* rewrite destination was baked into the
-# routes manifest at build time (see Dockerfile), so no extra env vars are
-# needed here for proxying.
+# routes manifest at build time (see Dockerfile), so server rendering must use
+# that same internal origin to avoid resolving accounts against another server.
 # With outputFileTracingRoot set to the monorepo root, Next.js mirrors the
 # workspace directory structure inside the standalone bundle, so the entry
 # point lives at apps/frontend/server.js within that bundle.
 run_as_signalhaven env \
 	HOSTNAME=0.0.0.0 \
 	PORT=3000 \
+	SIGNALHAVEN_BACKEND_ORIGIN=http://127.0.0.1:3001 \
 	node /app/frontend-standalone/apps/frontend/server.js
