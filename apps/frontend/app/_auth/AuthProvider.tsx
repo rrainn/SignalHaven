@@ -1,6 +1,11 @@
 "use client";
 
-import type { AuthLogin, AuthSetup, User } from "@signalhaven/shared";
+import type {
+	AuthLogin,
+	AuthSetup,
+	User,
+	UserPreferences
+} from "@signalhaven/shared";
 import {
 	createContext,
 	useCallback,
@@ -13,7 +18,9 @@ import {
 } from "react";
 
 import {
+	ApiError,
 	getAuthStatus,
+	getPreferences,
 	login,
 	logout,
 	setupInitialAdmin
@@ -21,14 +28,28 @@ import {
 import { SESSION_EXPIRED_EVENT } from "../../lib/app-events";
 import {
 	clearAccountBrowserState,
+	clearAuthenticatedClientRole,
 	setAuthenticatedClientRole
 } from "../../lib/account-browser-state";
+
+export type AccountPreferencesBootstrap = {
+	userId: User["id"];
+	generation: number;
+} & (
+	| { status: "ready"; preferences: UserPreferences }
+	| { status: "error"; error: Error }
+);
 
 export type AuthState =
 	| { status: "checking" }
 	| { status: "account-required"; systemSetupRequired: boolean }
 	| { status: "signed-out" }
-	| { status: "signed-in"; user: User }
+	| {
+			status: "signed-in";
+			user: User;
+			generation: number;
+			preferencesBootstrap: AccountPreferencesBootstrap | null;
+	  }
 	| { status: "unavailable"; error: Error };
 
 export type AuthContextValue = {
@@ -45,16 +66,26 @@ export type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-/** Owns the browser's cookie session without ever retaining password material. */
+/** Owns cookie authentication and its account-bound preference bootstrap. */
 export function AuthProvider({ children }: { children: ReactNode }) {
 	const [state, setState] = useState<AuthState>({ status: "checking" });
 	const refreshGeneration = useRef(0);
 
 	const refresh = useCallback(async () => {
 		const generation = ++refreshGeneration.current;
+		// Checking is unauthenticated client state, even if a previous role was cached.
+		clearAuthenticatedClientRole();
 		setState({ status: "checking" });
+		// Start both independent reads before awaiting either to remove bootstrap latency.
+		const statusRequest = getAuthStatus();
+		const preferencesRequest = getPreferences({
+			unauthorized: "return-error"
+		}).then(
+			(preferences) => ({ status: "ready" as const, preferences }),
+			(failure: unknown) => ({ status: "error" as const, failure })
+		);
 		try {
-			const status = await getAuthStatus();
+			const status = await statusRequest;
 			if (generation !== refreshGeneration.current) return;
 			if (status.requiresInitialAdmin) {
 				clearAccountBrowserState();
@@ -65,8 +96,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 				return;
 			}
 			if (status.user) {
+				const preferencesResult = await preferencesRequest;
+				if (generation !== refreshGeneration.current) return;
+				if (
+					preferencesResult.status === "error" &&
+					preferencesResult.failure instanceof ApiError &&
+					preferencesResult.failure.status === 401
+				) {
+					// Auth status proved a session existed, so this 401 is real expiry.
+					clearAccountBrowserState();
+					setState({ status: "signed-out" });
+					return;
+				}
+				const preferencesBootstrap: AccountPreferencesBootstrap =
+					preferencesResult.status === "ready"
+						? {
+								userId: status.user.id,
+								generation,
+								status: "ready",
+								preferences: preferencesResult.preferences
+							}
+						: {
+								userId: status.user.id,
+								generation,
+								status: "error",
+								error: normalizeError(
+									preferencesResult.failure,
+									"Saved preferences could not be loaded"
+								)
+							};
+				if (preferencesResult.status === "error") {
+					// The authenticated shell remains closed while retaining the root cause.
+					console.error(
+						"[preferences] failed to load saved settings",
+						preferencesResult.failure
+					);
+				}
 				setAuthenticatedClientRole(status.user.role);
-				setState({ status: "signed-in", user: status.user });
+				setState({
+					status: "signed-in",
+					user: status.user,
+					generation,
+					preferencesBootstrap
+				});
 			} else {
 				clearAccountBrowserState();
 				setState({ status: "signed-out" });
@@ -101,8 +173,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	const createInitialAdmin = useCallback(
 		async (credentials: Pick<AuthSetup, "username" | "password">) => {
 			const session = await setupInitialAdmin(credentials);
+			const generation = ++refreshGeneration.current;
 			setAuthenticatedClientRole(session.user.role);
-			setState({ status: "signed-in", user: session.user });
+			setState({
+				status: "signed-in",
+				user: session.user,
+				generation,
+				preferencesBootstrap: null
+			});
 			return session.user;
 		},
 		[]
@@ -111,8 +189,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	const signIn = useCallback(
 		async (credentials: Pick<AuthLogin, "username" | "password">) => {
 			const session = await login(credentials);
+			const generation = ++refreshGeneration.current;
 			setAuthenticatedClientRole(session.user.role);
-			setState({ status: "signed-in", user: session.user });
+			setState({
+				status: "signed-in",
+				user: session.user,
+				generation,
+				preferencesBootstrap: null
+			});
 			return session.user;
 		},
 		[]

@@ -2,6 +2,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { userPreferencesDefaults } from "@signalhaven/shared";
+
 import { AuthProvider, useAuth } from "../../app/_auth/AuthProvider";
 import { SignInForm } from "../../app/_auth/SignInForm";
 import { SESSION_EXPIRED_EVENT } from "../../lib/app-events";
@@ -13,6 +15,7 @@ vi.mock("../../lib/api-client", async () => {
 	return {
 		...actual,
 		getAuthStatus: vi.fn(),
+		getPreferences: vi.fn(),
 		setupInitialAdmin: vi.fn(),
 		login: vi.fn(),
 		logout: vi.fn()
@@ -22,6 +25,7 @@ vi.mock("../../lib/api-client", async () => {
 import {
 	ApiError,
 	getAuthStatus,
+	getPreferences,
 	login,
 	logout,
 	setupInitialAdmin
@@ -34,6 +38,7 @@ const admin = {
 };
 
 const getAuthStatusMock = vi.mocked(getAuthStatus);
+const getPreferencesMock = vi.mocked(getPreferences);
 const loginMock = vi.mocked(login);
 const logoutMock = vi.mocked(logout);
 const setupInitialAdminMock = vi.mocked(setupInitialAdmin);
@@ -76,6 +81,8 @@ function renderProvider() {
 describe("AuthProvider", () => {
 	beforeEach(() => {
 		getAuthStatusMock.mockReset();
+		getPreferencesMock.mockReset();
+		getPreferencesMock.mockResolvedValue(userPreferencesDefaults);
 		loginMock.mockReset();
 		logoutMock.mockReset();
 		setupInitialAdminMock.mockReset();

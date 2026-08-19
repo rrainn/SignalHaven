@@ -137,6 +137,8 @@ export class ApiError extends Error {
 export type ApiRequestInit = Omit<RequestInit, "body"> & {
 	/** JSON body — will be `JSON.stringify`-ed and sent with the right header. */
 	json?: unknown;
+	/** Controls whether a 401 broadcasts expiry before the caller knows a session exists. */
+	unauthorized?: "expire-session" | "return-error";
 };
 
 function buildUrl(path: string): string {
@@ -157,7 +159,7 @@ export async function apiRequest<T>(
 	schema: ZodType<T>,
 	init: ApiRequestInit = {}
 ): Promise<T> {
-	const { json, headers, ...rest } = init;
+	const { json, headers, unauthorized = "expire-session", ...rest } = init;
 	const finalHeaders = new Headers(headers);
 	finalHeaders.set("Accept", "application/json");
 	let body: BodyInit | null = null;
@@ -190,7 +192,11 @@ export async function apiRequest<T>(
 	}
 
 	if (!res.ok) {
-		if (res.status === 401 && typeof window !== "undefined") {
+		if (
+			res.status === 401 &&
+			unauthorized === "expire-session" &&
+			typeof window !== "undefined"
+		) {
 			window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 		}
 		const generic = `Request failed: ${res.status} ${res.statusText}`;

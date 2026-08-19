@@ -7,6 +7,8 @@ import {
 	waitFor,
 	within
 } from "@testing-library/react";
+import { hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import userEvent from "@testing-library/user-event";
 
 import { Player } from "../../app/_player/Player";
@@ -111,6 +113,51 @@ beforeEach(() => {
 });
 
 describe("Player", () => {
+	it("hydrates live playback before creating its client viewer identity", async () => {
+		const serverViewerId = "11111111-1111-4111-8111-111111111111";
+		const clientViewerId = "22222222-2222-4222-8222-222222222222";
+		let renderPhase: "server" | "client" = "server";
+		const viewerIdPhases: Array<"server" | "client"> = [];
+		vi.spyOn(crypto, "randomUUID").mockImplementation(() => {
+			viewerIdPhases.push(renderPhase);
+			return renderPhase === "server" ? serverViewerId : clientViewerId;
+		});
+		const view = (
+			<Player channelId={CHANNEL_ID} hlsCtorOverride={FakeHlsCtor} />
+		);
+		const container = document.createElement("div");
+		container.innerHTML = renderToString(view);
+		document.body.append(container);
+		renderPhase = "client";
+		const hydrationErrors: unknown[] = [];
+		let root: Root | null = null;
+
+		try {
+			await act(async () => {
+				root = hydrateRoot(container, view, {
+					onRecoverableError: (error) => hydrationErrors.push(error)
+				});
+				await Promise.resolve();
+			});
+			await waitFor(() => expect(fakeInstances).toHaveLength(1));
+
+			// SSR must not allocate an identity that differs from the hydrated tree.
+			expect(viewerIdPhases).toEqual(["client"]);
+			expect(hydrationErrors).toEqual([]);
+			const sources = fakeInstances[0]!.loadSource.mock.calls.map(
+				([source]) => source as string
+			);
+			expect(sources).toHaveLength(1);
+			expectLiveSource(sources[0]!, CHANNEL_ID, "auto");
+			expect(
+				new URL(sources[0]!, "http://localhost").searchParams.get("viewerId")
+			).toBe(clientViewerId);
+		} finally {
+			await act(async () => root?.unmount());
+			container.remove();
+		}
+	});
+
 	it("uses a browser-safe profile in Auto mode and releases it on unmount", () => {
 		const sendBeacon = vi.fn(() => true);
 		Object.defineProperty(navigator, "sendBeacon", {

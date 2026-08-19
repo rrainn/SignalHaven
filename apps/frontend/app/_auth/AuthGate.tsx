@@ -13,7 +13,7 @@ import {
 	safeAppReturnPath
 } from "./route-access";
 
-/** Routes every browser state before protected providers can issue a request. */
+/** Routes every browser state before protected account UI can mount. */
 export function AuthGate({ children }: { children: ReactNode }) {
 	const auth = useAuth();
 	const pathname = usePathname();
@@ -57,7 +57,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
 	const denied =
 		auth.state.user.role !== "admin" && isAdministratorPath(pathname);
 	return (
-		<AuthenticatedApplication key={auth.state.user.id}>
+		<AuthenticatedApplication
+			key={`${auth.state.user.id}:${auth.state.generation}`}
+		>
 			{denied ? <AdminAccessDenied /> : children}
 		</AuthenticatedApplication>
 	);

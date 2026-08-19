@@ -12,6 +12,11 @@ export function setAuthenticatedClientRole(role: UserRole): void {
 	authenticatedRole = role;
 }
 
+/** Revokes diagnostic privilege while the server is resolving the active account. */
+export function clearAuthenticatedClientRole(): void {
+	authenticatedRole = null;
+}
+
 /** Allows detailed errors only for the currently authenticated administrator. */
 export function mayShowAdvancedDiagnostics(): boolean {
 	if (authenticatedRole !== "admin" || typeof window === "undefined") {

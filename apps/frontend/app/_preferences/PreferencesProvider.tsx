@@ -17,6 +17,7 @@ import {
 } from "react";
 
 import { getPreferences, updatePreferences } from "../../lib/api-client";
+import type { AccountPreferencesBootstrap } from "../_auth/AuthProvider";
 import { applyAppearance, persistAppearance } from "../_settings/appearance";
 import { useTheme } from "../_theme/ThemeProvider";
 
@@ -49,13 +50,42 @@ type PreferencesState = Pick<
  * Successful serialized PATCH responses replace the snapshot so open routes
  * react immediately and queued writes cannot commit out of order.
  */
-export function PreferencesProvider({ children }: { children: ReactNode }) {
+export function PreferencesProvider(props: {
+	accountId: string;
+	authGeneration: number;
+	bootstrap: AccountPreferencesBootstrap | null;
+	children: ReactNode;
+}) {
+	// The key gives every authenticated generation an isolated provider lifecycle.
+	return (
+		<AccountPreferencesProvider
+			key={`${props.accountId}:${props.authGeneration}`}
+			{...props}
+		/>
+	);
+}
+
+/** Owns one identity-bound preference lifecycle after bootstrap validation. */
+function AccountPreferencesProvider({
+	accountId,
+	authGeneration,
+	bootstrap,
+	children
+}: {
+	accountId: string;
+	authGeneration: number;
+	bootstrap: AccountPreferencesBootstrap | null;
+	children: ReactNode;
+}) {
 	const { setMode } = useTheme();
-	const [state, setState] = useState<PreferencesState>({
-		preferences: userPreferencesDefaults,
-		status: "loading",
-		error: null
-	});
+	const matchingBootstrap =
+		bootstrap?.userId === accountId && bootstrap.generation === authGeneration
+			? bootstrap
+			: null;
+	const [state, setState] = useState<PreferencesState>(() =>
+		initialPreferencesState(matchingBootstrap)
+	);
+	const loadOnMount = matchingBootstrap === null;
 	const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 	const generationRef = useRef(0);
 	const activeRef = useRef(false);
@@ -93,7 +123,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		activeRef.current = true;
-		void retry();
+		if (loadOnMount) void retry();
 		return () => {
 			// Invalidate every queued callback before a different account can mount.
 			activeRef.current = false;
@@ -102,7 +132,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 			applyAppearance(userPreferencesDefaults.ui);
 			persistAppearance(userPreferencesDefaults.ui);
 		};
-	}, [retry, setMode]);
+	}, [loadOnMount, retry, setMode]);
 
 	useEffect(() => {
 		if (state.status === "loading") return;
@@ -171,6 +201,31 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 			{children}
 		</PreferencesContext.Provider>
 	);
+}
+
+/** Converts a matching speculative result into the provider's fail-closed state. */
+function initialPreferencesState(
+	bootstrap: AccountPreferencesBootstrap | null
+): PreferencesState {
+	if (!bootstrap) {
+		return {
+			preferences: userPreferencesDefaults,
+			status: "loading",
+			error: null
+		};
+	}
+	if (bootstrap.status === "ready") {
+		return {
+			preferences: bootstrap.preferences,
+			status: "ready",
+			error: null
+		};
+	}
+	return {
+		preferences: userPreferencesDefaults,
+		status: "error",
+		error: bootstrap.error
+	};
 }
 
 /** Returns null for isolated component tests that intentionally omit the app boundary. */

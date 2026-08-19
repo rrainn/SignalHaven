@@ -4,12 +4,15 @@ import path from "node:path";
 
 import {
 	authStatusSchema,
+	playbackTelemetryEventSchema,
 	userPreferencesDefaults,
 	userPreferencesSchema
 } from "@signalhaven/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const HOST = "127.0.0.1";
+const PRIMARY_CHANNEL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000000";
+const VIEWER_ID = "33333333-3333-4333-8333-333333333333";
 const MOCK_BACKEND_PATH = path.resolve(
 	process.cwd(),
 	"scripts/lighthouse-mock-backend.mjs"
@@ -63,7 +66,7 @@ async function waitUntilReady(
 	throw new Error(`Lighthouse mock backend did not become ready:\n${output}`);
 }
 
-describe("Lighthouse mock backend account bootstrap", () => {
+describe("Lighthouse mock backend", () => {
 	beforeAll(async () => {
 		const port = await findAvailablePort();
 		baseUrl = `http://${HOST}:${port}`;
@@ -98,5 +101,53 @@ describe("Lighthouse mock backend account bootstrap", () => {
 
 		const preferences = userPreferencesSchema.parse(await response.json());
 		expect(preferences).toEqual(userPreferencesDefaults);
+	});
+
+	it("serves a non-error live HLS manifest for the Watch page", async () => {
+		const query = new URLSearchParams({
+			profile: "auto",
+			viewerId: VIEWER_ID
+		});
+		const response = await fetch(
+			`${baseUrl}/api/v1/stream/${PRIMARY_CHANNEL_ID}/master.m3u8?${query}`
+		);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toMatch(
+			/^application\/vnd\.apple\.mpegurl\b/
+		);
+		const manifest = await response.text();
+		expect(manifest).toMatch(/^#EXTM3U\r?\n/);
+		expect(manifest).toContain("#EXT-X-TARGETDURATION:");
+		expect(manifest).toContain("#EXT-X-MEDIA-SEQUENCE:");
+		expect(manifest).not.toContain("#EXT-X-ENDLIST");
+	});
+
+	it("accepts the Watch page playback telemetry and viewer release POSTs", async () => {
+		const telemetry = playbackTelemetryEventSchema.parse({
+			event: "startup_completed",
+			media: "live",
+			client: "web",
+			profile: "auto",
+			cause: "unknown",
+			durationSeconds: 0.25
+		});
+		const telemetryResponse = await fetch(
+			`${baseUrl}/api/v1/playback/telemetry`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(telemetry)
+			}
+		);
+		expect(telemetryResponse.status).toBe(204);
+		expect(await telemetryResponse.text()).toBe("");
+
+		const releaseResponse = await fetch(
+			`${baseUrl}/api/v1/stream/${PRIMARY_CHANNEL_ID}/viewers/${VIEWER_ID}/release?profile=auto`,
+			{ method: "POST" }
+		);
+		expect(releaseResponse.status).toBe(204);
+		expect(await releaseResponse.text()).toBe("");
 	});
 });

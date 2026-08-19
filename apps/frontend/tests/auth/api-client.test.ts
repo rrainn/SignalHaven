@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
 	ApiError,
 	apiRequest,
+	getPreferences,
 	login,
 	prepareRecordingPlayback,
 	setupInitialAdmin
@@ -80,6 +81,30 @@ describe("browser authentication requests", () => {
 		expect(init.cache).toBe("no-store");
 		expect(expired).toHaveBeenCalledTimes(1);
 		window.removeEventListener(SESSION_EXPIRED_EVENT, expired);
+	});
+
+	it("returns a speculative preference 401 without expiring an unknown session", async () => {
+		const expired = vi.fn();
+		window.addEventListener(SESSION_EXPIRED_EVENT, expired);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
+						status: 401,
+						headers: { "Content-Type": "application/json" }
+					})
+			)
+		);
+
+		try {
+			await expect(
+				getPreferences({ unauthorized: "return-error" })
+			).rejects.toBeInstanceOf(ApiError);
+			expect(expired).not.toHaveBeenCalled();
+		} finally {
+			window.removeEventListener(SESSION_EXPIRED_EVENT, expired);
+		}
 	});
 
 	it("does not trust a stale advanced flag without an authenticated admin", async () => {

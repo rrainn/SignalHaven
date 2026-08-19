@@ -97,7 +97,11 @@ function Probe() {
 function renderProvider() {
 	return render(
 		<ThemeProvider>
-			<PreferencesProvider>
+			<PreferencesProvider
+				accountId="00000000-0000-4000-8000-000000000001"
+				authGeneration={1}
+				bootstrap={null}
+			>
 				<Probe />
 			</PreferencesProvider>
 		</ThemeProvider>

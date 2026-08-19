@@ -21,10 +21,15 @@ export function AuthenticatedApplication({
 	children: ReactNode;
 }) {
 	const auth = useAuth();
-	const isAdministrator =
-		auth.state.status === "signed-in" && auth.state.user.role === "admin";
+	if (auth.state.status !== "signed-in") return null;
+	const { generation, preferencesBootstrap, user } = auth.state;
+	const isAdministrator = user.role === "admin";
 	return (
-		<PreferencesProvider>
+		<PreferencesProvider
+			accountId={user.id}
+			authGeneration={generation}
+			bootstrap={preferencesBootstrap}
+		>
 			<PreferencesApplication isAdministrator={isAdministrator}>
 				{children}
 			</PreferencesApplication>

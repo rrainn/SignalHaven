@@ -7,11 +7,10 @@
  * a backend, every API call from those client-rendered pages fails and
  * the pages stay in a spinner — which murders LCP and the perf score.
  *
- * This mock answers the handful of `GET /api/v1/*` endpoints those
- * pages hit on first paint, with the smallest fixtures that satisfy
- * the shared Zod schemas. Mutations are not implemented; the client
- * never PATCHes during the Lighthouse run because we never interact
- * with the page after navigation.
+ * This mock answers the handful of `/api/v1/*` endpoints those pages hit on
+ * first paint, with the smallest fixtures that satisfy the production
+ * contracts. Watch also starts playback and sends best-effort lifecycle POSTs
+ * without interaction, so those requests receive non-error responses too.
  *
  * Zero external deps — uses Node's built-in `http`/`url` modules so the CI
  * job can `node` it directly without an extra package-install round-trip.
@@ -31,6 +30,16 @@ const HOST = "127.0.0.1";
 const PRIMARY_CHANNEL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000000";
 const SECONDARY_CHANNEL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
 const TUNER_ID = "11111111-1111-4111-8111-111111111111";
+
+// An empty live media playlist keeps hls.js in its loading state without
+// inventing segment media or surfacing a fatal HTTP error during the audit.
+const LOADING_LIVE_MANIFEST = [
+	"#EXTM3U",
+	"#EXT-X-VERSION:3",
+	"#EXT-X-TARGETDURATION:6",
+	"#EXT-X-MEDIA-SEQUENCE:0",
+	""
+].join("\n");
 
 // Authenticate Lighthouse so it measures product screens instead of the fail-closed gate.
 const authenticatedUser = {
@@ -131,19 +140,53 @@ function send(res, status, body, contentType = "application/json") {
 	res.end(buf);
 }
 
+/** Match unload beacons for one of the channels exposed by this fixture. */
+function isViewerReleasePath(path) {
+	const match = /^\/api\/v1\/stream\/([^/]+)\/viewers\/([^/]+)\/release$/.exec(
+		path
+	);
+	return Boolean(
+		match?.[2] && channels.some((channel) => channel.id === match[1])
+	);
+}
+
+/** Send the same empty success response as the production lifecycle routes. */
+function sendNoContent(res) {
+	res.writeHead(204, { "Cache-Control": "no-store" });
+	res.end();
+}
+
 const server = createServer((req, res) => {
 	if (!req.url) {
 		send(res, 400, { error: { message: "Bad request" } });
 		return;
 	}
-	// Only ever serve GETs from the mock — the four pages we measure
-	// never PATCH or POST during the Lighthouse run.
-	if (req.method !== "GET") {
-		send(res, 405, { error: { message: "Method not allowed" } });
-		return;
-	}
 	const url = new URL(req.url, `http://${HOST}:${PORT}`);
 	const path = url.pathname;
+
+	if (
+		req.method === "POST" &&
+		(path === "/api/v1/playback/telemetry" || isViewerReleasePath(path))
+	) {
+		// Drain telemetry bodies so keepalive requests can finish cleanly.
+		req.resume();
+		return sendNoContent(res);
+	}
+	if (req.method !== "GET") {
+		return send(res, 405, { error: { message: "Method not allowed" } });
+	}
+	if (
+		channels.some(
+			(channel) => path === `/api/v1/stream/${channel.id}/master.m3u8`
+		)
+	) {
+		return send(
+			res,
+			200,
+			LOADING_LIVE_MANIFEST,
+			"application/vnd.apple.mpegurl; charset=utf-8"
+		);
+	}
 
 	switch (path) {
 		case "/api/v1/health":
