@@ -119,10 +119,11 @@ stopping one session does not interrupt viewers using a different seek window.
 
 ### Test and CI helpers
 
-| Variable                   | Default | Description                                                   |
-| -------------------------- | ------- | ------------------------------------------------------------- |
-| `COVERAGE_LINES_THRESHOLD` | `70`    | Backend line-coverage threshold for `test:coverage`.          |
-| `SIGNALHAVEN_RUN_PERF`     | `0`     | Enables optional backend perf test blocks when set to truthy. |
+| Variable                           | Default | Description                                                                                       |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `COVERAGE_LINES_THRESHOLD`         | `70`    | Backend line-coverage threshold for `test:coverage`.                                              |
+| `SIGNALHAVEN_E2E_CLIENT_API_MOCKS` | `0`     | Lets Playwright's per-page routes own auth bootstrap in E2E only. Never set this in a deployment. |
+| `SIGNALHAVEN_RUN_PERF`             | `0`     | Enables optional backend perf test blocks when set to truthy.                                     |
 
 ## Settings object
 

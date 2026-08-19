@@ -63,10 +63,15 @@ type RootLayoutProps = {
 };
 
 export default async function RootLayout({ children }: RootLayoutProps) {
-	const requestHeaders = await headers();
-	const initialBootstrap = await loadServerAuthBootstrap({
-		cookie: requestHeaders.get("cookie")
-	});
+	// Playwright owns API behavior inside each browser page, which cannot
+	// intercept server-side fetches made before that page exists.
+	const usesBrowserApiMocks =
+		process.env.SIGNALHAVEN_E2E_CLIENT_API_MOCKS === "1";
+	const initialBootstrap = usesBrowserApiMocks
+		? undefined
+		: await loadServerAuthBootstrap({
+				cookie: (await headers()).get("cookie")
+			});
 
 	return (
 		<html lang="en" suppressHydrationWarning>
@@ -93,7 +98,7 @@ export default async function RootLayout({ children }: RootLayoutProps) {
 			</head>
 			<body className="antialiased">
 				<ThemeProvider>
-					<AuthProvider initialBootstrap={initialBootstrap}>
+					<AuthProvider {...(initialBootstrap ? { initialBootstrap } : {})}>
 						<Suspense fallback={<AuthCheckingSurface />}>
 							<AuthGate>{children}</AuthGate>
 						</Suspense>

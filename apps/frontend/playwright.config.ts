@@ -34,7 +34,9 @@ export default defineConfig({
 		}
 	],
 	webServer: {
-		command: "PORT=43100 pnpm run start",
+		// Per-test page routes provide stateful account fixtures, so this test
+		// server intentionally leaves bootstrap to the intercepted browser API.
+		command: "SIGNALHAVEN_E2E_CLIENT_API_MOCKS=1 PORT=43100 pnpm run start",
 		url: "http://127.0.0.1:43100",
 		reuseExistingServer: !process.env["CI"],
 		timeout: 120_000,
