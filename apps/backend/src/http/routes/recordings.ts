@@ -432,9 +432,7 @@ function translate(error: unknown, role?: "admin" | "user"): unknown {
 	if (error instanceof CommercialAnalysisNotAvailableError) {
 		return new HttpError(409, "commercial_analysis_unavailable", error.message);
 	}
-	if (
-		error instanceof RecordingPlaybackCapacityError
-	) {
+	if (error instanceof RecordingPlaybackCapacityError) {
 		return new HttpError(error.statusCode, error.code, error.message);
 	}
 	if (

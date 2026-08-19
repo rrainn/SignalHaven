@@ -93,21 +93,21 @@ export class SeriesRulesRepository {
 			}
 			const [row] = await tx
 				.insert(seriesRules)
-			.values({
-				id: randomUUID(),
-				userId,
-				title: input.title,
-				channelId: input.channelId ?? null,
-				epgChannelId: input.epgChannelId ?? null,
-				keepCount: input.keepCount,
-				newOnly: episodePolicy !== "all",
-				episodePolicy,
-				priority: input.priority,
-				retentionDays: input.retentionDays ?? null,
-				createdAt: now,
-				updatedAt: now
-			})
-			.returning();
+				.values({
+					id: randomUUID(),
+					userId,
+					title: input.title,
+					channelId: input.channelId ?? null,
+					epgChannelId: input.epgChannelId ?? null,
+					keepCount: input.keepCount,
+					newOnly: episodePolicy !== "all",
+					episodePolicy,
+					priority: input.priority,
+					retentionDays: input.retentionDays ?? null,
+					createdAt: now,
+					updatedAt: now
+				})
+				.returning();
 			return row;
 		});
 

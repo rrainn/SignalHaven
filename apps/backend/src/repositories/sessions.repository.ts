@@ -16,23 +16,28 @@ export interface AuthenticatedSessionRecord {
 export class SessionsRepository {
 	constructor(private readonly database: DatabaseClient) {}
 
-	async create(input: {
-		id: string;
-		userId: string;
-		tokenHash: string;
-		expiresAt: Date;
-	}, maxActive = 16): Promise<void> {
+	async create(
+		input: {
+			id: string;
+			userId: string;
+			tokenHash: string;
+			expiresAt: Date;
+		},
+		maxActive = 16
+	): Promise<void> {
 		await this.database.transaction(async (tx) => {
 			// Serialize account-wide rotation across processes and login transports.
 			await tx.execute(
 				sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.userId}, 1))`
 			);
-			await tx.delete(sessions).where(
-				and(
-					eq(sessions.userId, input.userId),
-					sql`${sessions.expiresAt} <= now()`
-				)
-			);
+			await tx
+				.delete(sessions)
+				.where(
+					and(
+						eq(sessions.userId, input.userId),
+						sql`${sessions.expiresAt} <= now()`
+					)
+				);
 			await tx.execute(sql`
 				DELETE FROM ${sessions}
 				WHERE ${sessions.id} IN (

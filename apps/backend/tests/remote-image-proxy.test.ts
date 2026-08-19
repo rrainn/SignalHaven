@@ -205,10 +205,19 @@ test("RemoteImageProxy briefly negative-caches provider failures", async () => {
 		}
 	});
 
-	assert.equal(await proxy.get("logo", "https://images.example/logo.png"), null);
-	assert.equal(await proxy.get("logo", "https://images.example/logo.png"), null);
+	assert.equal(
+		await proxy.get("logo", "https://images.example/logo.png"),
+		null
+	);
+	assert.equal(
+		await proxy.get("logo", "https://images.example/logo.png"),
+		null
+	);
 	assert.equal(fetchCount, 1);
 	now += 101;
-	assert.equal(await proxy.get("logo", "https://images.example/logo.png"), null);
+	assert.equal(
+		await proxy.get("logo", "https://images.example/logo.png"),
+		null
+	);
 	assert.equal(fetchCount, 2);
 });

@@ -236,7 +236,9 @@ export class RemoteImageProxy {
 	private rememberFailure(cacheKey: string): void {
 		this.negativeCache.set(cacheKey, this.now() + this.negativeTtlMs);
 		while (this.negativeCache.size > this.maxEntries) {
-			const oldest = this.negativeCache.keys().next().value as string | undefined;
+			const oldest = this.negativeCache.keys().next().value as
+				| string
+				| undefined;
 			if (!oldest) break;
 			this.negativeCache.delete(oldest);
 		}
