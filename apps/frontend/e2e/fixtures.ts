@@ -30,10 +30,11 @@ export const defaultPreferences = {
 	}
 };
 
-/** Authenticates legacy browser scenarios before the fail-closed app gate runs. */
+/** Authenticates every page in legacy scenarios before the fail-closed gate runs. */
 export const test = base.extend({
-	page: async ({ page }, use) => {
-		await page.route("**/api/v1/auth/status", (route) =>
+	context: async ({ context }, use) => {
+		// Context defaults cover multi-page flows while page routes can override them.
+		await context.route("**/api/v1/auth/status", (route) =>
 			route.fulfill({
 				status: 200,
 				contentType: "application/json",
@@ -44,13 +45,13 @@ export const test = base.extend({
 				})
 			})
 		);
-		await page.route("**/api/v1/preferences", (route) =>
+		await context.route("**/api/v1/preferences", (route) =>
 			route.fulfill({
 				status: 200,
 				contentType: "application/json",
 				body: JSON.stringify(defaultPreferences)
 			})
 		);
-		await use(page);
+		await use(context);
 	}
 });

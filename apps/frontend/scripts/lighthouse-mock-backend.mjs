@@ -32,6 +32,30 @@ const PRIMARY_CHANNEL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000000";
 const SECONDARY_CHANNEL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
 const TUNER_ID = "11111111-1111-4111-8111-111111111111";
 
+// Authenticate Lighthouse so it measures product screens instead of the fail-closed gate.
+const authenticatedUser = {
+	id: "22222222-2222-4222-8222-222222222222",
+	username: "lighthouse-admin",
+	role: "admin"
+};
+
+const preferences = {
+	ui: {
+		theme: "system",
+		epgHoursVisible: 4,
+		use24HourClock: false,
+		density: "comfortable",
+		animations: true
+	},
+	channels: { favorites: [], hidden: [], order: [] },
+	player: {
+		volume: 1,
+		muted: false,
+		captionsEnabled: false,
+		qualityByChannel: {}
+	}
+};
+
 const channels = [
 	{
 		id: PRIMARY_CHANNEL_ID,
@@ -73,21 +97,7 @@ const settings = {
 		availableHwaccels: [],
 		captionsEnabled: true
 	},
-	ui: {
-		theme: "system",
-		epgHoursVisible: 4,
-		use24HourClock: false,
-		density: "comfortable",
-		animations: true
-	},
 	recordings: { paddingBeforeSec: 0, paddingAfterSec: 0 },
-	channels: { favorites: [], hidden: [], order: [] },
-	player: {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: {}
-	},
 	observability: { debugBundleEnabled: false }
 };
 
@@ -138,6 +148,14 @@ const server = createServer((req, res) => {
 	switch (path) {
 		case "/api/v1/health":
 			return send(res, 200, { status: "ok", uptimeSeconds: 0 });
+		case "/api/v1/auth/status":
+			return send(res, 200, {
+				requiresInitialAdmin: false,
+				systemSetupRequired: false,
+				user: authenticatedUser
+			});
+		case "/api/v1/preferences":
+			return send(res, 200, preferences);
 		case "/api/v1/system/status":
 			return send(res, 200, {
 				firstRun: false,

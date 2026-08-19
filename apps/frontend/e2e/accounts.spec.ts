@@ -150,11 +150,9 @@ base.describe("Local account access", () => {
 
 			await page.goto("/");
 			await expect(page).toHaveURL(/\/setup\/account/);
-			await page.getByLabel(/^username$/i).fill("operator");
+			await page.getByRole("textbox", { name: /^username/i }).fill("operator");
 			await page.getByLabel(/^password$/i).fill("secret123");
-			await page
-				.getByLabel(/confirm password/i, { exact: true })
-				.fill("secret123");
+			await page.getByLabel(/^confirm password$/i).fill("secret123");
 			await page.getByRole("button", { name: /create administrator/i }).click();
 
 			await expect(page.getByTestId("onboarding-wizard")).toBeVisible();

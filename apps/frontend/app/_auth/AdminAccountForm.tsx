@@ -69,8 +69,13 @@ export function AdminAccountForm() {
 			onSubmit={(event) => void submit(event)}
 			className="space-y-4"
 		>
-			<label className="block space-y-1.5 text-sm" htmlFor="admin-username">
-				<span className="font-medium text-primary">Username</span>
+			<div className="space-y-1.5 text-sm">
+				<label
+					className="block font-medium text-primary"
+					htmlFor="admin-username"
+				>
+					Username
+				</label>
 				<Input
 					id="admin-username"
 					name="username"
@@ -93,7 +98,7 @@ export function AdminAccountForm() {
 				>
 					Use letters, numbers, periods, underscores, or hyphens.
 				</span>
-			</label>
+			</div>
 			<PasswordField
 				id="admin-password"
 				name="password"

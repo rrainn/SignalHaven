@@ -22,8 +22,10 @@ export function PasswordField({
 }: PasswordFieldProps) {
 	const [visible, setVisible] = useState(false);
 	return (
-		<label className="block space-y-1.5 text-sm" htmlFor={id}>
-			<span className="font-medium text-primary">{label}</span>
+		<div className="space-y-1.5 text-sm">
+			<label className="block font-medium text-primary" htmlFor={id}>
+				{label}
+			</label>
 			<span className="relative block">
 				<Input
 					{...props}
@@ -47,6 +49,6 @@ export function PasswordField({
 					{visible ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
 				</IconButton>
 			</span>
-		</label>
+		</div>
 	);
 }
