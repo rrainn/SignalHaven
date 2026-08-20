@@ -1,9 +1,11 @@
 "use client";
 
 import Link, { type LinkProps } from "next/link";
+import { useRouter } from "next/navigation";
 import {
 	forwardRef,
 	useEffect,
+	useRef,
 	useState,
 	type AnchorHTMLAttributes,
 	type ReactNode
@@ -105,3 +107,41 @@ export const SmartLink = forwardRef<HTMLAnchorElement, SmartLinkProps>(
 		return <Link ref={ref} href={href} prefetch={computed} {...rest} />;
 	}
 );
+
+export type IntentPrefetchLinkProps = Omit<SmartLinkProps, "prefetch">;
+
+/**
+ * Prevents persistent chrome from prefetching every route on first paint,
+ * while preserving fast pointer and keyboard navigation once intent is clear.
+ */
+export const IntentPrefetchLink = forwardRef<
+	HTMLAnchorElement,
+	IntentPrefetchLinkProps
+>(function IntentPrefetchLink({ href, onMouseEnter, onFocus, ...rest }, ref) {
+	const saveData = useSaveData();
+	const router = useRouter();
+	const prefetchedHref = useRef<string | null>(null);
+
+	const prefetchForIntent = () => {
+		if (saveData || prefetchedHref.current === href) return;
+		prefetchedHref.current = href;
+		router.prefetch(href);
+	};
+
+	return (
+		<Link
+			ref={ref}
+			href={href}
+			prefetch={false}
+			onMouseEnter={(event) => {
+				onMouseEnter?.(event);
+				if (!event.defaultPrevented) prefetchForIntent();
+			}}
+			onFocus={(event) => {
+				onFocus?.(event);
+				if (!event.defaultPrevented) prefetchForIntent();
+			}}
+			{...rest}
+		/>
+	);
+});

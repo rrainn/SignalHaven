@@ -13,7 +13,7 @@ import { selectPreferredChannels } from "../_preferences/channel-preferences";
  *   * sort order (canonical, by-number, by-name, favorites-first, manual)
  *   * filters (search, tuner, group, favorited / hidden visibility)
  *   * favorites / hidden / manual order — the persisted preferences that
- *     get round-tripped through the settings API.
+ *     get round-tripped through the account preferences API.
  *   * bulk hide/unhide + the selection set that drives the bulk toolbar.
  *
  * Keeping it as a pure (state, action) -> state function lets the tests
@@ -23,9 +23,9 @@ import { selectPreferredChannels } from "../_preferences/channel-preferences";
  * Acceptance criteria mapping (rrainn/SignalHaven U5):
  *   - Sortable, filterable channel list (by group, tuner, favorited)
  *       — see {@link ChannelsFilters} + {@link sortChannels}.
- *   - Favorite toggle persisted via settings API
+ *   - Favorite toggle persisted via preferences API
  *       — `toggle-favorite` writes `favorites`; the page wraps the
- *         resulting prefs in a `settings.channels` PATCH.
+ *         resulting prefs in a `preferences.channels` PATCH.
  *   - Bulk hide/unhide channels
  *       — `toggle-selection` + `bulk-hide` / `bulk-unhide` actions.
  *   - Drag-to-reorder for sort order
@@ -56,7 +56,7 @@ export interface ChannelsFilters {
 /**
  * Persisted preferences. Mirrors `channelsSettingsSchema` from
  * `@signalhaven/shared` so the same object can be PATCHed back to the
- * settings API without translation.
+ * preferences API without translation.
  */
 export type ChannelsPrefs = ChannelsSettings;
 
@@ -280,10 +280,14 @@ export function groupChannels(
 		// Empty logical channels share one recovery bucket instead of posing as tuners.
 		const key =
 			primarySource?.tunerId ??
-			(channel.sources !== undefined ? "__no_source__" : channel.tunerId);
+			(channel.sources !== undefined
+				? "__no_source__"
+				: (channel.tunerId ?? "__unknown_tuner__"));
 		const label =
 			primarySource?.tunerName ??
-			(channel.sources !== undefined ? "No source" : channel.tunerName);
+			(channel.sources !== undefined
+				? "No source"
+				: (channel.tunerName ?? "Unknown tuner"));
 		let g = groups.get(key);
 		if (!g) {
 			g = { key, label, channels: [] };

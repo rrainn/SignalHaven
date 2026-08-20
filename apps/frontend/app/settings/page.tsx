@@ -7,8 +7,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * `/settings` — user-facing config for tuners, EPG, storage, transcoding,
- * and appearance (rrainn/SignalHaven#U11-settings).
+ * `/settings` — administrator config for tuners, EPG, storage, transcoding,
+ * users, and system information (rrainn/SignalHaven#U11-settings).
  *
  * The actual UI lives in {@link SettingsPage}; this thin route file is
  * just the Next.js entry point so the page can be lazily code-split

@@ -20,6 +20,11 @@ import type { EpgGridService } from "../../epg/epg-grid.service";
 
 export function createEpgGridRouter(service: EpgGridService): Router {
 	const router = Router();
+	// Recording annotations differ by account even when guide rows are global.
+	router.use((_req, res, next) => {
+		res.setHeader("Cache-Control", "private, no-store");
+		next();
+	});
 
 	router.get(
 		"/epg/grid",
@@ -45,7 +50,7 @@ export function createEpgGridRouter(service: EpgGridService): Router {
 					);
 				}
 
-				const grid = await service.getGrid(from, to);
+				const grid = await service.getGrid(from, to, req.auth!.user.id);
 				res.json(epgGridSchema.parse(grid));
 			} catch (error) {
 				next(error);
@@ -58,7 +63,10 @@ export function createEpgGridRouter(service: EpgGridService): Router {
 		validate({ params: epgProgramIdParamSchema }),
 		async (req, res, next) => {
 			try {
-				const details = await service.getProgram(req.params["id"] as string);
+				const details = await service.getProgram(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				if (!details) {
 					return next(
 						new HttpError(

@@ -1,19 +1,15 @@
 "use client";
 
-import {
-	settingsDefaults,
-	type EpgSource,
-	type Settings,
-	type Tuner
-} from "@signalhaven/shared";
+import type { EpgSource, Settings, Tuner } from "@signalhaven/shared";
 import { useEffect, useRef, useState } from "react";
 
 import {
 	getSystemStatus,
+	getSettings,
 	listEpgSources,
 	listTuners
 } from "../../lib/api-client";
-import { usePreferencesOptional } from "../_preferences/PreferencesProvider";
+import { useAuth } from "../_auth/AuthProvider";
 import { OnboardingWizard } from "./OnboardingWizard";
 import {
 	clearPersistedState,
@@ -57,14 +53,19 @@ export type OnboardingProviderProps = {
  * dependency); the underlying screens still load normally.
  */
 export function OnboardingProvider({ children }: OnboardingProviderProps) {
-	const preferences = usePreferencesOptional();
+	const auth = useAuth();
 	const [state, setState] = useState<ProviderState>({ kind: "idle" });
 	const bootStartedRef = useRef(false);
 
 	useEffect(() => {
-		// Production waits for the app-owned settings snapshot. The fallback
-		// keeps this provider usable in isolated component tests.
-		if (preferences?.status === "loading" || bootStartedRef.current) return;
+		// Standard users cannot inspect or change machine-wide setup resources.
+		if (
+			auth.state.status !== "signed-in" ||
+			auth.state.user.role !== "admin" ||
+			bootStartedRef.current
+		) {
+			return;
+		}
 		bootStartedRef.current = true;
 		let cancelled = false;
 		setState({ kind: "loading" });
@@ -100,7 +101,7 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
 			const [tunersResult, epgResult, settingsResult] = await Promise.all([
 				safe(() => listTuners()),
 				safe(() => listEpgSources()),
-				Promise.resolve(preferences?.settings ?? settingsDefaults)
+				safe(() => getSettings())
 			]);
 
 			if (cancelled) return;
@@ -124,7 +125,7 @@ export function OnboardingProvider({ children }: OnboardingProviderProps) {
 		return () => {
 			cancelled = true;
 		};
-	}, [preferences]);
+	}, [auth.state]);
 
 	return (
 		<>

@@ -10,6 +10,7 @@ import type { Tuner } from "@signalhaven/shared";
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { EventBus } from "../src/events/event-bus";
 import type { HealthRepository } from "../src/repositories/health.repository";
 import type {
@@ -511,6 +512,7 @@ function buildHarness(fetchImpl: IptvFetchLike, callsRef: string[]): Harness {
 		bus
 	});
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test" },
 		healthRepository: stubHealthRepository(),
 		tunersService: service,
@@ -540,7 +542,7 @@ test("GET /api/v1/tuners/:id/channels/:channelId/logo proxies the image", async 
 	);
 	assert.equal(response.status, 200);
 	assert.equal(response.headers["content-type"], "image/png");
-	assert.match(response.headers["cache-control"] ?? "", /max-age=\d+/);
+	assert.equal(response.headers["cache-control"], "private, no-store");
 	assert.equal(response.body.length, png.length);
 });
 

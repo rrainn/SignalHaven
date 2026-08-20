@@ -51,7 +51,7 @@ describe("channelsReducer", () => {
 		});
 
 		it("set-tuner scopes to a single tuner", () => {
-			const tunerId = FIXTURE[0]!.tunerId;
+			const tunerId = FIXTURE[0]!.tunerId!;
 			const next = apply(freshState(), { type: "set-tuner", tunerId });
 			const visible = selectVisibleChannels(next);
 			expect(visible.length).toBeGreaterThan(0);

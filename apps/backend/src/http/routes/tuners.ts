@@ -165,10 +165,7 @@ export function createTunersRouter(
 					throw new HttpError(404, "not_found", "Logo not available");
 				}
 				res.setHeader("Content-Type", logo.contentType);
-				res.setHeader(
-					"Cache-Control",
-					`public, max-age=${logo.cacheMaxAgeSeconds}`
-				);
+				res.setHeader("Cache-Control", "private, no-store");
 				res.setHeader("X-Content-Type-Options", "nosniff");
 				res.status(200).send(logo.body);
 			} catch (error) {

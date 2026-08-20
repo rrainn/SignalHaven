@@ -5,11 +5,13 @@ import { playbackTelemetryEventSchema } from "@signalhaven/shared";
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import type { HealthRepository } from "../src/repositories/health.repository";
 
 /** Build a network-independent app for playback telemetry behavior. */
 function buildApp() {
 	return createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test", LOG_LEVEL: "silent" },
 		healthRepository: {
 			isHealthy: async () => true

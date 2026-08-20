@@ -2,6 +2,13 @@ import cors from "cors";
 import compression from "compression";
 import express, { json, urlencoded, type Express } from "express";
 
+import { AuthService } from "./auth/auth.service";
+import { MediaTicketService } from "./auth/media-ticket.service";
+import {
+	createAuthenticationMiddleware,
+	type AuthenticationMiddleware
+} from "./auth/middleware";
+
 import { db, pool } from "./db/client";
 import { EpgService } from "./epg/epg.service";
 import { CommercialAnalysisService } from "./commercials/commercial-analysis.service";
@@ -26,6 +33,7 @@ import {
 import { ChannelEpgMapRepository } from "./repositories/channel-epg-map.repository";
 import { ChannelsRepository } from "./repositories/channels.repository";
 import { LogicalChannelEpgMapRepository } from "./repositories/logical-channel-epg-map.repository";
+import { MediaTicketsRepository } from "./repositories/media-tickets.repository";
 import { EpgChannelsRepository } from "./repositories/epg-channels.repository";
 import { EpgProgramsRepository } from "./repositories/epg-programs.repository";
 import { EpgSourcesRepository } from "./repositories/epg-sources.repository";
@@ -34,14 +42,18 @@ import { RecordingsRepository } from "./repositories/recordings.repository";
 import { CommercialsRepository } from "./repositories/commercials.repository";
 import { ScheduledJobsRepository } from "./repositories/scheduled-jobs.repository";
 import { SearchRepository } from "./repositories/search.repository";
+import { SessionsRepository } from "./repositories/sessions.repository";
 import { SeriesRulesRepository } from "./repositories/series-rules.repository";
 import { SeriesEpisodeClaimsRepository } from "./repositories/series-episode-claims.repository";
 import { SettingsRepository } from "./repositories/settings.repository";
+import { UserPreferencesRepository } from "./repositories/user-preferences.repository";
+import { UsersRepository } from "./repositories/users.repository";
 import { TunersRepository } from "./repositories/tuners.repository";
 import { Scheduler } from "./scheduler/scheduler";
 import { SearchService } from "./search/search.service";
 import { SeriesRulesService } from "./series/series-rules.service";
 import { SettingsService } from "./settings/settings.service";
+import { UserPreferencesService } from "./settings/user-preferences.service";
 import { DefaultChannelStreamResolver } from "./streaming/channel-resolver";
 import { detectHwaccels, resolveHwaccel } from "./streaming/hwaccel";
 import {
@@ -69,6 +81,10 @@ export interface CreateAppOptions {
 	env?: NodeJS.ProcessEnv;
 	healthRepository?: HealthRepository;
 	settingsService?: SettingsService;
+	authService?: AuthService;
+	authentication?: AuthenticationMiddleware;
+	userPreferencesService?: UserPreferencesService;
+	mediaTicketService?: MediaTicketService;
 	systemStatusService?: SystemStatusService;
 	tunersService?: TunersService;
 	lineupSyncService?: TunerLineupSyncService;
@@ -103,6 +119,7 @@ export interface CreatedApp {
 	recordingsService: RecordingsService;
 	seriesRulesService: SeriesRulesService;
 	metrics: MetricsCollector;
+	authService: AuthService;
 }
 
 export function createApp(options: CreateAppOptions = {}): Express {
@@ -130,6 +147,24 @@ export function createAppWithServices(
 		options.settingsService ??
 		new SettingsService({
 			repository: new SettingsRepository(db),
+			bus
+		});
+	const authService =
+		options.authService ??
+		new AuthService({
+			users: new UsersRepository(db),
+			sessions: new SessionsRepository(db)
+		});
+	const mediaTicketService =
+		options.mediaTicketService ??
+		new MediaTicketService(new MediaTicketsRepository(db));
+	const authentication =
+		options.authentication ??
+		createAuthenticationMiddleware(authService, mediaTicketService);
+	const userPreferencesService =
+		options.userPreferencesService ??
+		new UserPreferencesService({
+			repository: new UserPreferencesRepository(db),
 			bus
 		});
 	const systemStatusService =
@@ -294,6 +329,10 @@ export function createAppWithServices(
 	const seriesRulesService =
 		options.seriesRulesService ??
 		new SeriesRulesService({
+			// Keep-count, quota, and retention mutate the same private library and
+			// therefore share one process-local maintenance queue.
+			runLibraryMaintenance: (operation) =>
+				recordingsService.runLibraryMaintenance(operation),
 			rules: new SeriesRulesRepository(db),
 			recordings: new RecordingsRepository(db),
 			epgPrograms: new EpgProgramsRepository(db),
@@ -302,6 +341,7 @@ export function createAppWithServices(
 			episodeClaims: new SeriesEpisodeClaimsRepository(db),
 			schedule: (input) =>
 				recordingsService.schedule({
+					...(input.userId ? { userId: input.userId } : {}),
 					channelId: input.channelId,
 					title: input.title,
 					start: input.start,
@@ -311,7 +351,8 @@ export function createAppWithServices(
 				}),
 			// Route keep-count eviction through the recording service so active
 			// playback sessions are stopped before their source files are removed.
-			deleteRecording: (id) => recordingsService.delete(id),
+			deleteRecording: (id) =>
+				recordingsService.deleteForLibraryMaintenance(id),
 			capacity: async (providerId) => {
 				try {
 					const provider = await tunersService.getProviderById(providerId);
@@ -447,6 +488,8 @@ export function createAppWithServices(
 	const app = express();
 
 	app.disable("x-powered-by");
+	// Only loopback reverse proxies may assert the original HTTPS scheme.
+	app.set("trust proxy", "loopback");
 
 	// Request id must run before logging so logs include the id.
 	app.use(requestId());
@@ -478,6 +521,10 @@ export function createAppWithServices(
 		"/api/v1",
 		createApiV1Router({
 			healthRepository,
+			authService,
+			authentication,
+			mediaTicketService,
+			userPreferencesService,
 			settingsService,
 			systemStatusService,
 			tunersService,
@@ -511,7 +558,8 @@ export function createAppWithServices(
 		epgMatcherService,
 		recordingsService,
 		seriesRulesService,
-		metrics
+		metrics,
+		authService
 	};
 }
 

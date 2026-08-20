@@ -25,6 +25,7 @@ import {
 import { resolveMigrationsFolder } from "../src/db/config";
 import { runMigrations } from "../src/db/migrate";
 import { EpgGridService } from "../src/epg/epg-grid.service";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { ChannelEpgMapRepository } from "../src/repositories/channel-epg-map.repository";
 import { LogicalChannelEpgMapRepository } from "../src/repositories/logical-channel-epg-map.repository";
 import { ChannelsRepository } from "../src/repositories/channels.repository";
@@ -81,13 +82,19 @@ async function seedTuner() {
 
 async function seedChannel(
 	tunerId: string,
-	opts: Partial<{ number: string; name: string; sortOrder: number }> = {}
+	opts: Partial<{
+		number: string;
+		name: string;
+		sortOrder: number;
+		logoUrl: string;
+	}> = {}
 ) {
 	const repo = new ChannelsRepository(db);
 	return repo.create({
 		tunerId,
 		number: opts.number ?? "1.1",
 		name: opts.name ?? "Channel 1",
+		...(opts.logoUrl ? { logoUrl: opts.logoUrl } : {}),
 		enabled: true,
 		sortOrder: opts.sortOrder ?? 1
 	});
@@ -137,7 +144,10 @@ function buildService() {
 }
 
 function buildApp() {
-	return createApp({ epgGridService: buildService() });
+	return createApp({
+		epgGridService: buildService(),
+		authentication: createTestAuthentication()
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +156,11 @@ function buildApp() {
 
 test("getGrid returns all enabled channels even when unmapped", async () => {
 	const tuner = await seedTuner();
-	await seedChannel(tuner.id, { name: "Ch A", sortOrder: 1 });
+	const channelWithLogo = await seedChannel(tuner.id, {
+		name: "Ch A",
+		sortOrder: 1,
+		logoUrl: "https://private-provider/logo.png?token=secret"
+	});
 	await seedChannel(tuner.id, { name: "Ch B", sortOrder: 2 });
 
 	const service = buildService();
@@ -160,6 +174,11 @@ test("getGrid returns all enabled channels even when unmapped", async () => {
 		["Ch A", "Ch B"]
 	);
 	assert.ok(grid.channels.every((c) => c.hasMapping === false));
+	assert.equal(
+		grid.channels.find((channel) => channel.id === channelWithLogo.id)?.logoUrl,
+		`/api/v1/channels/${channelWithLogo.id}/logo`
+	);
+	assert.doesNotMatch(JSON.stringify(grid), /private-provider|token=secret/);
 	assert.equal(grid.programs.length, 0);
 });
 

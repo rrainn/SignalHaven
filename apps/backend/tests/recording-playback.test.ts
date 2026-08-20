@@ -10,6 +10,7 @@ import test from "node:test";
 import express from "express";
 import request from "supertest";
 
+import { createTestAuthentication } from "../src/auth/middleware";
 import { EventBus } from "../src/events/event-bus";
 import { errorHandler } from "../src/http/middleware/errors";
 import { requestId } from "../src/http/middleware/request-id";
@@ -164,20 +165,25 @@ test("GET /recordings/:id/stream.m3u8 exposes a recording manifest", async () =>
 	let requestedStartSeconds: number | undefined;
 	let requestedViewerId: string | undefined;
 	app.use(requestId());
+	app.use(createTestAuthentication().optional);
 	app.use(
-		createRecordingsRouter({
-			getPlaybackManifest: async (
-				_id: string,
-				context: { requestId?: string },
-				startSeconds?: number,
-				viewerId?: string
-			) => {
-				requestContext = context;
-				requestedStartSeconds = startSeconds;
-				requestedViewerId = viewerId;
-				return "#EXTM3U\n";
-			}
-		} as unknown as RecordingsService)
+		createRecordingsRouter(
+			{
+				assertOwned: async () => undefined,
+				getPlaybackManifest: async (
+					_id: string,
+					context: { requestId?: string },
+					startSeconds?: number,
+					viewerId?: string
+				) => {
+					requestContext = context;
+					requestedStartSeconds = startSeconds;
+					requestedViewerId = viewerId;
+					return "#EXTM3U\n";
+				}
+			} as unknown as RecordingsService,
+			createTestAuthentication().admin
+		)
 	);
 
 	const viewerId = randomUUID();
@@ -199,13 +205,18 @@ test("POST /recordings/:id/viewers/:viewerId/release is idempotent", async () =>
 	const recordingId = randomUUID();
 	const viewerId = randomUUID();
 	const releases: Array<[string, string]> = [];
+	app.use(createTestAuthentication().optional);
 	app.use(
-		createRecordingsRouter({
-			releasePlaybackViewer: (id: string, viewer: string) => {
-				releases.push([id, viewer]);
-				return releases.length === 1;
-			}
-		} as unknown as RecordingsService)
+		createRecordingsRouter(
+			{
+				assertOwned: async () => undefined,
+				releasePlaybackViewer: (id: string, viewer: string) => {
+					releases.push([id, viewer]);
+					return releases.length === 1;
+				}
+			} as unknown as RecordingsService,
+			createTestAuthentication().admin
+		)
 	);
 
 	const path = `/recordings/${recordingId}/viewers/${viewerId}/release`;
@@ -261,7 +272,15 @@ test("recording manifests expose one finalized VOD timeline with a native start 
 	});
 	t.after(async () => playback.stopAll());
 
-	const manifest = await playback.getManifest(row.id, {}, 1_200, randomUUID());
+	const viewerId = randomUUID();
+	const mediaTicket = "r".repeat(43);
+	const manifest = await playback.getManifest(
+		row.id,
+		{},
+		1_200,
+		viewerId,
+		mediaTicket
+	);
 	const staleResumeManifest = await playback.getManifest(
 		row.id,
 		{},
@@ -280,6 +299,8 @@ test("recording manifests expose one finalized VOD timeline with a native start 
 		.split(/\r?\n/)
 		.find((line) => line.startsWith("segments/"));
 	assert.ok(renditionUri);
+	assert.match(renditionUri, new RegExp(`mediaTicket=${mediaTicket}`));
+	assert.match(renditionUri, new RegExp(`viewerId=${viewerId}`));
 	const parsed = new URL(
 		renditionUri,
 		"http://localhost/recordings/id/stream.m3u8"
@@ -288,10 +309,15 @@ test("recording manifests expose one finalized VOD timeline with a native start 
 		row.id,
 		parsed.searchParams.get("session") ?? "",
 		parsed.pathname.split("/").pop() ?? "",
-		parsed.searchParams.get("viewerId") ?? undefined
+		parsed.searchParams.get("viewerId") ?? undefined,
+		parsed.searchParams.get("mediaTicket") ?? undefined
 	);
 	assert.match(rendition.toString("utf8"), /#EXT-X-PLAYLIST-TYPE:VOD/);
 	assert.match(rendition.toString("utf8"), /#EXT-X-ENDLIST/);
+	assert.match(
+		rendition.toString("utf8"),
+		new RegExp(`mediaTicket=${mediaTicket}`)
+	);
 });
 
 test("finalized recording VOD is reused across playback service lifetimes", async (t) => {
@@ -565,6 +591,86 @@ test("concurrent manifest requests share one FFmpeg session and stable segments"
 	);
 });
 
+test("failed pending playback clears its viewer reservation", async () => {
+	const repository = new FakeRecordingsRepo();
+	const playback = new RecordingPlaybackService({ repository });
+	const recordingId = randomUUID();
+	const viewerId = randomUUID();
+
+	await assert.rejects(
+		playback.getManifest(recordingId, {}, 0, viewerId),
+		RecordingPlaybackNotFoundError
+	);
+	assert.equal(playback.releaseViewer(recordingId, viewerId), false);
+	assert.equal(playback.getActiveSessionCount(), 0);
+});
+
+test("stop during cache bookkeeping releases capacity and reports storage growth", async (t) => {
+	const tmp = await mkdtemp(
+		join(tmpdir(), "signalhaven-playback-bookkeeping-")
+	);
+	t.after(async () => rm(tmp, { recursive: true, force: true }));
+	const firstPath = join(tmp, "first.mkv");
+	const secondPath = join(tmp, "second.mkv");
+	await Promise.all([
+		writeFile(firstPath, "first recording"),
+		writeFile(secondPath, "second recording")
+	]);
+	const userId = randomUUID();
+	const first = makeRow({ userId, filePath: firstPath });
+	const second = makeRow({ userId, filePath: secondPath });
+	const rows = new Map([
+		[first.id, first],
+		[second.id, second]
+	]);
+	let notifyUpdateStarted: (() => void) | undefined;
+	const updateStarted = new Promise<void>((resolve) => {
+		notifyUpdateStarted = resolve;
+	});
+	let releaseUpdate: (() => void) | undefined;
+	const updateCanFinish = new Promise<void>((resolve) => {
+		releaseUpdate = resolve;
+	});
+	const storageUpdates: string[] = [];
+	const repository = {
+		getById: async (id: string) => rows.get(id) ?? null,
+		update: async (id: string, patch: Partial<RecordingRecord>) => {
+			const row = rows.get(id);
+			if (!row) return null;
+			if (id === first.id) {
+				notifyUpdateStarted?.();
+				await updateCanFinish;
+			}
+			Object.assign(row, patch);
+			return row;
+		}
+	};
+	const playback = new RecordingPlaybackService({
+		repository,
+		tmpRoot: tmp,
+		runner: createFakeRunner(),
+		maxSessionsPerUser: 1,
+		onStorageSizeChanged: (owner) => storageUpdates.push(owner)
+	});
+	t.after(async () => playback.stopAll());
+	const viewerId = randomUUID();
+	const firstManifest = playback.getManifest(first.id, {}, 0, viewerId);
+	await updateStarted;
+
+	assert.equal(playback.releaseViewer(first.id, viewerId), true);
+	releaseUpdate?.();
+	await assert.rejects(firstManifest);
+
+	const secondManifest = await playback.getManifest(
+		second.id,
+		{},
+		0,
+		randomUUID()
+	);
+	assert.match(secondManifest, /^#EXTM3U/);
+	assert.deepEqual(storageUpdates, [userId, userId]);
+});
+
 test("hardware startup failure retries once in software after cleaning artifacts", async (t) => {
 	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-playback-fallback-"));
 	t.after(async () => rm(tmp, { recursive: true, force: true }));
@@ -614,8 +720,6 @@ test("hardware startup failure retries once in software after cleaning artifacts
 	assert.deepEqual(fallbackEvents, [
 		{
 			recordingId: row.id,
-			playbackSessionId: fallbackEvents[0]?.playbackSessionId,
-			hwaccel: "vaapi",
 			reason: "hwaccel_init_failed"
 		}
 	]);
@@ -768,6 +872,7 @@ test("terminal playback failure writes one sanitized structured summary", async 
 	});
 
 	const routeService = {
+		assertOwned: async () => undefined,
 		getPlaybackManifest: (id: string, context: { requestId?: string }) =>
 			playback.getManifest(id, context)
 	} as unknown as RecordingsService;
@@ -782,7 +887,10 @@ test("terminal playback failure writes one sanitized structured summary", async 
 		} as unknown as typeof req.log;
 		next();
 	});
-	app.use(createRecordingsRouter(routeService));
+	app.use(createTestAuthentication().optional);
+	app.use(
+		createRecordingsRouter(routeService, createTestAuthentication().admin)
+	);
 	app.use(errorHandler());
 	const response = await request(app).get(`/recordings/${row.id}/stream.m3u8`);
 
@@ -1015,14 +1123,24 @@ test("non-completed and missing recordings return intentional playback errors", 
 		return true;
 	});
 
-	const failed = makeRow({ status: "failed", filePath: input });
+	const failed = makeRow({
+		status: "failed",
+		filePath: input,
+		errorMessage:
+			"ffmpeg /private/recording.mkv?token=top-secret exited unexpectedly"
+	});
 	repository.rows.set(failed.id, failed);
 	const app = express();
 	app.use(requestId());
+	app.use(createTestAuthentication().optional);
 	app.use(
-		createRecordingsRouter({
-			getPlaybackManifest: (id: string) => playback.getManifest(id)
-		} as unknown as RecordingsService)
+		createRecordingsRouter(
+			{
+				assertOwned: async () => undefined,
+				getPlaybackManifest: (id: string) => playback.getManifest(id)
+			} as unknown as RecordingsService,
+			createTestAuthentication().admin
+		)
 	);
 	app.use(errorHandler());
 	const response = await request(app).get(
@@ -1030,6 +1148,11 @@ test("non-completed and missing recordings return intentional playback errors", 
 	);
 	assert.equal(response.status, 409);
 	assert.equal(response.body.error.code, RECORDING_PLAYBACK_ERROR_CODE.failed);
+	assert.deepEqual(response.body.error.details, { status: "failed" });
+	assert.doesNotMatch(
+		JSON.stringify(response.body),
+		/private|top-secret|ffmpeg/
+	);
 });
 
 test("idle expiration releases the session while retaining finalized VOD", async (t) => {
@@ -1310,12 +1433,16 @@ test(
 		});
 		t.after(async () => playback.stopAll());
 		const routeService = {
+			assertOwned: async () => undefined,
 			getPlaybackManifest: (id: string) => playback.getManifest(id),
 			getPlaybackSegment: (id: string, session: string, segment: string) =>
 				playback.getSegment(id, session, segment)
 		} as unknown as RecordingsService;
 		const app = express();
-		app.use(createRecordingsRouter(routeService));
+		app.use(createTestAuthentication().optional);
+		app.use(
+			createRecordingsRouter(routeService, createTestAuthentication().admin)
+		);
 
 		const manifestPath = `/recordings/${row.id}/stream.m3u8`;
 		const manifest = await request(app).get(manifestPath);

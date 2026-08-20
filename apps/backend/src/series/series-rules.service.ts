@@ -25,6 +25,7 @@ import type {
 	SeriesRulesRepository
 } from "../repositories/series-rules.repository";
 import type { SeriesEpisodeClaims } from "../repositories/series-episode-claims.repository";
+import { recordingPlaybackCachePath } from "../recordings/recording-playback-session";
 import { RECORDING_EVENT } from "../recordings/recordings.service";
 
 /**
@@ -71,6 +72,7 @@ export interface SeriesRulesServiceOptions {
 	 * stub so this service stays decoupled from ffmpeg / the scheduler.
 	 */
 	schedule: (input: {
+		userId?: string;
 		channelId: string;
 		title: string;
 		start: Date;
@@ -82,7 +84,9 @@ export interface SeriesRulesServiceOptions {
 	 * Hook that deletes a recording row. The default implementation
 	 * unlinks the on-disk file (best-effort) and removes the DB row.
 	 */
-	deleteRecording?: (id: string) => Promise<void>;
+	deleteRecording?: (id: string) => Promise<boolean | void>;
+	/** Share deletion ordering with quota and retention maintenance. */
+	runLibraryMaintenance?: <T>(operation: () => Promise<T>) => Promise<T>;
 	capacity?: SeriesTunerCapacityResolver;
 	channelProvider?: ChannelProviderResolver;
 	bus?: EventBus | undefined;
@@ -137,6 +141,7 @@ const DEFAULT_CONFLICT_LIMIT = 100;
 export class SeriesRulesService {
 	private readonly options: SeriesRulesServiceOptions;
 	private readonly conflicts: RecordingConflict[] = [];
+	private readonly conflictOwners = new Map<string, string>();
 	private readonly now: () => Date;
 	private readonly conflictLimit: number;
 	private readonly idFactory: () => string;
@@ -144,6 +149,8 @@ export class SeriesRulesService {
 	private busUnsubscribe: (() => void) | undefined;
 	/** Serialise `evaluate()` calls; concurrent evaluations would race. */
 	private evaluationQueue: Promise<unknown> = Promise.resolve();
+	/** Standalone services still serialize keep-count work when no shared queue exists. */
+	private maintenanceQueue: Promise<unknown> = Promise.resolve();
 
 	constructor(options: SeriesRulesServiceOptions) {
 		this.options = options;
@@ -158,15 +165,20 @@ export class SeriesRulesService {
 
 	// ---------- CRUD passthrough ----------
 
-	async list(): Promise<SeriesRuleRecord[]> {
-		return this.options.rules.list();
+	async list(userId?: string): Promise<SeriesRuleRecord[]> {
+		return userId
+			? this.options.rules.listForUser(userId)
+			: this.options.rules.list();
 	}
 
-	async getById(id: string): Promise<SeriesRuleRecord | null> {
-		return this.options.rules.getById(id);
+	async getById(id: string, userId?: string): Promise<SeriesRuleRecord | null> {
+		return userId
+			? this.options.rules.getByIdForUser(id, userId)
+			: this.options.rules.getById(id);
 	}
 
 	async create(input: {
+		userId?: string;
 		title: string;
 		channelId?: string | null;
 		epgChannelId?: string | null;
@@ -194,25 +206,34 @@ export class SeriesRulesService {
 			newOnly?: boolean;
 			priority?: number;
 			retentionDays?: number | null;
-		}
+		},
+		userId?: string
 	): Promise<SeriesRuleRecord | null> {
-		const updated = await this.options.rules.update(id, patch);
+		const updated = userId
+			? await this.options.rules.updateForUser(id, userId, patch)
+			: await this.options.rules.update(id, patch);
 		if (!updated) return null;
 		// Rule changes can make additional EPG programs eligible immediately.
 		await this.evaluate();
 		return updated;
 	}
 
-	async delete(id: string): Promise<boolean> {
-		return this.options.rules.delete(id);
+	async delete(id: string, userId?: string): Promise<boolean> {
+		return userId
+			? this.options.rules.deleteForUser(id, userId)
+			: this.options.rules.delete(id);
 	}
 
 	// ---------- public API ----------
 
 	/** Snapshot of recent conflicts surfaced by the evaluator. */
-	getConflicts(): RecordingConflict[] {
+	getConflicts(userId?: string): RecordingConflict[] {
 		return recordingConflictListSchema.parse({
-			items: [...this.conflicts]
+			items: userId
+				? this.conflicts.filter(
+						(conflict) => this.conflictOwners.get(conflict.id) === userId
+					)
+				: [...this.conflicts]
 		}).items;
 	}
 
@@ -281,6 +302,22 @@ export class SeriesRulesService {
 	 * DVR semantics: "kept" episodes are the user's responsibility).
 	 */
 	async enforceKeepCount(ruleId: string): Promise<{ deleted: number }> {
+		if (this.options.runLibraryMaintenance) {
+			return this.options.runLibraryMaintenance(() =>
+				this.enforceKeepCountUnlocked(ruleId)
+			);
+		}
+		const run = this.maintenanceQueue.then(() =>
+			this.enforceKeepCountUnlocked(ruleId)
+		);
+		this.maintenanceQueue = run.catch(() => undefined);
+		return run;
+	}
+
+	/** Keep-count implementation invoked inside the shared deletion queue. */
+	private async enforceKeepCountUnlocked(
+		ruleId: string
+	): Promise<{ deleted: number }> {
 		const rule = await this.options.rules.getById(ruleId);
 		if (!rule) {
 			return { deleted: 0 };
@@ -296,7 +333,7 @@ export class SeriesRulesService {
 		for (let i = 0; i < evictCount; i++) {
 			const victim = evictable[i];
 			if (!victim) break;
-			await this.deleteRecording(victim);
+			if (!(await this.deleteRecording(victim))) continue;
 			this.publishEvicted(victim, rule);
 			deleted += 1;
 		}
@@ -348,7 +385,10 @@ export class SeriesRulesService {
 
 				// Dedupe by exact program id and by (series, season, episode).
 				const existingByProgram =
-					await this.options.recordings.findActiveByProgramId(program.id);
+					await this.options.recordings.findActiveByProgramId(
+						program.id,
+						rule.userId
+					);
 				if (existingByProgram) {
 					result.skippedDuplicate += 1;
 					this.logDecision(rule, program, "skipped_duplicate_program");
@@ -356,7 +396,8 @@ export class SeriesRulesService {
 				}
 				const existingByEpisode = program.episodeIdentityKey
 					? await this.options.recordings.findExistingForEpisodeIdentity(
-							program.episodeIdentityKey
+							program.episodeIdentityKey,
+							rule.userId
 						)
 					: null;
 				if (existingByEpisode) {
@@ -405,6 +446,7 @@ export class SeriesRulesService {
 					}
 				}
 				const recording = await this.options.schedule({
+					...(candidate.rule.userId ? { userId: candidate.rule.userId } : {}),
 					channelId: candidate.channelId,
 					title: candidate.program.title,
 					start: candidate.program.start,
@@ -512,7 +554,7 @@ export class SeriesRulesService {
 					priority: c.rule.priority,
 					immune: false,
 					candidate: c,
-					id: `cand:${c.program.id}`
+					id: `cand:${c.rule.id}:${c.program.id}`
 				});
 			}
 			for (const e of existing) {
@@ -551,11 +593,9 @@ export class SeriesRulesService {
 					dropped.add(victim.id);
 					toEvict -= 1;
 					if (victim.candidate) {
-						const conflictsWith = active
-							.filter((other) => other.id !== victim.id)
-							.map((other) => other.id);
+						const conflictId = this.idFactory();
 						conflicts.push({
-							id: this.idFactory(),
+							id: conflictId,
 							seriesRuleId: victim.candidate.rule.id,
 							programId: victim.candidate.program.id,
 							channelId: victim.candidate.channelId,
@@ -563,16 +603,24 @@ export class SeriesRulesService {
 							scheduledStart: victim.candidate.program.start.toISOString(),
 							scheduledEnd: victim.candidate.program.stop.toISOString(),
 							reason: "tuner_capacity",
-							message: `Dropped lowest-priority candidate (priority=${victim.candidate.rule.priority}) at ${new Date(t).toISOString()} on provider ${providerId}; capacity ${capacity} exceeded`,
-							conflictsWith,
+							message:
+								"This recording was not scheduled because tuner capacity was already in use at that time.",
+							// Peer identifiers can belong to another account, so the public
+							// compatibility field intentionally stays empty.
+							conflictsWith: [],
 							detectedAt: this.now().toISOString()
 						});
+						this.conflictOwners.set(
+							conflictId,
+							victim.candidate.rule.userId ??
+								"00000000-0000-4000-8000-000000000001"
+						);
 					}
 				}
 			}
 
 			for (const c of candList) {
-				if (!dropped.has(`cand:${c.program.id}`)) {
+				if (!dropped.has(`cand:${c.rule.id}:${c.program.id}`)) {
 					granted.push(c);
 				}
 			}
@@ -654,51 +702,80 @@ export class SeriesRulesService {
 		return map?.channelId ?? null;
 	}
 
-	private async deleteRecording(row: RecordingRecord): Promise<void> {
+	private async deleteRecording(row: RecordingRecord): Promise<boolean> {
 		if (this.options.deleteRecording) {
-			await this.options.deleteRecording(row.id);
-			return;
+			return (await this.options.deleteRecording(row.id)) !== false;
 		}
-		if (row.filePath) {
+		const removed = await this.options.recordings.deleteEvictionCandidate(
+			row.id
+		);
+		if (!removed) return false;
+		if (removed.filePath) {
 			// Best-effort: a missing file shouldn't block DB cleanup.
-			await rm(row.filePath, { force: true }).catch(() => undefined);
+			await Promise.all([
+				rm(removed.filePath, { force: true }).catch(() => undefined),
+				rm(recordingPlaybackCachePath(removed.filePath), {
+					recursive: true,
+					force: true
+				}).catch(() => undefined)
+			]);
 		}
-		await this.options.recordings.delete(row.id);
+		return true;
 	}
 
 	private recordConflict(conflict: RecordingConflict): void {
 		this.conflicts.push(conflict);
 		while (this.conflicts.length > this.conflictLimit) {
-			this.conflicts.shift();
+			const removed = this.conflicts.shift();
+			if (removed) this.conflictOwners.delete(removed.id);
 		}
-		this.publish(SERIES_RULE_EVENT.conflict, conflict);
+		this.publish(SERIES_RULE_EVENT.conflict, conflict, {
+			userId:
+				this.conflictOwners.get(conflict.id) ??
+				"00000000-0000-4000-8000-000000000001"
+		});
 	}
 
 	private publishEvicted(row: RecordingRecord, rule: SeriesRuleRecord): void {
-		this.publish(SERIES_RULE_EVENT.evicted, {
-			recordingId: row.id,
-			seriesRuleId: rule.id,
-			title: row.title,
-			keepCount: rule.keepCount
-		});
+		this.publish(
+			SERIES_RULE_EVENT.evicted,
+			{
+				recordingId: row.id,
+				seriesRuleId: rule.id,
+				title: row.title,
+				keepCount: rule.keepCount
+			},
+			{
+				userId: row.userId ?? "00000000-0000-4000-8000-000000000001"
+			}
+		);
 	}
 
 	private publishEvaluated(result: SeriesRuleEvaluationResult): void {
-		this.publish(SERIES_RULE_EVENT.evaluated, {
-			scheduled: result.scheduled,
-			skippedDuplicate: result.skippedDuplicate,
-			skippedNotNew: result.skippedNotNew,
-			skippedUnknown: result.skippedUnknown,
-			conflicts: result.conflicts.length
-		});
+		this.publish(
+			SERIES_RULE_EVENT.evaluated,
+			{
+				scheduled: result.scheduled,
+				skippedDuplicate: result.skippedDuplicate,
+				skippedNotNew: result.skippedNotNew,
+				skippedUnknown: result.skippedUnknown,
+				conflicts: result.conflicts.length
+			},
+			{ role: "admin" }
+		);
 	}
 
-	private publish(event: string, data: unknown): void {
+	private publish(
+		event: string,
+		data: unknown,
+		audience?: { userId?: string; role?: "admin" | "user" }
+	): void {
 		if (!this.options.bus) return;
 		this.options.bus.publish({
 			topic: "recordings",
 			event,
-			data: data as unknown
+			data: data as unknown,
+			...(audience ? { audience } : {})
 		});
 	}
 

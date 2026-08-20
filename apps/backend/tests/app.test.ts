@@ -5,6 +5,7 @@ import request from "supertest";
 import { z } from "zod";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { badRequest } from "../src/http/middleware/errors";
 import { validate } from "../src/http/middleware/validate";
 import type { RecordingsService } from "../src/recordings/recordings.service";
@@ -19,6 +20,7 @@ function stubHealthRepository(isHealthy: boolean): HealthRepository {
 
 function buildApp(isHealthy = true) {
 	return createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test" },
 		healthRepository: stubHealthRepository(isHealthy),
 		configureV1Router: (router) => {
@@ -66,6 +68,7 @@ test("GET /api/v1/health reports 503 when db is unhealthy", async () => {
 
 test("GET /api/v1/system/info returns release metadata and server uptime", async () => {
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		env: {
 			...process.env,
 			NODE_ENV: "test",
@@ -171,6 +174,7 @@ test("GET /api/v1/recordings/conflicts reaches the static conflict route", async
 		getConflicts: () => []
 	} as unknown as SeriesRulesService;
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test", LOG_LEVEL: "silent" },
 		healthRepository: stubHealthRepository(true),
 		recordingsService,
@@ -185,6 +189,7 @@ test("GET /api/v1/recordings/conflicts reaches the static conflict route", async
 
 test("Swagger UI is served only outside production", async () => {
 	const dev = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "development", LOG_LEVEL: "silent" },
 		healthRepository: stubHealthRepository(true)
 	});
@@ -192,6 +197,7 @@ test("Swagger UI is served only outside production", async () => {
 	assert.notEqual(devResponse.status, 404);
 
 	const prod = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "production", LOG_LEVEL: "silent" },
 		healthRepository: stubHealthRepository(true)
 	});

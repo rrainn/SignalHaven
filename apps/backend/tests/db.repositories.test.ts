@@ -76,6 +76,9 @@ after(async () => {
 beforeEach(async () => {
 	await pool.query(`
     TRUNCATE TABLE
+	  media_tickets,
+	  sessions,
+	  user_preferences,
 	  series_rule_episodes,
 	  logical_channel_epg_map,
 	  channel_epg_map,
@@ -92,6 +95,20 @@ beforeEach(async () => {
       tuners
     RESTART IDENTITY CASCADE
   `);
+	await pool.query(
+		`DELETE FROM users
+		 WHERE id <> '00000000-0000-4000-8000-000000000001'`
+	);
+	await pool.query(
+		`UPDATE users
+		 SET username = NULL,
+		     username_normalized = NULL,
+		     password_hash = NULL,
+		     role = 'admin',
+		     activated_at = NULL,
+		     updated_at = now()
+		 WHERE id = '00000000-0000-4000-8000-000000000001'`
+	);
 });
 
 async function seedEpgSource() {
@@ -317,12 +334,50 @@ test("recordings repository CRUD round-trip", async () => {
 	await recordingsRepository.update(created.id, { status: "failed" });
 	const failedAttempt = await recordingsRepository.findExistingForSeriesEpisode(
 		{
+			userId: "00000000-0000-4000-8000-000000000001",
 			title: "Morning Drama",
 			season: 1,
 			episode: 2
 		}
 	);
 	assert.equal(failedAttempt, null);
+
+	const secondUserId = randomUUID();
+	await pool.query(
+		`INSERT INTO users (
+			id, username, username_normalized, password_hash, role, activated_at
+		 ) VALUES ($1, 'episode-viewer', 'episode-viewer', 'test-hash', 'user', now())`,
+		[secondUserId]
+	);
+	const otherUsersEpisode = await recordingsRepository.create({
+		userId: secondUserId,
+		channelId: channel.id,
+		programId: program.id,
+		title: "Morning Drama",
+		status: "completed",
+		scheduledStart: program.start,
+		scheduledEnd: program.stop
+	});
+	assert.equal(
+		await recordingsRepository.findExistingForSeriesEpisode({
+			userId: "00000000-0000-4000-8000-000000000001",
+			title: "Morning Drama",
+			season: 1,
+			episode: 2
+		}),
+		null
+	);
+	assert.equal(
+		(
+			await recordingsRepository.findExistingForSeriesEpisode({
+				userId: secondUserId,
+				title: "Morning Drama",
+				season: 1,
+				episode: 2
+			})
+		)?.id,
+		otherUsersEpisode.id
+	);
 });
 
 test("commercial analysis failures wait for an explicit retry", async () => {
@@ -766,6 +821,78 @@ test("scheduled jobs repository persists, claims, completes and recovers", async
 	);
 });
 
+test("account migration preserves legacy preferences and adopts DVR ownership", async () => {
+	const { channel } = await seedTunerAndChannel();
+	const recording = await new RecordingsRepository(db).create({
+		channelId: channel.id,
+		title: "Legacy recording",
+		status: "completed",
+		scheduledStart: new Date("2026-01-01T00:00:00Z"),
+		scheduledEnd: new Date("2026-01-01T01:00:00Z")
+	});
+	const rule = await new SeriesRulesRepository(db).create({
+		title: "Legacy series",
+		keepCount: 5,
+		priority: 0
+	});
+	const downSql = await fs.readFile(
+		path.join(migrationsFolder, "0020_user_accounts.down.sql"),
+		"utf8"
+	);
+	const upSql = await fs.readFile(
+		path.join(migrationsFolder, "0020_user_accounts.sql"),
+		"utf8"
+	);
+
+	await pool.query(downSql);
+	await pool.query(
+		`INSERT INTO settings (key, value) VALUES
+		 ('ui', '{"theme":"dark","epgHoursVisible":8,"use24HourClock":true,"density":"compact","animations":false}'),
+		 ('channels', '{"favorites":[],"hidden":[],"order":[]}'),
+		 ('player', '{"volume":0.5,"muted":true,"captionsEnabled":true,"qualityByChannel":{}}')
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+	);
+	await pool.query(upSql);
+
+	const adopted = await pool.query<{
+		recording_owner: string;
+		rule_owner: string;
+	}>(
+		`SELECT r.user_id AS recording_owner, sr.user_id AS rule_owner
+		 FROM recordings r, series_rules sr
+		 WHERE r.id = $1 AND sr.id = $2`,
+		[recording.id, rule.id]
+	);
+	assert.equal(
+		adopted.rows[0]?.recording_owner,
+		"00000000-0000-4000-8000-000000000001"
+	);
+	assert.equal(
+		adopted.rows[0]?.rule_owner,
+		"00000000-0000-4000-8000-000000000001"
+	);
+	const preferences = await pool.query<{ key: string; value: unknown }>(
+		`SELECT key, value FROM user_preferences
+		 WHERE user_id = '00000000-0000-4000-8000-000000000001'`
+	);
+	const byKey = Object.fromEntries(
+		preferences.rows.map((row) => [row.key, row.value])
+	);
+	assert.equal((byKey["ui"] as { theme?: unknown } | undefined)?.theme, "dark");
+	assert.equal(
+		(byKey["player"] as { muted?: unknown } | undefined)?.muted,
+		true
+	);
+	assert.equal(
+		(
+			await pool.query(
+				"SELECT 1 FROM settings WHERE key IN ('ui', 'channels', 'player')"
+			)
+		).rowCount,
+		0
+	);
+});
+
 test("migration up and down round-trip", async () => {
 	const downSql = await fs.readFile(downMigrationPath, "utf8");
 	const durableEpisodeDownSql = await fs.readFile(
@@ -774,6 +901,10 @@ test("migration up and down round-trip", async () => {
 	);
 	const logicalChannelsDownSql = await fs.readFile(
 		path.join(migrationsFolder, "0019_logical_channels.down.sql"),
+		"utf8"
+	);
+	const userAccountsDownSql = await fs.readFile(
+		path.join(migrationsFolder, "0020_user_accounts.down.sql"),
 		"utf8"
 	);
 	const upSql = await fs.readFile(
@@ -803,11 +934,25 @@ test("migration up and down round-trip", async () => {
 			"0016_channel_provider_identity.sql",
 			"0017_recordings_program_updated_index.sql",
 			"0018_durable_episode_identity.sql",
-			"0019_logical_channels.sql"
+			"0019_logical_channels.sql",
+			"0020_user_accounts.sql"
 		].map((file) => fs.readFile(path.join(migrationsFolder, file), "utf8"))
 	);
 	// Drop the later tables first so the 0000 down migration can run
 	// cleanly without lingering FK references.
+	const downgradeUserId = randomUUID();
+	await pool.query(
+		`INSERT INTO users (
+			id, username, username_normalized, password_hash, role, activated_at
+		 ) VALUES ($1, 'rollback-guard', 'rollback-guard', 'test-hash', 'user', now())`,
+		[downgradeUserId]
+	);
+	await assert.rejects(
+		pool.query(userAccountsDownSql),
+		/cannot remove account support while non-bootstrap users exist/
+	);
+	await pool.query("DELETE FROM users WHERE id = $1", [downgradeUserId]);
+	await pool.query(userAccountsDownSql);
 	await pool.query(logicalChannelsDownSql);
 	await pool.query(durableEpisodeDownSql);
 	await pool.query("DROP TABLE IF EXISTS scheduled_jobs CASCADE");

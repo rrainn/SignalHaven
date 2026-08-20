@@ -47,16 +47,26 @@ Per-route entries reported by `next build`:
 
 ```
 Route (app)
-┌ ○ /
-├ ○ /channels
-├ ○ /guide
-├ ○ /recordings
+┌ ƒ /
+├ ƒ /advanced
+├ ƒ /channels
+├ ƒ /guide
+├ ƒ /preferences
+├ ƒ /programs/[id]
+├ ƒ /recordings
 ├ ƒ /recordings/[id]
 ├ ƒ /recordings/series/[seriesRuleId]
-├ ○ /scheduler
-├ ○ /settings
+├ ƒ /scheduler
+├ ƒ /settings
+├ ƒ /setup/account
+├ ƒ /sign-in
 └ ƒ /watch/[channelId]
 ```
+
+The root layout is deliberately dynamic because it resolves the incoming
+request's account and preference snapshot with `no-store` before emitting
+account-owned HTML. This prevents shared HTML caching across users while
+removing the client-only authentication paint waterfall.
 
 - Each route file (`app/<route>/page.tsx`) is a thin wrapper around a
   client module under `app/_<feature>/`. Next.js auto-splits one chunk
@@ -91,10 +101,12 @@ prefetch for routes flagged as "heavy" (`/watch`, `/recordings`) when:
 - the network is reported as `slow-2g`, `2g`, or `3g`
   (`effectiveType`).
 
-Light routes (guide, channels, scheduler, settings) still prefetch
-because their chunks are small and the win on tap-latency is real.
-The bottom navigation bar (mobile-only) and top app bar both use
-`SmartLink`.
+Ordinary in-content links keep that policy. Persistent chrome uses
+`IntentPrefetchLink`: the bottom navigation, top app bar, home link,
+and account-preferences link do not prefetch every route merely by
+entering the viewport. They warm one destination on pointer hover or
+keyboard focus instead, preserving responsive intentional navigation
+without competing with the active route's first paint.
 
 ## Lighthouse budgets
 
@@ -132,11 +144,12 @@ calls out, while keeping the assertion noise floor below the budget.
 
 ### Mock backend
 
-Because the four screens above are client-rendered and call
-`/api/v1/*` on first paint, running Lighthouse against the
-production server with no backend would leave every page in a
-spinner state — which crushes LCP and the perf score. The CI job
-therefore boots a tiny zero-dep Node script
+The root layout resolves account status and preferences from the
+incoming request cookie before it emits account-owned HTML, and the
+four measured screens then call their `/api/v1/*` data endpoints on
+the client. Running Lighthouse against the production server with no
+backend would therefore render the fail-closed unavailable surface
+instead of the measured route. The CI job boots a tiny zero-dep Node script
 ([`apps/frontend/scripts/lighthouse-mock-backend.mjs`](../apps/frontend/scripts/lighthouse-mock-backend.mjs))
 that answers the GET endpoints with the smallest fixtures that
 satisfy the shared Zod schemas, and points the frontend's

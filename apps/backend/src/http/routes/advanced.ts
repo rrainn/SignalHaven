@@ -54,7 +54,10 @@ function parseExternalIp(body: string): string | null {
 	return null;
 }
 
-/** Advanced operational controls; UI visibility is intentionally client-local. */
+/**
+ * Advanced controls are mounted behind the administrator middleware, while
+ * recording diagnostics remain scoped to that administrator's private library.
+ */
 export function createAdvancedRouter(deps: {
 	streaming?: StreamingService | undefined;
 	recordings?: RecordingsService | undefined;
@@ -109,11 +112,12 @@ export function createAdvancedRouter(deps: {
 		}
 	});
 
-	router.get("/advanced/ffmpeg", async (_req, res, next) => {
+	router.get("/advanced/ffmpeg", async (req, res, next) => {
 		try {
 			const [live, recordings] = await Promise.all([
 				Promise.resolve(deps.streaming?.getActiveSessions() ?? []),
-				deps.recordings?.getActiveFfmpegWork() ?? Promise.resolve([])
+				deps.recordings?.getActiveFfmpegWork(req.auth!.user.id) ??
+					Promise.resolve([])
 			]);
 			const items = [
 				...live.map((session) => ({
@@ -154,13 +158,13 @@ export function createAdvancedRouter(deps: {
 		}
 	});
 
-	router.get("/advanced/comskip", (_req, res) => {
-		const items = (deps.commercialAnalysis?.getActiveWork() ?? []).map(
-			(work) => ({
-				id: `commercial:${work.recordingId}`,
-				...work
-			})
-		);
+	router.get("/advanced/comskip", (req, res) => {
+		const items = (
+			deps.commercialAnalysis?.getActiveWork(req.auth!.user.id) ?? []
+		).map((work) => ({
+			id: `commercial:${work.recordingId}`,
+			...work
+		}));
 		res.setHeader("Cache-Control", "no-store");
 		res.json(comskipWorkListSchema.parse({ items }));
 	});
@@ -178,11 +182,14 @@ export function createAdvancedRouter(deps: {
 				} else if (id.startsWith("recording:")) {
 					if (!deps.recordings)
 						throw new HttpError(404, "not_found", "FFmpeg work not found");
-					await deps.recordings.cancel(id.slice(10));
+					await deps.recordings.cancelOwned(id.slice(10), req.auth!.user.id);
 				} else if (id.startsWith("playback:")) {
 					if (!deps.recordings)
 						throw new HttpError(404, "not_found", "FFmpeg work not found");
-					const stopped = deps.recordings.stopPlayback(id.slice(9));
+					const stopped = await deps.recordings.stopOwnedPlayback(
+						id.slice(9),
+						req.auth!.user.id
+					);
 					if (!stopped)
 						throw new HttpError(404, "not_found", "FFmpeg work not found");
 				} else {

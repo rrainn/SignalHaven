@@ -33,11 +33,29 @@ export function readAdvancedMode(): boolean {
 	}
 }
 
-/** Owns the local-only diagnostics preference and synchronizes browser tabs. */
-export function AdvancedModeProvider({ children }: { children: ReactNode }) {
+/** Owns administrator diagnostics and synchronizes the local preference safely. */
+export function AdvancedModeProvider({
+	children,
+	isAdministrator = true
+}: {
+	children: ReactNode;
+	/** Isolated previews default to admin; the app always supplies the account role. */
+	isAdministrator?: boolean;
+}) {
 	const [enabled, setEnabledState] = useState(false);
 
 	useEffect(() => {
+		if (!isAdministrator) {
+			// A browser can be shared by accounts, so revoke the browser-wide flag
+			// before standard-user components or API errors can observe it.
+			setEnabledState(false);
+			try {
+				window.localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "false");
+			} catch {
+				// The in-memory permission boundary still keeps diagnostics hidden.
+			}
+			return;
+		}
 		setEnabledState(readAdvancedMode());
 		const onStorage = (event: StorageEvent) => {
 			if (event.key === ADVANCED_MODE_STORAGE_KEY) {
@@ -46,21 +64,28 @@ export function AdvancedModeProvider({ children }: { children: ReactNode }) {
 		};
 		window.addEventListener("storage", onStorage);
 		return () => window.removeEventListener("storage", onStorage);
-	}, []);
+	}, [isAdministrator]);
 
-	const setEnabled = useCallback((next: boolean) => {
-		setEnabledState(next);
-		try {
-			window.localStorage.setItem(
-				ADVANCED_MODE_STORAGE_KEY,
-				next ? "true" : "false"
-			);
-		} catch {
-			// The in-memory choice remains useful for the current tab.
-		}
-	}, []);
+	const setEnabled = useCallback(
+		(next: boolean) => {
+			if (!isAdministrator) return;
+			setEnabledState(next);
+			try {
+				window.localStorage.setItem(
+					ADVANCED_MODE_STORAGE_KEY,
+					next ? "true" : "false"
+				);
+			} catch {
+				// The in-memory choice remains useful for the current tab.
+			}
+		},
+		[isAdministrator]
+	);
 
-	const value = useMemo(() => ({ enabled, setEnabled }), [enabled, setEnabled]);
+	const value = useMemo(
+		() => ({ enabled: isAdministrator && enabled, setEnabled }),
+		[enabled, isAdministrator, setEnabled]
+	);
 	return (
 		<AdvancedModeContext.Provider value={value}>
 			{children}

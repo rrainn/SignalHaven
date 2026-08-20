@@ -35,6 +35,8 @@ const DEFAULT_RUNNER: RecordingPlaybackRunner = {
 
 export interface RecordingPlaybackSessionOptions {
 	recordingId: string;
+	/** Owner audience prevents playback diagnostics from crossing libraries. */
+	userId?: string;
 	inputPath: string;
 	startSeconds?: number;
 	bus?: EventBus;
@@ -83,6 +85,7 @@ export class RecordingPlaybackSession {
 	readonly hwaccel: HwaccelKind | null;
 
 	private readonly inputPath: string;
+	private readonly userId: string | undefined;
 	private readonly bus: EventBus | undefined;
 	private readonly runner: RecordingPlaybackRunner;
 	private readonly tmpRoot: string;
@@ -121,6 +124,7 @@ export class RecordingPlaybackSession {
 
 	constructor(options: RecordingPlaybackSessionOptions) {
 		this.recordingId = options.recordingId;
+		this.userId = options.userId;
 		this.startSeconds = options.startSeconds ?? 0;
 		this.inputPath = options.inputPath;
 		this.bus = options.bus;
@@ -162,19 +166,32 @@ export class RecordingPlaybackSession {
 	}
 
 	/** Read and rewrite the VOD playlist with this session's opaque token. */
-	async readPlaylist(viewerId?: string, startSeconds = 0): Promise<string> {
+	async readPlaylist(
+		viewerId?: string,
+		startSeconds = 0,
+		mediaTicket?: string
+	): Promise<string> {
 		await this.start();
 		if (viewerId) this.attachViewer(viewerId);
 		this.touch();
 		const playlist = await readFile(join(this.outDir, "master.m3u8"), "utf8");
 		return addRecordingStartHint(
-			exposeRecordingSegmentUris(playlist, this.sessionId, viewerId),
+			exposeRecordingSegmentUris(
+				playlist,
+				this.sessionId,
+				viewerId,
+				mediaTicket
+			),
 			startSeconds
 		);
 	}
 
 	/** Read one immutable segment while enforcing output-directory containment. */
-	async readSegment(name: string, viewerId?: string): Promise<Buffer> {
+	async readSegment(
+		name: string,
+		viewerId?: string,
+		mediaTicket?: string
+	): Promise<Buffer> {
 		await this.start();
 		if (!isSafeRecordingSegmentName(name)) {
 			throw new Error(`Invalid recording segment name: ${name}`);
@@ -196,7 +213,8 @@ export class RecordingPlaybackSession {
 					exposeRecordingRenditionSegmentUris(
 						body.toString("utf8"),
 						this.sessionId,
-						viewerId
+						viewerId,
+						mediaTicket
 					)
 				)
 			: body;
@@ -709,7 +727,8 @@ export class RecordingPlaybackSession {
 				recordingId: this.recordingId,
 				playbackSessionId: this.sessionId,
 				...data
-			}
+			},
+			...(this.userId ? { audience: { userId: this.userId } } : {})
 		});
 	}
 }
@@ -782,11 +801,13 @@ export function isSafeRecordingSegmentName(name: string): boolean {
 export function exposeRecordingSegmentUris(
 	playlist: string,
 	sessionId: string,
-	viewerId?: string
+	viewerId?: string,
+	mediaTicket?: string
 ): string {
 	const lineBreak = playlist.includes("\r\n") ? "\r\n" : "\n";
 	const query = new URLSearchParams({ session: sessionId });
 	if (viewerId) query.set("viewerId", viewerId);
+	if (mediaTicket) query.set("mediaTicket", mediaTicket);
 	return playlist
 		.split(lineBreak)
 		.map((line) =>
@@ -799,11 +820,13 @@ export function exposeRecordingSegmentUris(
 function exposeRecordingRenditionSegmentUris(
 	playlist: string,
 	sessionId: string,
-	viewerId?: string
+	viewerId?: string,
+	mediaTicket?: string
 ): string {
 	const lineBreak = playlist.includes("\r\n") ? "\r\n" : "\n";
 	const query = new URLSearchParams({ session: sessionId });
 	if (viewerId) query.set("viewerId", viewerId);
+	if (mediaTicket) query.set("mediaTicket", mediaTicket);
 	return playlist
 		.split(lineBreak)
 		.map((line) =>

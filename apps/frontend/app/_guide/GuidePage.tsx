@@ -133,13 +133,13 @@ export function GuidePage(props: GuidePageProps) {
 	const use24Hour = use24HourClock(props.use24Hour);
 	const epgHoursVisible = normalizeHorizonHours(
 		props.epgHoursVisible ??
-			preferences?.settings.ui.epgHoursVisible ??
+			preferences?.preferences.ui.epgHoursVisible ??
 			fixtureHours(props.initialData) ??
 			24
 	);
 	const channelPreferences =
 		props.channelPreferences ??
-		preferences?.settings.channels ??
+		preferences?.preferences.channels ??
 		EMPTY_CHANNEL_PREFERENCES;
 
 	const [now, setNow] = useState<Date>(

@@ -2,7 +2,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { Settings } from "@signalhaven/shared";
+import {
+	settingsDefaults,
+	userPreferencesDefaults,
+	type Settings
+} from "@signalhaven/shared";
 
 import { buildChannelsFixture } from "../../app/_channels/fixtures";
 import { TranscodingSection } from "../../app/_settings/TranscodingSection";
@@ -14,22 +18,31 @@ vi.mock("../../lib/api-client", async () => {
 	return {
 		...actual,
 		updateSettings: vi.fn(),
+		updatePreferences: vi.fn(),
 		listChannels: vi.fn().mockResolvedValue({ items: [] })
 	};
 });
 
-import { listChannels, updateSettings } from "../../lib/api-client";
+import {
+	listChannels,
+	updatePreferences,
+	updateSettings
+} from "../../lib/api-client";
 
 const listChannelsMock = vi.mocked(listChannels);
+const updatePreferencesMock = vi.mocked(updatePreferences);
 const updateSettingsMock = vi.mocked(updateSettings);
 
 beforeEach(() => {
 	listChannelsMock.mockReset();
 	listChannelsMock.mockResolvedValue({ items: [] });
+	updatePreferencesMock.mockReset();
+	updatePreferencesMock.mockResolvedValue(userPreferencesDefaults);
 	updateSettingsMock.mockReset();
 });
 
 const baseSettings: Settings = {
+	...settingsDefaults,
 	storage: { path: "/srv/recordings", quotaGb: null },
 	transcoding: {
 		enabled: false,
@@ -41,21 +54,7 @@ const baseSettings: Settings = {
 		availableHwaccels: [],
 		captionsEnabled: true
 	},
-	ui: {
-		theme: "system",
-		epgHoursVisible: 4,
-		use24HourClock: false,
-		density: "comfortable",
-		animations: true
-	},
 	recordings: { paddingBeforeSec: 0, paddingAfterSec: 0 },
-	channels: { favorites: [], hidden: [], order: [] },
-	player: {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: {}
-	},
 	timeShift: {
 		enabled: true,
 		bufferPath: null,
@@ -69,7 +68,13 @@ const baseSettings: Settings = {
 describe("TranscodingSection", () => {
 	it("rejects an out-of-range video bitrate", async () => {
 		const user = userEvent.setup();
-		render(<TranscodingSection settings={baseSettings} onChanged={() => {}} />);
+		render(
+			<TranscodingSection
+				settings={baseSettings}
+				playerPreferences={userPreferencesDefaults.player}
+				onChanged={() => {}}
+			/>
+		);
 		const video = screen.getByLabelText(/video bitrate/i);
 		await user.clear(video);
 		await user.type(video, "999999");
@@ -83,7 +88,13 @@ describe("TranscodingSection", () => {
 	it("PATCHes the transcoding settings on submit", async () => {
 		const user = userEvent.setup();
 		updateSettingsMock.mockResolvedValue(baseSettings);
-		render(<TranscodingSection settings={baseSettings} onChanged={() => {}} />);
+		render(
+			<TranscodingSection
+				settings={baseSettings}
+				playerPreferences={userPreferencesDefaults.player}
+				onChanged={() => {}}
+			/>
+		);
 
 		const video = screen.getByLabelText(/video bitrate/i);
 		await user.clear(video);
@@ -97,6 +108,9 @@ describe("TranscodingSection", () => {
 			| { transcoding?: { videoBitrateKbps?: number } }
 			| undefined;
 		expect(arg?.transcoding?.videoBitrateKbps).toBe(8000);
+		expect(updatePreferencesMock).toHaveBeenCalledWith({
+			player: userPreferencesDefaults.player
+		});
 	});
 
 	it("bounds the initial override render for large channel lineups", async () => {
@@ -111,7 +125,13 @@ describe("TranscodingSection", () => {
 		}));
 		listChannelsMock.mockResolvedValue({ items: channels });
 
-		render(<TranscodingSection settings={baseSettings} onChanged={() => {}} />);
+		render(
+			<TranscodingSection
+				settings={baseSettings}
+				playerPreferences={userPreferencesDefaults.player}
+				onChanged={() => {}}
+			/>
+		);
 
 		// A large lineup must not mount every interactive profile picker at once.
 		expect(

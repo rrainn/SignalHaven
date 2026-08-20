@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { transcodeProfileSchema } from "@signalhaven/shared";
 import { z } from "zod";
 
@@ -22,7 +22,8 @@ const channelIdParamSchema = z.object({
 
 const profileQuerySchema = z.object({
 	profile: z.union([z.literal("auto"), transcodeProfileSchema]).optional(),
-	viewerId: z.string().uuid().optional()
+	viewerId: z.string().uuid().optional(),
+	mediaTicket: z.string().min(32).max(256).optional()
 });
 
 const viewerReleaseParamSchema = z.object({
@@ -58,7 +59,10 @@ const renditionParamSchema = segmentParamSchema.extend({
  * the API. Playlists are marked `no-cache` (they must always be re-read
  * for fresh segments); segments themselves are immutable once written.
  */
-export function createStreamRouter(streaming: StreamingService): Router {
+export function createStreamRouter(
+	streaming: StreamingService,
+	requireAdmin: RequestHandler
+): Router {
 	const router = Router();
 
 	router.get(
@@ -68,6 +72,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 			const channelId = req.params["channelId"] as string;
 			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const viewerId = req.query["viewerId"] as string | undefined;
+			const mediaTicket = req.query["mediaTicket"] as string | undefined;
 			let attached = false;
 			let session: Awaited<ReturnType<StreamingService["attach"]>> | undefined;
 			try {
@@ -78,7 +83,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 					session.attachViewer(viewerId);
 				}
 
-				const body = await session.readMasterPlaylist(viewerId);
+				const body = await session.readMasterPlaylist(viewerId, mediaTicket);
 				applyCommonHeaders(res);
 				res.setHeader(
 					"Content-Type",
@@ -92,7 +97,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 					// or throws — but keep the refcount honest if it does.
 					session?.detach();
 				}
-				next(translate(err));
+				next(translate(err, req.auth?.user.role));
 			}
 		}
 	);
@@ -104,6 +109,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 			const channelId = req.params["channelId"] as string;
 			const profile = req.query["profile"] as PlaybackProfile | undefined;
 			const viewerId = req.query["viewerId"] as string | undefined;
+			const mediaTicket = req.query["mediaTicket"] as string | undefined;
 			let attached = false;
 			let session: Awaited<ReturnType<StreamingService["attach"]>> | undefined;
 			try {
@@ -113,7 +119,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				if (viewerId) {
 					session.attachViewer(viewerId);
 				}
-				const body = await session.readPlaylist();
+				const body = await session.readPlaylist(mediaTicket, viewerId);
 
 				applyCommonHeaders(res);
 				res.setHeader(
@@ -126,7 +132,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				if (attached) {
 					session?.detach();
 				}
-				next(translate(err));
+				next(translate(err, req.auth?.user.role));
 			}
 		}
 	);
@@ -150,6 +156,8 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
 			const profile = req.query["profile"] as PlaybackProfile | undefined;
+			const mediaTicket = req.query["mediaTicket"] as string | undefined;
+			const viewerId = req.query["viewerId"] as string | undefined;
 			const session = streaming.getSession(channelId, profile);
 			if (!session || !session.captionsEnabled) {
 				next(
@@ -158,7 +166,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				return;
 			}
 			try {
-				const body = await session.readCaptionsPlaylist();
+				const body = await session.readCaptionsPlaylist(mediaTicket, viewerId);
 				applyCommonHeaders(res);
 				res.setHeader(
 					"Content-Type",
@@ -194,7 +202,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				res.setHeader("Content-Type", contentTypeFor(segment));
 				// Segments are immutable bytes once ffmpeg writes them: long cache
 				// is safe and helps players that re-request after seeking.
-				res.setHeader("Cache-Control", "public, max-age=300, immutable");
+				res.setHeader("Cache-Control", "private, no-store");
 				res.status(200).send(body);
 			} catch {
 				next(new HttpError(404, "not_found", `Segment ${segment} not found`));
@@ -208,6 +216,8 @@ export function createStreamRouter(streaming: StreamingService): Router {
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
 			const rendition = req.params["rendition"] as string;
+			const mediaTicket = req.query["mediaTicket"] as string | undefined;
+			const viewerId = req.query["viewerId"] as string | undefined;
 			const session = streaming.getSession(channelId, "auto");
 			if (!session) {
 				next(
@@ -216,7 +226,11 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				return;
 			}
 			try {
-				const body = await session.readRenditionPlaylist(rendition);
+				const body = await session.readRenditionPlaylist(
+					rendition,
+					mediaTicket,
+					viewerId
+				);
 				applyCommonHeaders(res);
 				res.setHeader(
 					"Content-Type",
@@ -248,7 +262,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 				const body = await session.readRenditionSegment(rendition, segment);
 				applyCommonHeaders(res);
 				res.setHeader("Content-Type", contentTypeFor(segment));
-				res.setHeader("Cache-Control", "public, max-age=300, immutable");
+				res.setHeader("Cache-Control", "private, no-store");
 				res.status(200).send(body);
 			} catch {
 				next(new HttpError(404, "not_found", `Segment ${segment} not found`));
@@ -261,6 +275,7 @@ export function createStreamRouter(streaming: StreamingService): Router {
 	// Returns 404 when no session is active for the channel.
 	router.get(
 		"/stream/:channelId/status",
+		requireAdmin,
 		validate({ params: channelIdParamSchema, query: profileQuerySchema }),
 		(req, res, next) => {
 			const channelId = req.params["channelId"] as string;
@@ -343,7 +358,7 @@ function registerDetach(
 	req.on("close", once);
 }
 
-function translate(err: unknown): unknown {
+function translate(err: unknown, role?: "admin" | "user"): unknown {
 	if (err instanceof HttpError) {
 		return err;
 	}
@@ -354,12 +369,21 @@ function translate(err: unknown): unknown {
 		return new HttpError(409, "stream_stopped_by_operator", err.message);
 	}
 	if (err instanceof AdaptiveEncoderCapacityError) {
-		return new HttpError(422, "encoder_capacity", err.message);
+		return new HttpError(
+			422,
+			"encoder_capacity",
+			role === "admin"
+				? err.message
+				: "Adaptive streaming is unavailable. Choose a manual quality profile or ask an administrator for help."
+		);
 	}
 	if (err instanceof TunerUnavailableError) {
-		return new HttpError(409, err.code, err.message, {
-			conflicts: err.conflicts
-		});
+		return new HttpError(
+			409,
+			err.code,
+			role === "admin" ? err.message : "No tuner capacity is available",
+			role === "admin" ? { conflicts: err.conflicts } : undefined
+		);
 	}
 	return err;
 }

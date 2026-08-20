@@ -8,6 +8,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { API_BASE_URL } from "./api-client";
+import { SESSION_EXPIRED_EVENT } from "./app-events";
 
 /**
  * Minimal client for the WS event bus mounted at `/api/v1/events`.
@@ -119,8 +120,12 @@ export function useWebSocketEvents(options: WsClientOptions): WsClientStatus {
 				}
 			});
 
-			socket.addEventListener("close", () => {
+			socket.addEventListener("close", (event) => {
 				setStatus("closed");
+				if (event.code === 4401) {
+					window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+					return;
+				}
 				if (!cancelled) scheduleReconnect();
 			});
 

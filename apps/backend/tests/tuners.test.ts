@@ -13,6 +13,7 @@ import type {
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import type { EpgService } from "../src/epg/epg.service";
 import { EventBus } from "../src/events/event-bus";
 import type { HealthRepository } from "../src/repositories/health.repository";
@@ -257,6 +258,7 @@ function buildHarness(
 	});
 
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test" },
 		healthRepository: stubHealthRepository(),
 		tunersService: service,

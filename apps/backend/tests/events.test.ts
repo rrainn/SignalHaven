@@ -6,6 +6,11 @@ import test from "node:test";
 import { WebSocket } from "ws";
 
 import { EventBus } from "../src/events/event-bus";
+import type { AuthPrincipal } from "../src/auth/auth.service";
+import {
+	hasValidIncomingCookieOrigin,
+	readIncomingRequestToken
+} from "../src/auth/middleware";
 import {
 	attachEventsWebSocket,
 	EVENTS_PATH,
@@ -23,7 +28,16 @@ async function startHarness(
 	options: {
 		heartbeatIntervalMs?: number;
 		clientBufferLimit?: number;
+		clientBufferBytes?: number;
+		maxPayloadBytes?: number;
+		connectionsPerSession?: number;
+		connectionsPerUser?: number;
+		connectionsPerAddress?: number;
+		maxConnections?: number;
 		socketHighWaterMark?: number;
+		authenticate?: (
+			request: import("node:http").IncomingMessage
+		) => Promise<AuthPrincipal | null>;
 	} = {}
 ): Promise<Harness> {
 	const bus = new EventBus();
@@ -36,13 +50,41 @@ async function startHarness(
 	});
 	const attachOptions: Parameters<typeof attachEventsWebSocket>[0] = {
 		server,
-		bus
+		bus,
+		authenticate:
+			options.authenticate ??
+			(async () => ({
+				sessionId: "00000000-0000-4000-8000-000000000002",
+				user: {
+					id: "00000000-0000-4000-8000-000000000001",
+					username: "test-admin",
+					role: "admin"
+				}
+			}))
 	};
 	if (options.heartbeatIntervalMs !== undefined) {
 		attachOptions.heartbeatIntervalMs = options.heartbeatIntervalMs;
 	}
 	if (options.clientBufferLimit !== undefined) {
 		attachOptions.clientBufferLimit = options.clientBufferLimit;
+	}
+	if (options.clientBufferBytes !== undefined) {
+		attachOptions.clientBufferBytes = options.clientBufferBytes;
+	}
+	if (options.maxPayloadBytes !== undefined) {
+		attachOptions.maxPayloadBytes = options.maxPayloadBytes;
+	}
+	if (options.connectionsPerSession !== undefined) {
+		attachOptions.connectionsPerSession = options.connectionsPerSession;
+	}
+	if (options.connectionsPerUser !== undefined) {
+		attachOptions.connectionsPerUser = options.connectionsPerUser;
+	}
+	if (options.connectionsPerAddress !== undefined) {
+		attachOptions.connectionsPerAddress = options.connectionsPerAddress;
+	}
+	if (options.maxConnections !== undefined) {
+		attachOptions.maxConnections = options.maxConnections;
 	}
 	if (options.socketHighWaterMark !== undefined) {
 		attachOptions.socketHighWaterMark = options.socketHighWaterMark;
@@ -63,6 +105,37 @@ async function stopHarness(h: Harness): Promise<void> {
 function openClient(url: string): Promise<WebSocket> {
 	return new Promise((resolve, reject) => {
 		const ws = new WebSocket(url);
+		ws.once("open", () => resolve(ws));
+		ws.once("error", reject);
+	});
+}
+
+/** Observe an admission rejection without upgrading or leaving a socket open. */
+function rejectedUpgradeStatus(url: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const ws = new WebSocket(url);
+		ws.once("unexpected-response", (_request, response) => {
+			const status = response.statusCode ?? 0;
+			response.resume();
+			resolve(status);
+		});
+		ws.once("open", () => {
+			ws.close();
+			reject(new Error("Expected the WebSocket upgrade to be rejected"));
+		});
+		// The HTTP response is the behavior under test; ws may also report its closure.
+		ws.on("error", () => undefined);
+	});
+}
+
+function openAuthenticatedClient(
+	url: string,
+	token: string
+): Promise<WebSocket> {
+	return new Promise((resolve, reject) => {
+		const ws = new WebSocket(url, {
+			headers: { authorization: `Bearer ${token}` }
+		});
 		ws.once("open", () => resolve(ws));
 		ws.once("error", reject);
 	});
@@ -179,6 +252,197 @@ test("subscribe -> publish -> receive; unsubscribe stops delivery", async () => 
 	}
 });
 
+test("unauthenticated WebSockets close with the observable session-expired code", async () => {
+	const h = await startHarness({ authenticate: async () => null });
+	try {
+		const ws = await openClient(h.url);
+		const closed = await new Promise<number>((resolve) => {
+			ws.once("close", (code) => resolve(code));
+		});
+		assert.equal(closed, 4401);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
+test("cookie WebSockets reject cross-origin upgrades while bearer clients are exempt", async () => {
+	const principal: AuthPrincipal = {
+		sessionId: "session",
+		user: { id: "user", username: "viewer", role: "user" }
+	};
+	const h = await startHarness({
+		authenticate: async (request) => {
+			const credential = readIncomingRequestToken(request);
+			if (!credential) return null;
+			if (
+				credential.transport === "cookie" &&
+				!hasValidIncomingCookieOrigin(request)
+			) {
+				return null;
+			}
+			return principal;
+		}
+	});
+	try {
+		const cookie = new WebSocket(h.url, {
+			headers: {
+				cookie: `signalhaven_session=${"s".repeat(43)}`,
+				origin: "http://attacker.local"
+			}
+		});
+		await new Promise<void>((resolve, reject) => {
+			cookie.once("open", resolve);
+			cookie.once("error", reject);
+		});
+		assert.equal(
+			await new Promise<number>((resolve) =>
+				cookie.once("close", (code) => resolve(code))
+			),
+			4401
+		);
+
+		const bearer = await openAuthenticatedClient(h.url, "native-token");
+		await closeClient(bearer);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
+test("user-scoped events never fan out to another authenticated account", async () => {
+	const h = await startHarness({
+		authenticate: async (request) => {
+			const token = request.headers.authorization?.replace(/^Bearer /, "");
+			if (token !== "first" && token !== "second") return null;
+			return {
+				sessionId: token,
+				user: {
+					id: token,
+					username: token,
+					role: "user"
+				}
+			};
+		}
+	});
+	try {
+		const first = await openAuthenticatedClient(h.url, "first");
+		const second = await openAuthenticatedClient(h.url, "second");
+		const firstMessages = collect(first);
+		const secondMessages = collect(second);
+		first.send(
+			JSON.stringify({
+				type: "subscribe",
+				topics: ["recordings", "settings"]
+			})
+		);
+		second.send(
+			JSON.stringify({
+				type: "subscribe",
+				topics: ["recordings", "settings"]
+			})
+		);
+		await firstMessages.next((message) => message.type === "ack");
+		await secondMessages.next((message) => message.type === "ack");
+
+		h.bus.publish({
+			topic: "recordings",
+			event: "recording.completed",
+			data: { id: "private-recording" },
+			audience: { userId: "first" }
+		});
+		assert.equal(
+			(await firstMessages.next((message) => message.type === "event")).event,
+			"recording.completed"
+		);
+		h.bus.publish({
+			topic: "settings",
+			event: "preferences.updated",
+			data: { ui: {} },
+			audience: { userId: "first" }
+		});
+		assert.equal(
+			(
+				await firstMessages.next(
+					(message) => message.event === "preferences.updated"
+				)
+			).topic,
+			"settings"
+		);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(
+			secondMessages.all().filter((message) => message.type === "event"),
+			[]
+		);
+		await Promise.all([closeClient(first), closeClient(second)]);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
+test("standard users receive only sanitized guide refresh events from the EPG topic", async () => {
+	const h = await startHarness({
+		authenticate: async (request) => {
+			const token = request.headers.authorization?.replace(/^Bearer /, "");
+			if (token !== "admin" && token !== "viewer") return null;
+			return {
+				sessionId: token,
+				user: {
+					id: token,
+					username: token,
+					role: token === "admin" ? "admin" : "user"
+				}
+			};
+		}
+	});
+	try {
+		const admin = await openAuthenticatedClient(h.url, "admin");
+		const viewer = await openAuthenticatedClient(h.url, "viewer");
+		const adminMessages = collect(admin);
+		const viewerMessages = collect(viewer);
+		admin.send(JSON.stringify({ type: "subscribe", topics: ["epg"] }));
+		viewer.send(JSON.stringify({ type: "subscribe", topics: ["epg"] }));
+		await adminMessages.next((message) => message.type === "ack");
+		await viewerMessages.next((message) => message.type === "ack");
+
+		h.bus.publish({
+			topic: "epg",
+			event: "source.updated",
+			data: {
+				source: {
+					url: "https://guide.invalid/feed?token=top-secret",
+					filePath: "/private/guides/provider.xml",
+					tunerId: "00000000-0000-4000-8000-000000000099"
+				}
+			}
+		});
+		const adminDiagnostic = await adminMessages.next(
+			(message) => message.event === "source.updated"
+		);
+		assert.match(JSON.stringify(adminDiagnostic), /top-secret/);
+
+		h.bus.publish({
+			topic: "epg",
+			event: "epg.refresh",
+			data: { phase: "completed" },
+			audience: { role: "user" }
+		});
+		const guideRefresh = await viewerMessages.next(
+			(message) => message.event === "epg.refresh"
+		);
+		assert.deepEqual(guideRefresh.data, { phase: "completed" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.doesNotMatch(
+			JSON.stringify(viewerMessages.all()),
+			/top-secret|private/
+		);
+
+		adminMessages.close();
+		viewerMessages.close();
+		await Promise.all([closeClient(admin), closeClient(viewer)]);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
 test("events to topics with zero subscribers are not broadcast and bus skips work", async () => {
 	const h = await startHarness();
 	try {
@@ -230,6 +494,83 @@ test("invalid messages return a typed error frame and do not close socket", asyn
 	}
 });
 
+test("oversized client frames and excess session sockets are closed", async () => {
+	const h = await startHarness({
+		maxPayloadBytes: 1024,
+		connectionsPerSession: 1
+	});
+	try {
+		const first = await openClient(h.url);
+		assert.equal(await rejectedUpgradeStatus(h.url), 429);
+
+		first.send("x".repeat(1025));
+		const firstCode = await new Promise<number>((resolve) => {
+			first.once("close", (code) => resolve(code));
+		});
+		assert.equal(firstCode, 1009);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
+test("closed sockets release the immutable admission address for reconnects", async () => {
+	const h = await startHarness({
+		connectionsPerAddress: 1,
+		connectionsPerSession: 4,
+		connectionsPerUser: 4
+	});
+	try {
+		const first = await openClient(h.url);
+		await closeClient(first);
+
+		// A destroyed Node socket may no longer expose remoteAddress. The server
+		// must decrement the address captured before upgrade, not "unknown".
+		const replacement = await openClient(h.url);
+		assert.equal(replacement.readyState, WebSocket.OPEN);
+		await closeClient(replacement);
+	} finally {
+		await stopHarness(h);
+	}
+});
+
+test("heartbeat authentication never overlaps for a slow client session", async () => {
+	let authenticationCalls = 0;
+	let releaseHeartbeat: (() => void) | undefined;
+	const heartbeatCanFinish = new Promise<void>((resolve) => {
+		releaseHeartbeat = resolve;
+	});
+	const principal: AuthPrincipal = {
+		sessionId: "00000000-0000-4000-8000-000000000002",
+		user: {
+			id: "00000000-0000-4000-8000-000000000001",
+			username: "test-admin",
+			role: "admin"
+		}
+	};
+	const h = await startHarness({
+		heartbeatIntervalMs: 10,
+		authenticate: async () => {
+			authenticationCalls += 1;
+			if (authenticationCalls > 1) await heartbeatCanFinish;
+			return principal;
+		}
+	});
+	let ws: WebSocket | undefined;
+	try {
+		ws = await openClient(h.url);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(
+			authenticationCalls,
+			2,
+			"one handshake and one in-flight heartbeat lookup are allowed"
+		);
+	} finally {
+		releaseHeartbeat?.();
+		if (ws) await closeClient(ws);
+		await stopHarness(h);
+	}
+});
+
 test("heartbeat disconnects clients that miss pong replies", async () => {
 	const h = await startHarness({ heartbeatIntervalMs: 50 });
 	try {
@@ -255,6 +596,7 @@ test("heartbeat disconnects clients that miss pong replies", async () => {
 test("backpressure drops oldest queued events when limit exceeded", async () => {
 	const h = await startHarness({
 		clientBufferLimit: 5,
+		clientBufferBytes: 5 * 70 * 1024,
 		socketHighWaterMark: 1024
 	});
 	try {

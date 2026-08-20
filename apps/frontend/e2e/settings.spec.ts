@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 /**
  * E2E for rrainn/SignalHaven#U11-settings: change theme to dark from the
@@ -77,8 +77,19 @@ async function mockBackend(page: Page) {
 		})
 	);
 
-	let current = { ...sampleSettings };
+	let current = {
+		ui: { ...sampleSettings.ui },
+		channels: { ...sampleSettings.channels },
+		player: { ...sampleSettings.player }
+	};
 	await page.route("**/api/v1/settings", async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify(sampleSettings)
+		});
+	});
+	await page.route("**/api/v1/preferences", async (route) => {
 		if (route.request().method() === "PATCH") {
 			const body = JSON.parse(route.request().postData() ?? "{}");
 			current = {
@@ -107,9 +118,7 @@ test.describe("Settings — appearance", () => {
 	}) => {
 		await mockBackend(page);
 
-		await page.goto("/settings");
-
-		await page.getByRole("tab", { name: /appearance/i }).click();
+		await page.goto("/preferences");
 		await page.getByTestId("appearance-theme-dark").click();
 		await page.getByRole("button", { name: /^save$/i }).click();
 		await expect(page.getByRole("status")).toHaveText("Saved.");

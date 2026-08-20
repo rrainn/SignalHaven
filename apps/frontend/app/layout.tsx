@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import type { ReactNode } from "react";
+import { headers } from "next/headers";
+import { Suspense, type ReactNode } from "react";
 
 import "./globals.css";
-import { AdvancedModeProvider } from "./_advanced/AdvancedModeProvider";
-import { AppShell } from "./_layout/AppShell";
-import { OnboardingProvider } from "./_onboarding/OnboardingProvider";
-import { PreferencesProvider } from "./_preferences/PreferencesProvider";
+import { AuthGate } from "./_auth/AuthGate";
+import { AuthProvider } from "./_auth/AuthProvider";
+import { AuthCheckingSurface } from "./_auth/AuthSurface";
+import { loadServerAuthBootstrap } from "./_auth/server-auth-bootstrap";
 import { ServiceWorkerRegistrar } from "./_pwa/ServiceWorkerRegistrar";
 import { appearanceBootstrapScript } from "./_settings/appearance";
 import { themeBootstrapScript } from "./_theme/theme";
@@ -54,11 +55,24 @@ export const viewport: Viewport = {
 	]
 };
 
+// Account-owned HTML must be resolved per request and must never enter a shared cache.
+export const dynamic = "force-dynamic";
+
 type RootLayoutProps = {
 	children: ReactNode;
 };
 
-export default function RootLayout({ children }: RootLayoutProps) {
+export default async function RootLayout({ children }: RootLayoutProps) {
+	// Playwright owns API behavior inside each browser page, which cannot
+	// intercept server-side fetches made before that page exists.
+	const usesBrowserApiMocks =
+		process.env.SIGNALHAVEN_E2E_CLIENT_API_MOCKS === "1";
+	const initialBootstrap = usesBrowserApiMocks
+		? undefined
+		: await loadServerAuthBootstrap({
+				cookie: (await headers()).get("cookie")
+			});
+
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<head>
@@ -84,13 +98,11 @@ export default function RootLayout({ children }: RootLayoutProps) {
 			</head>
 			<body className="antialiased">
 				<ThemeProvider>
-					<PreferencesProvider>
-						<AdvancedModeProvider>
-							<OnboardingProvider>
-								<AppShell>{children}</AppShell>
-							</OnboardingProvider>
-						</AdvancedModeProvider>
-					</PreferencesProvider>
+					<AuthProvider {...(initialBootstrap ? { initialBootstrap } : {})}>
+						<Suspense fallback={<AuthCheckingSurface />}>
+							<AuthGate>{children}</AuthGate>
+						</Suspense>
+					</AuthProvider>
 				</ThemeProvider>
 				<ServiceWorkerRegistrar />
 			</body>

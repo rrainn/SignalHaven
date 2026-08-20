@@ -1,7 +1,7 @@
 "use client";
 
 import {
-	settingsDefaults,
+	userPreferencesDefaults,
 	type ChannelListItem,
 	type PlayerSettings,
 	type Recording,
@@ -36,7 +36,7 @@ import {
 	patchRecording,
 	prepareRecordingPlayback,
 	retryCommercialAnalysis,
-	updateSettings
+	updatePreferences
 } from "../../lib/api-client";
 import {
 	use24HourClock,
@@ -148,8 +148,8 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 			(preferences
 				? preferences.status === "loading"
 					? null
-					: preferences.settings.player
-				: settingsDefaults.player)
+					: preferences.preferences.player
+				: userPreferencesDefaults.player)
 	);
 	const [status, setStatus] = useState<"loading" | "ready" | "error">(
 		props.initialRecording && props.initialPlayerSettings ? "ready" : "loading"
@@ -187,7 +187,7 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 
 	useEffect(() => {
 		if (!props.initialPlayerSettings && preferences) {
-			setSettings(preferences.settings.player);
+			setSettings(preferences.preferences.player);
 		}
 	}, [preferences, props.initialPlayerSettings]);
 
@@ -233,9 +233,9 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 		const settingsLoader = async (): Promise<PlayerSettings> => {
 			if (props.initialPlayerSettings) return props.initialPlayerSettings;
 			if (preferencesRef.current) {
-				return preferencesRef.current.settings.player;
+				return preferencesRef.current.preferences.player;
 			}
-			return settingsDefaults.player;
+			return userPreferencesDefaults.player;
 		};
 		const channelsLoader = async (): Promise<ChannelListItem[]> => {
 			if (props.initialChannel !== undefined) {
@@ -379,10 +379,10 @@ export function RecordingPlayerPage(props: RecordingPlayerPageProps) {
 				return;
 			}
 			if (preferencesRef.current) {
-				await preferencesRef.current.saveSettings({ player: next });
+				await preferencesRef.current.savePreferences({ player: next });
 				return;
 			}
-			await updateSettings({ player: next });
+			await updatePreferences({ player: next });
 		},
 		[props.persistPlayerSettings]
 	);

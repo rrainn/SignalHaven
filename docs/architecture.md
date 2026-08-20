@@ -29,7 +29,23 @@ flowchart LR
 - **Frontend (`apps/frontend`)**: Next.js app for guide, settings, onboarding, playback, scheduler, and recordings.
 - **Backend (`apps/backend`)**: Express API, scheduling, tuner orchestration, stream proxy/transcoding, recording lifecycle.
 - **Shared package (`packages/shared`)**: shared Zod schemas and TypeScript types consumed by frontend + backend.
-- **PostgreSQL**: persistent state for tuners, channels, EPG data, recordings, settings, and scheduler entities.
+- **PostgreSQL**: persistent state for local accounts and sessions, tuners, channels, EPG data, account-owned recordings and preferences, global settings, and scheduler entities.
+
+## Account boundary
+
+Every API except health, authentication entry points, and API discovery passes
+through database-backed session authentication. Browser sessions use an
+HttpOnly cookie with same-origin mutation and WebSocket checks; native clients
+use the same opaque credential as a bearer token. The database retains only
+session token digests and salted scrypt password hashes.
+
+Recordings, series rules, guide/search annotations, preferences, and recording
+events carry a user owner. Repository predicates and route checks both enforce
+that boundary, including for administrators. Machine settings and topology are
+administrator-only. WebSocket fan-out enforces user/role audiences and
+revalidates long-lived sessions during heartbeats. Native HLS playback exchanges
+the parent session for a resource- and playback-choice-bound media ticket whose
+revocation cascades from logout.
 
 ## Runtime flow
 

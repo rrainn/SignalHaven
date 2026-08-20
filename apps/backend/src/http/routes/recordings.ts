@@ -15,13 +15,18 @@ import {
 	RECORDING_PROGRAM_NOT_RECORDABLE_ERROR_CODE,
 	TUNER_UNAVAILABLE_ERROR_CODE,
 	type RecordingListQuery,
+	type RecordingMetadata,
 	type RecordingPatch
 } from "@signalhaven/shared";
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { z } from "zod";
 
 import { TunerUnavailableError } from "../../tuners/tuner-allocator";
 import { CommercialAnalysisNotAvailableError } from "../../commercials/commercial-analysis.service";
+import {
+	RecordingDurationLimitError,
+	RecordingScheduleLimitError
+} from "../../repositories/recordings.repository";
 import { ChannelNotStreamableError } from "../../streaming/streaming.service";
 import {
 	ChannelNotMappedError,
@@ -39,6 +44,7 @@ import {
 	RecordingPlaybackSegmentNotFoundError,
 	RecordingPlaybackSessionExpiredError,
 	RecordingPlaybackStoppedByOperatorError,
+	RecordingPlaybackCapacityError,
 	RecordingPlaybackUnavailableError
 } from "../../recordings/recording-playback.service";
 import { MAX_RECORDING_SEGMENT_NAME_LENGTH } from "../../recordings/recording-playback-session";
@@ -59,12 +65,14 @@ const recordingPlaybackSegmentParamSchema = z.object({
 
 const recordingPlaybackSessionQuerySchema = z.object({
 	session: z.string().uuid(),
-	viewerId: z.string().uuid().optional()
+	viewerId: z.string().uuid().optional(),
+	mediaTicket: z.string().min(32).max(256).optional()
 });
 
 const recordingPlaybackManifestQuerySchema = z.object({
 	start: z.coerce.number().int().min(0).optional().default(0),
-	viewerId: z.string().uuid().optional()
+	viewerId: z.string().uuid().optional(),
+	mediaTicket: z.string().min(32).max(256).optional()
 });
 
 const recordingPlaybackViewerParamSchema = z.object({
@@ -72,8 +80,16 @@ const recordingPlaybackViewerParamSchema = z.object({
 	viewerId: z.string().uuid()
 });
 
-export function createRecordingsRouter(service: RecordingsService): Router {
+export function createRecordingsRouter(
+	service: RecordingsService,
+	requireAdmin: RequestHandler
+): Router {
 	const router = Router();
+	// Every response may contain account-owned library state or bytes.
+	router.use((_req, res, next) => {
+		res.setHeader("Cache-Control", "private, no-store");
+		next();
+	});
 
 	router.get(
 		"/recordings",
@@ -81,12 +97,15 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		async (req, res, next) => {
 			try {
 				const query = req.query as unknown as RecordingListQuery;
-				const page = await service.listPage(query);
+				const page = await service.listPage(query, req.auth!.user.id);
 				res.json(
 					recordingListSchema.parse({
 						items: page.items.map((recording) => ({
 							...toPublicRecording(recording),
-							metadata: recording.metadata
+							metadata: toPublicRecordingMetadata(
+								recording.id,
+								recording.metadata
+							)
 						})),
 						total: page.total,
 						totalSize: page.totalSize,
@@ -98,7 +117,7 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 					})
 				);
 			} catch (error) {
-				next(translate(error));
+				next(translate(error, req.auth?.user.role));
 			}
 		}
 	);
@@ -116,6 +135,7 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 					programId?: string;
 				};
 				const created = await service.schedule({
+					userId: req.auth!.user.id,
 					channelId: body.channelId,
 					title: body.title,
 					start: new Date(body.start),
@@ -124,7 +144,7 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 				});
 				res.status(201).json(recordingSchema.parse(toPublicRecording(created)));
 			} catch (error) {
-				next(translate(error));
+				next(translate(error, req.auth?.user.role));
 			}
 		}
 	);
@@ -136,6 +156,7 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 			try {
 				const body = req.body as { programId: string; channelId?: string };
 				const result = await service.scheduleByProgram({
+					userId: req.auth!.user.id,
 					programId: body.programId,
 					...(body.channelId ? { channelId: body.channelId } : {})
 				});
@@ -146,19 +167,23 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 					})
 				);
 			} catch (error) {
-				next(translate(error));
+				next(translate(error, req.auth?.user.role));
 			}
 		}
 	);
 
-	router.post("/recordings/library/scan", async (_req, res, next) => {
-		try {
-			const result = await service.scanLibrary();
-			res.json(recordingLibraryScanResultSchema.parse(result));
-		} catch (error) {
-			next(translate(error));
+	router.post(
+		"/recordings/library/scan",
+		requireAdmin,
+		async (req, res, next) => {
+			try {
+				const result = await service.scanLibrary();
+				res.json(recordingLibraryScanResultSchema.parse(result));
+			} catch (error) {
+				next(translate(error, req.auth?.user.role));
+			}
 		}
-	});
+	);
 
 	/** Keep provider artwork URLs and fetches behind the backend boundary. */
 	router.get(
@@ -166,15 +191,16 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		validate({ params: recordingIdParamSchema }),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const artwork = await service.getArtwork(req.params["id"] as string);
 				if (!artwork) {
 					throw new HttpError(404, "not_found", "Artwork not available");
 				}
 				res.setHeader("Content-Type", artwork.contentType);
-				res.setHeader(
-					"Cache-Control",
-					`public, max-age=${artwork.cacheMaxAgeSeconds}`
-				);
+				res.setHeader("Cache-Control", "private, no-store");
 				res.setHeader("X-Content-Type-Options", "nosniff");
 				res.status(200).send(artwork.body);
 			} catch (error) {
@@ -191,11 +217,16 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		}),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const body = await service.getPlaybackManifest(
 					req.params["id"] as string,
 					{ requestId: req.id },
 					req.query["start"] as unknown as number,
-					req.query["viewerId"] as string | undefined
+					req.query["viewerId"] as string | undefined,
+					req.query["mediaTicket"] as string | undefined
 				);
 				applyPlaybackHeaders(res);
 				res.setHeader(
@@ -218,25 +249,24 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		}),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const body = await service.getPlaybackSegment(
 					req.params["id"] as string,
 					req.query["session"] as string,
 					req.params["segment"] as string,
-					req.query["viewerId"] as string | undefined
+					req.query["viewerId"] as string | undefined,
+					req.query["mediaTicket"] as string | undefined
 				);
 				applyPlaybackHeaders(res);
 				res.setHeader(
 					"Content-Type",
 					recordingPlaybackContentType(req.params["segment"] as string)
 				);
-				const artifactName = req.params["segment"] as string;
-				// Progressive VOD playlists grow while FFmpeg works; only finalized fragments are immutable.
-				res.setHeader(
-					"Cache-Control",
-					artifactName.endsWith(".m3u8")
-						? "no-store"
-						: "private, max-age=300, immutable"
-				);
+				// Account-owned media must not survive logout in a browser cache.
+				res.setHeader("Cache-Control", "private, no-store");
 				res.status(200).send(body);
 			} catch (error) {
 				next(translate(error));
@@ -248,12 +278,20 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 	router.post(
 		"/recordings/:id/viewers/:viewerId/release",
 		validate({ params: recordingPlaybackViewerParamSchema }),
-		(req, res) => {
-			service.releasePlaybackViewer(
-				req.params["id"] as string,
-				req.params["viewerId"] as string
-			);
-			res.status(204).end();
+		async (req, res, next) => {
+			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
+				service.releasePlaybackViewer(
+					req.params["id"] as string,
+					req.params["viewerId"] as string
+				);
+				res.status(204).end();
+			} catch (error) {
+				next(translate(error));
+			}
 		}
 	);
 
@@ -262,12 +300,16 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		validate({ params: recordingIdParamSchema }),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const { record, metadata, commercialAnalysis } =
 					await service.getDetailById(req.params["id"] as string);
 				res.json(
 					recordingDetailSchema.parse({
 						...toPublicRecording(record),
-						metadata,
+						metadata: toPublicRecordingMetadata(record.id, metadata),
 						commercialAnalysis
 					})
 				);
@@ -282,6 +324,10 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		validate({ params: recordingIdParamSchema, body: recordingPatchSchema }),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const patch = req.body as RecordingPatch;
 				const updated = await service.patch(req.params["id"] as string, {
 					...(patch.watched !== undefined ? { watched: patch.watched } : {}),
@@ -307,6 +353,10 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		validate({ params: recordingIdParamSchema }),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const analysis = await service.retryCommercialAnalysis(
 					req.params["id"] as string
 				);
@@ -322,6 +372,10 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		validate({ params: recordingIdParamSchema }),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const updated = await service.cancel(req.params["id"] as string);
 				res.json(recordingSchema.parse(toPublicRecording(updated)));
 			} catch (error) {
@@ -338,6 +392,10 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 		}),
 		async (req, res, next) => {
 			try {
+				await service.assertOwned(
+					req.params["id"] as string,
+					req.auth!.user.id
+				);
 				const query = req.query as unknown as {
 					keepFile: boolean;
 					overrideProtection: boolean;
@@ -356,9 +414,26 @@ export function createRecordingsRouter(service: RecordingsService): Router {
 	return router;
 }
 
-function translate(error: unknown): unknown {
+/** Replace provider artwork URLs with the authenticated backend proxy path. */
+export function toPublicRecordingMetadata(
+	recordingId: string,
+	metadata: RecordingMetadata | null
+): RecordingMetadata | null {
+	if (!metadata) return null;
+	return {
+		...metadata,
+		artworkUrl: metadata.artworkUrl
+			? `/api/v1/recordings/${recordingId}/artwork`
+			: null
+	};
+}
+
+function translate(error: unknown, role?: "admin" | "user"): unknown {
 	if (error instanceof CommercialAnalysisNotAvailableError) {
 		return new HttpError(409, "commercial_analysis_unavailable", error.message);
+	}
+	if (error instanceof RecordingPlaybackCapacityError) {
+		return new HttpError(error.statusCode, error.code, error.message);
 	}
 	if (
 		error instanceof RecordingPlaybackNotFoundError ||
@@ -391,8 +466,10 @@ function translate(error: unknown): unknown {
 		return new HttpError(
 			409,
 			RECORDING_CHANNEL_UNMAPPED_ERROR_CODE,
-			error.message,
-			{ epgChannelId: error.epgChannelId }
+			role === "admin"
+				? error.message
+				: "This program cannot be recorded because its channel is unavailable. Ask an administrator to update the guide mapping.",
+			role === "admin" ? { epgChannelId: error.epgChannelId } : undefined
 		);
 	}
 	if (error instanceof ProgramNotRecordableError) {
@@ -402,8 +479,21 @@ function translate(error: unknown): unknown {
 			error.message
 		);
 	}
+	// Resource limits are stable client errors, not internal scheduler failures.
+	if (error instanceof RecordingDurationLimitError) {
+		return new HttpError(422, error.code, error.message);
+	}
+	if (error instanceof RecordingScheduleLimitError) {
+		return new HttpError(429, error.code, error.message);
+	}
 	if (error instanceof RecordingStorageNotConfiguredError) {
-		return new HttpError(409, "storage_not_configured", error.message);
+		return new HttpError(
+			409,
+			"storage_not_configured",
+			role === "admin"
+				? error.message
+				: "Recording storage is not ready. Ask an administrator to configure it."
+		);
 	}
 	if (error instanceof RecordingProtectedError) {
 		return new HttpError(409, "recording_protected", error.message, {
@@ -414,9 +504,12 @@ function translate(error: unknown): unknown {
 		return new HttpError(400, "invalid_cursor", error.message);
 	}
 	if (error instanceof TunerUnavailableError) {
-		return new HttpError(409, TUNER_UNAVAILABLE_ERROR_CODE, error.message, {
-			conflicts: error.conflicts
-		});
+		return new HttpError(
+			409,
+			TUNER_UNAVAILABLE_ERROR_CODE,
+			role === "admin" ? error.message : "No tuner capacity is available",
+			role === "admin" ? { conflicts: error.conflicts } : undefined
+		);
 	}
 	if (error instanceof ChannelNotStreamableError) {
 		return new HttpError(404, "not_found", error.message);

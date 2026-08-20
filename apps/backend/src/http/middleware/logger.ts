@@ -98,7 +98,7 @@ export function httpLogger(logger: Logger): HttpLogger {
 				return {
 					id: req.id,
 					method: req.method,
-					url: req.url
+					url: redactSensitiveUrl(req.url)
 				};
 			},
 			res(res) {
@@ -108,4 +108,17 @@ export function httpLogger(logger: Logger): HttpLogger {
 			}
 		}
 	});
+}
+
+/** Media tickets are bearer credentials and must never enter logs or bundles. */
+export function redactSensitiveUrl(value: string): string {
+	try {
+		const parsed = new URL(value, "http://signalhaven.local");
+		if (parsed.searchParams.has("mediaTicket")) {
+			parsed.searchParams.set("mediaTicket", "<redacted>");
+		}
+		return `${parsed.pathname}${parsed.search}`;
+	} catch {
+		return value.replace(/([?&]mediaTicket=)[^&]*/gi, "$1%3Credacted%3E");
+	}
 }

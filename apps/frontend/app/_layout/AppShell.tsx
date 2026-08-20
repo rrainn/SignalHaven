@@ -9,7 +9,6 @@ import {
 	Wrench,
 	type LucideIcon
 } from "lucide-react";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { usePreferencesOptional } from "../_preferences/PreferencesProvider";
@@ -18,9 +17,12 @@ import { CompactThemeAction } from "../_theme/CompactThemeAction";
 import { ThemeToggle } from "../_theme/ThemeToggle";
 import { cn } from "../_ui/cn";
 import { useAdvancedModeOptional } from "../_advanced/AdvancedModeProvider";
+import { AccountControls } from "../_auth/AccountControls";
+import { useAuth } from "../_auth/AuthProvider";
+import { Button } from "../_ui/Button";
 
 import { BrandMark } from "./BrandMark";
-import { SmartLink } from "./SmartLink";
+import { IntentPrefetchLink } from "./SmartLink";
 
 /**
  * Mobile-first app shell.
@@ -87,18 +89,25 @@ export function isNavItemActive(pathname: string, href: string): boolean {
 export function AppShell({ children }: { children: React.ReactNode }) {
 	const preferences = usePreferencesOptional();
 	const advancedMode = useAdvancedModeOptional();
+	const auth = useAuth();
 	const pathname = usePathname();
-	const navItems = advancedMode?.enabled
-		? [
-				...NAV_ITEMS,
-				{
-					href: "/advanced",
-					label: "Advanced",
-					shortLabel: "Tools",
-					icon: Wrench
-				}
-			]
-		: NAV_ITEMS;
+	const isAdmin =
+		auth.state.status === "signed-in" && auth.state.user.role === "admin";
+	const permittedItems = isAdmin
+		? NAV_ITEMS
+		: NAV_ITEMS.filter((item) => item.href !== "/settings");
+	const navItems =
+		advancedMode?.enabled && isAdmin
+			? [
+					...permittedItems,
+					{
+						href: "/advanced",
+						label: "Advanced",
+						shortLabel: "Tools",
+						icon: Wrench
+					}
+				]
+			: permittedItems;
 
 	return (
 		<div className="flex min-h-dvh flex-col bg-background text-primary">
@@ -118,10 +127,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 					data-testid="preferences-error"
 					className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger"
 				>
-					{preferences.status === "error"
-						? "Saved preferences could not be loaded. Safe defaults are in use."
-						: "A preference change could not be saved."}{" "}
-					{preferences.error.message}
+					<div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2">
+						<span>
+							{preferences.status === "error"
+								? "Personal preferences are unavailable."
+								: "A preference change could not be saved."}{" "}
+							{preferences.error.message}
+						</span>
+						{preferences.status === "error" ? (
+							<Button
+								size="sm"
+								variant="outline"
+								onClick={() => void preferences.retry()}
+							>
+								Try again
+							</Button>
+						) : null}
+					</div>
 				</div>
 			) : null}
 
@@ -149,21 +171,21 @@ function TopAppBar({
 	return (
 		<header className="sticky top-0 z-30 border-b border-border bg-surface/80 backdrop-blur">
 			<div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
-				<Link
+				<IntentPrefetchLink
 					href="/"
 					aria-label="SignalHaven home"
 					className="group flex shrink-0 items-center gap-2 text-base font-semibold tracking-[-0.025em] text-primary"
 				>
 					<BrandMark className="h-8 w-8 transition-transform duration-200 group-hover:scale-[1.04] motion-reduce:transition-none" />
-					<span>SignalHaven</span>
-				</Link>
+					<span className="hidden sm:inline">SignalHaven</span>
+				</IntentPrefetchLink>
 
 				<nav
 					aria-label="Primary"
 					className="hidden flex-1 items-center gap-1 md:flex"
 				>
 					{items.map((item) => (
-						<SmartLink
+						<IntentPrefetchLink
 							key={item.href}
 							href={item.href}
 							aria-current={
@@ -176,7 +198,7 @@ function TopAppBar({
 							)}
 						>
 							{item.label}
-						</SmartLink>
+						</IntentPrefetchLink>
 					))}
 				</nav>
 
@@ -184,6 +206,7 @@ function TopAppBar({
 					<GlobalSearch />
 					<ThemeToggle className="hidden md:inline-flex" />
 					<CompactThemeAction className="md:hidden" />
+					<AccountControls />
 				</div>
 			</div>
 		</header>
@@ -211,7 +234,7 @@ function BottomNav({
 					const Icon = item.icon;
 					return (
 						<li key={item.href} className="min-w-0 flex-1">
-							<SmartLink
+							<IntentPrefetchLink
 								href={item.href}
 								aria-current={active ? "page" : undefined}
 								className={cn(
@@ -227,7 +250,7 @@ function BottomNav({
 								<span className="max-w-full truncate">
 									{item.shortLabel ?? item.label}
 								</span>
-							</SmartLink>
+							</IntentPrefetchLink>
 						</li>
 					);
 				})}

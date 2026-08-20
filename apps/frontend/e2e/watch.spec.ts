@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 /**
  * E2E smoke for the U7-watch live watch page.
@@ -102,6 +102,11 @@ function buildGrid() {
 
 async function mockBackend(page: Page, streamHits: string[]): Promise<void> {
 	let settings = JSON.parse(JSON.stringify(baseSettings));
+	let preferences = {
+		ui: structuredClone(baseSettings.ui),
+		channels: structuredClone(baseSettings.channels),
+		player: structuredClone(baseSettings.player)
+	};
 	await page.route("**/api/v1/system/status", (route) =>
 		route.fulfill({
 			status: 200,
@@ -123,6 +128,19 @@ async function mockBackend(page: Page, streamHits: string[]): Promise<void> {
 			status: 200,
 			contentType: "application/json",
 			body: JSON.stringify(settings)
+		});
+	});
+	await page.route("**/api/v1/preferences", async (route) => {
+		if (route.request().method() === "PATCH") {
+			const body = route.request().postDataJSON() as Partial<
+				typeof preferences
+			>;
+			preferences = { ...preferences, ...body };
+		}
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify(preferences)
 		});
 	});
 	await page.route("**/api/v1/channels", (route) =>
@@ -219,7 +237,7 @@ test.describe("Live watch page", () => {
 
 		const settingsRequest = page.waitForRequest(
 			(request) =>
-				request.url().endsWith("/api/v1/settings") &&
+				request.url().endsWith("/api/v1/preferences") &&
 				request.method() === "PATCH"
 		);
 		await favoriteButton.click();

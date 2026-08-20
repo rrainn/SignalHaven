@@ -1,4 +1,9 @@
 import {
+	authLoginSchema,
+	authMeSchema,
+	authSessionSchema,
+	authSetupSchema,
+	authStatusSchema,
 	channelEpgMappingPutSchema,
 	channelEpgMappingSchema,
 	channelListSchema,
@@ -13,6 +18,8 @@ import {
 	epgSourceSchema,
 	errorResponseSchema,
 	healthResponseSchema,
+	liveMediaTicketRequestSchema,
+	mediaTicketSchema,
 	playbackTelemetryEventSchema,
 	recordingByProgramCreateSchema,
 	recordingByProgramResponseSchema,
@@ -24,6 +31,7 @@ import {
 	recordingListQuerySchema,
 	recordingListSchema,
 	recordingPatchSchema,
+	recordingMediaTicketRequestSchema,
 	recordingSchema,
 	searchQuerySchema,
 	searchResponseSchema,
@@ -42,7 +50,12 @@ import {
 	tunerPatchSchema,
 	tunerSchema,
 	tunerStatusSchema,
-	transcodeProfileSchema
+	transcodeProfileSchema,
+	userCreateSchema,
+	userListSchema,
+	userPreferencesPatchSchema,
+	userPreferencesSchema,
+	userSchema
 } from "@signalhaven/shared";
 import {
 	OpenAPIRegistry,
@@ -57,11 +70,47 @@ extendZodWithOpenApi(z);
 
 const registry = new OpenAPIRegistry();
 
+registry.registerComponent("securitySchemes", "cookieAuth", {
+	type: "apiKey",
+	in: "cookie",
+	name: "signalhaven_session"
+});
+registry.registerComponent("securitySchemes", "bearerAuth", {
+	type: "http",
+	scheme: "bearer",
+	bearerFormat: "opaque"
+});
+
 const HealthResponse = registry.register(
 	"HealthResponse",
 	healthResponseSchema
 );
 const ErrorResponse = registry.register("ErrorResponse", errorResponseSchema);
+const User = registry.register("User", userSchema);
+const AuthStatus = registry.register("AuthStatus", authStatusSchema);
+const AuthSetup = registry.register("AuthSetup", authSetupSchema);
+const AuthLogin = registry.register("AuthLogin", authLoginSchema);
+const AuthSession = registry.register("AuthSession", authSessionSchema);
+const AuthMe = registry.register("AuthMe", authMeSchema);
+const UserList = registry.register("UserList", userListSchema);
+const UserCreate = registry.register("UserCreate", userCreateSchema);
+const UserPreferences = registry.register(
+	"UserPreferences",
+	userPreferencesSchema
+);
+const UserPreferencesPatch = registry.register(
+	"UserPreferencesPatch",
+	userPreferencesPatchSchema
+);
+const MediaTicket = registry.register("MediaTicket", mediaTicketSchema);
+const LiveMediaTicketRequest = registry.register(
+	"LiveMediaTicketRequest",
+	liveMediaTicketRequestSchema
+);
+const RecordingMediaTicketRequest = registry.register(
+	"RecordingMediaTicketRequest",
+	recordingMediaTicketRequestSchema
+);
 const Settings = registry.register("Settings", settingsSchema);
 const SettingsPatch = registry.register("SettingsPatch", settingsPatchSchema);
 const SystemStatus = registry.register("SystemStatus", systemStatusSchema);
@@ -169,6 +218,8 @@ const PlaybackProfile = z.union([z.literal("auto"), transcodeProfileSchema]);
 registry.registerPath({
 	method: "get",
 	path: "/api/v1/health",
+	operationId: "getHealth",
+	security: [],
 	summary: "Service health check",
 	description:
 		"Returns the API version, process uptime in seconds, and database connectivity status.",
@@ -195,6 +246,258 @@ registry.registerPath({
 
 registry.registerPath({
 	method: "get",
+	path: "/api/v1/auth/status",
+	operationId: "getAuthStatus",
+	security: [],
+	summary: "Get account bootstrap and current session status",
+	tags: ["auth"],
+	responses: {
+		200: {
+			description: "Account and system onboarding state.",
+			content: { "application/json": { schema: AuthStatus } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/auth/setup",
+	operationId: "setupAuth",
+	security: [],
+	summary: "Activate the original administrator account",
+	tags: ["auth"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: AuthSetup } }
+		}
+	},
+	responses: {
+		201: {
+			description: "Administrator activated and session created.",
+			content: { "application/json": { schema: AuthSession } }
+		},
+		409: {
+			description: "The original administrator is already active.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		429: {
+			description: "Authentication attempt limit exceeded.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/auth/login",
+	operationId: "loginAuth",
+	security: [],
+	summary: "Create a cookie or bearer session",
+	tags: ["auth"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: AuthLogin } }
+		}
+	},
+	responses: {
+		200: {
+			description: "Authenticated session.",
+			content: { "application/json": { schema: AuthSession } }
+		},
+		401: {
+			description: "Invalid username or password.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		429: {
+			description: "Authentication attempt limit exceeded.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/auth/me",
+	operationId: "getCurrentUser",
+	summary: "Get the authenticated user",
+	tags: ["auth"],
+	responses: {
+		200: {
+			description: "Current account.",
+			content: { "application/json": { schema: AuthMe } }
+		},
+		401: {
+			description: "Authentication required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/auth/logout",
+	operationId: "logoutAuth",
+	summary: "Revoke the current session",
+	tags: ["auth"],
+	responses: {
+		204: { description: "Session revoked." },
+		401: {
+			description: "Authentication required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		403: {
+			description: "Cookie request failed same-origin validation.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/users",
+	operationId: "listUsers",
+	summary: "List local user accounts",
+	tags: ["users"],
+	responses: {
+		200: {
+			description: "Active local accounts.",
+			content: { "application/json": { schema: UserList } }
+		},
+		403: {
+			description: "Administrator access required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/users",
+	operationId: "createUser",
+	summary: "Create a regular local user",
+	tags: ["users"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: UserCreate } }
+		}
+	},
+	responses: {
+		201: {
+			description: "Regular user created.",
+			content: { "application/json": { schema: User } }
+		},
+		403: {
+			description: "Administrator access required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		409: {
+			description: "Username already exists.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/preferences",
+	operationId: "getUserPreferences",
+	summary: "Get current user's UI, channel, and player preferences",
+	tags: ["preferences"],
+	responses: {
+		200: {
+			description: "Account-owned preferences.",
+			content: { "application/json": { schema: UserPreferences } }
+		},
+		401: {
+			description: "Authentication required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "patch",
+	path: "/api/v1/preferences",
+	operationId: "updateUserPreferences",
+	summary: "Replace selected preference groups",
+	tags: ["preferences"],
+	request: {
+		body: {
+			required: true,
+			content: { "application/json": { schema: UserPreferencesPatch } }
+		}
+	},
+	responses: {
+		200: {
+			description: "Updated account-owned preferences.",
+			content: { "application/json": { schema: UserPreferences } }
+		},
+		400: {
+			description: "Invalid preference group.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/stream/{channelId}/media-ticket",
+	operationId: "createLiveMediaTicket",
+	summary: "Create a scoped native-player live TV URL",
+	tags: ["streaming"],
+	request: {
+		params: z.object({ channelId: z.string().min(1).max(128) }),
+		body: {
+			required: true,
+			content: { "application/json": { schema: LiveMediaTicketRequest } }
+		}
+	},
+	responses: {
+		201: {
+			description: "Short-lived same-origin playback URL.",
+			content: { "application/json": { schema: MediaTicket } }
+		},
+		401: {
+			description: "Authentication required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "post",
+	path: "/api/v1/recordings/{id}/media-ticket",
+	operationId: "createRecordingMediaTicket",
+	summary: "Create a scoped native-player recording URL",
+	tags: ["recordings"],
+	request: {
+		params: z.object({ id: z.string().uuid() }),
+		body: {
+			required: true,
+			content: { "application/json": { schema: RecordingMediaTicketRequest } }
+		}
+	},
+	responses: {
+		201: {
+			description: "Short-lived same-origin playback URL.",
+			content: { "application/json": { schema: MediaTicket } }
+		},
+		401: {
+			description: "Authentication required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		404: {
+			description: "Recording not found for this account.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
 	path: "/api/v1/system/info",
 	summary: "Application build and runtime information",
 	description:
@@ -215,6 +518,8 @@ registry.registerPath({
 registry.registerPath({
 	method: "get",
 	path: "/api/v1/openapi.json",
+	operationId: "getOpenApiDocument",
+	security: [],
 	summary: "OpenAPI 3.1 specification for this API.",
 	tags: ["meta"],
 	responses: {
@@ -454,7 +759,7 @@ registry.registerPath({
 	path: "/api/v1/tuners/{id}/channels/{channelId}/logo",
 	summary: "Proxy a channel logo through the API origin",
 	description:
-		"Returns the cached channel logo bytes for tuner kinds that expose them (e.g. IPTV/M3U). Reproxying through our origin lets an HTTPS UI render logos that the playlist references over HTTP.",
+		"Returns channel logo bytes for tuner kinds that expose them (e.g. IPTV/M3U). Reproxying through our origin lets an HTTPS UI render logos that the playlist references over HTTP; authenticated responses are private and not stored by clients or intermediaries.",
 	tags: ["tuners"],
 	request: {
 		params: z.object({
@@ -630,9 +935,9 @@ registry.registerPath({
 registry.registerPath({
 	method: "get",
 	path: "/api/v1/channels",
-	summary: "List logical channels and their tuner sources",
+	summary: "List logical channels",
 	description:
-		"Returns one stable user-facing channel per group, with physical tuner sources ordered for automatic fallback. Missing sources remain linked; unavailable sources stay visible for recovery but are not selected for playback.",
+		"Returns one stable user-facing channel per group. Administrators also receive physical tuner sources ordered for automatic fallback; standard users receive only logical lineup fields and availability needed for watching and guide customization.",
 	tags: ["channels"],
 	responses: {
 		200: {
@@ -647,7 +952,7 @@ registry.registerPath({
 	path: "/api/v1/channels/{id}/logo",
 	summary: "Proxy a logical channel logo through the API origin",
 	description:
-		"Resolves the preferred physical source, validates the provider image, and returns bounded cached bytes without exposing the provider URL to the browser.",
+		"Resolves the preferred physical source and validates provider bytes without exposing its URL to the browser. The authenticated response uses private no-store caching.",
 	tags: ["channels"],
 	request: { params: z.object({ id: z.string().uuid() }) },
 	responses: {
@@ -911,7 +1216,7 @@ registry.registerPath({
 	path: "/api/v1/stream/{channelId}/segments/{segment}",
 	summary: "HLS segment bytes",
 	description:
-		"Serves a single segment file generated by the per-channel ffmpeg session. Segments are immutable once written and may be cached aggressively by intermediaries.",
+		"Serves a single segment file generated by the per-channel ffmpeg session. Account-owned segment responses use private no-store caching so bytes cannot survive an account switch.",
 	tags: ["streaming"],
 	request: {
 		params: z.object({
@@ -1049,7 +1354,7 @@ registry.registerPath({
 	path: "/api/v1/recordings/{id}/artwork",
 	summary: "Proxy recording artwork through the API origin",
 	description:
-		"Fetches the recording's EPG artwork server-side with host, content-type, response-size, timeout, and cache limits.",
+		"Fetches the current user's recording artwork server-side with host, content-type, response-size, and timeout limits. The response uses private no-store caching.",
 	tags: ["recordings"],
 	request: { params: z.object({ id: z.string().uuid() }) },
 	responses: {
@@ -1474,7 +1779,8 @@ export function generateOpenApiDocument(): ReturnType<
 			version: getVersion(),
 			description: "SignalHaven REST API."
 		},
-		servers: [{ url: "/" }]
+		servers: [{ url: "/" }],
+		security: [{ cookieAuth: [] }, { bearerAuth: [] }]
 	});
 
 	return cachedSpec;
@@ -1482,6 +1788,17 @@ export function generateOpenApiDocument(): ReturnType<
 
 export {
 	ErrorResponse,
+	User,
+	AuthStatus,
+	AuthSetup,
+	AuthLogin,
+	AuthSession,
+	AuthMe,
+	UserList,
+	UserCreate,
+	UserPreferences,
+	UserPreferencesPatch,
+	MediaTicket,
 	HealthResponse,
 	Settings,
 	SettingsPatch,

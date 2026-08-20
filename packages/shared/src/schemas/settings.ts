@@ -18,11 +18,10 @@ export const storageSettingsSchema = z.object({
 	 */
 	path: z.string().min(1).nullable(),
 	/**
-	 * Maximum total size, in gigabytes, the recordings library is allowed
-	 * to occupy on disk. When the sum of `recordings.file_size` rises
-	 * above this threshold, the oldest non-`manuallyProtected` rows are
-	 * deleted (file + DB row) until the library fits inside the quota.
-	 * `null` disables the quota entirely (unlimited).
+	 * Global recordings-volume ceiling in gigabytes. Cleanup measures all
+	 * completed media but removes only the account whose newly written bytes
+	 * crossed the ceiling, preserving private-library isolation. `null`
+	 * disables automatic quota cleanup.
 	 */
 	quotaGb: z.number().positive().max(1_000_000).nullable().default(null)
 });
@@ -244,10 +243,46 @@ export const observabilitySettingsSchema = z.object({
 
 export type ObservabilitySettings = z.infer<typeof observabilitySettingsSchema>;
 
+/** Preferences travel with an account across every SignalHaven client. */
+export const userPreferencesSchema = z.object({
+	ui: uiSettingsSchema,
+	channels: channelsSettingsSchema,
+	player: playerSettingsSchema
+});
+
+export type UserPreferences = z.infer<typeof userPreferencesSchema>;
+
+/** Each supplied preference group replaces that complete group atomically. */
+export const userPreferencesPatchSchema = userPreferencesSchema.partial();
+
+export type UserPreferencesPatch = z.infer<typeof userPreferencesPatchSchema>;
+
+/** Defaults are copied into a new user's private preference rows on demand. */
+export const userPreferencesDefaults: UserPreferences = {
+	ui: {
+		theme: "system",
+		epgHoursVisible: 4,
+		use24HourClock: false,
+		density: "comfortable",
+		animations: true
+	},
+	channels: {
+		favorites: [],
+		hidden: [],
+		order: []
+	},
+	player: {
+		volume: 1,
+		muted: false,
+		captionsEnabled: false,
+		qualityByChannel: {}
+	}
+};
+
+/** Machine-wide settings remain restricted to administrators. */
 export const settingsSchema = z.object({
 	storage: storageSettingsSchema,
 	transcoding: transcodingSettingsSchema,
-	ui: uiSettingsSchema,
 	recordings: recordingsSettingsSchema,
 	timeShift: timeShiftSettingsSchema.default({
 		enabled: true,
@@ -258,8 +293,6 @@ export const settingsSchema = z.object({
 	}),
 	// Optional in the public type so pre-feature settings snapshots remain valid.
 	lineupSync: lineupSyncSettingsSchema.optional(),
-	channels: channelsSettingsSchema,
-	player: playerSettingsSchema,
 	observability: observabilitySettingsSchema
 });
 
@@ -295,13 +328,6 @@ export const settingsDefaults: Settings = {
 		availableHwaccels: [],
 		captionsEnabled: true
 	},
-	ui: {
-		theme: "system",
-		epgHoursVisible: 4,
-		use24HourClock: false,
-		density: "comfortable",
-		animations: true
-	},
 	recordings: {
 		paddingBeforeSec: 0,
 		paddingAfterSec: 0,
@@ -321,17 +347,6 @@ export const settingsDefaults: Settings = {
 		enabled: true,
 		intervalHours: 24,
 		removalThreshold: 3
-	},
-	channels: {
-		favorites: [],
-		hidden: [],
-		order: []
-	},
-	player: {
-		volume: 1,
-		muted: false,
-		captionsEnabled: false,
-		qualityByChannel: {}
 	},
 	observability: {
 		debugBundleEnabled: false

@@ -115,13 +115,12 @@ export const recordingConflictSchema = z.object({
 	scheduledEnd: z.string(),
 	reason: recordingConflictReasonSchema,
 	/**
-	 * Free-form description (e.g. "tuner capacity exceeded by 1 at
-	 * 19:00"). Suitable for rendering directly to the user.
+	 * Account-safe description suitable for rendering directly to the user.
 	 */
 	message: z.string(),
 	/**
-	 * The other recordings (by id, possibly synthetic for in-flight
-	 * candidates) that this one conflicts with.
+	 * Compatibility field intentionally kept empty because peer identifiers
+	 * may belong to another account.
 	 */
 	conflictsWith: z.array(z.string()).default([]),
 	detectedAt: z.string()

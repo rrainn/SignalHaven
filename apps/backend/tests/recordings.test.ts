@@ -10,10 +10,13 @@ import { EventBus, type PublishedEvent } from "../src/events/event-bus";
 import {
 	RecordingsService,
 	RECORDING_EVENT,
+	recordingOutputFileName,
 	toPublicRecording,
 	type RecordingsConfigResolver
 } from "../src/recordings/recordings.service";
+import { toPublicRecordingMetadata } from "../src/http/routes/recordings";
 import {
+	RecordingDurationLimitError,
 	type CreateRecordingInput,
 	type CreateScheduledRecordingInput,
 	type CreateScheduledRecordingResult,
@@ -297,6 +300,53 @@ test("schedule(): persists row, arms scheduler, emits scheduled event", async ()
 	await rm(tmp, { recursive: true, force: true });
 });
 
+test("schedule(): rejects a recording whose configured padding exceeds one day", async () => {
+	const jobsRepo = new InMemoryJobsRepo();
+	const repo = new FakeRecordingsRepo(jobsRepo);
+	const scheduler = new Scheduler({
+		bus: new EventBus(),
+		jobsRepository: jobsRepo as never
+	});
+	const tmp = await mkdtemp(join(tmpdir(), "signalhaven-rec-duration-"));
+	const service = new RecordingsService({
+		repository: repo as never,
+		scheduler,
+		allocator: new TunerAllocator({ capacity: async () => 1 }),
+		resolver: { resolve: async () => never() },
+		config: staticConfig(tmp, 60, 60)
+	});
+	const start = new Date("2026-08-12T00:00:00.000Z");
+
+	await assert.rejects(
+		service.schedule({
+			channelId: randomUUID(),
+			title: "Too long after padding",
+			start,
+			end: new Date(start.getTime() + 24 * 60 * 60 * 1_000)
+		}),
+		RecordingDurationLimitError
+	);
+	assert.equal(jobsRepo.rows.size, 0);
+	await rm(tmp, { recursive: true, force: true });
+});
+
+test("same-airing recordings use distinct collision-safe output names", () => {
+	const scheduledStart = new Date("2026-08-12T01:00:00.000Z");
+	const firstId = randomUUID();
+	const secondId = randomUUID();
+	const first = recordingOutputFileName("Shared/Show", scheduledStart, firstId);
+	const second = recordingOutputFileName(
+		"Shared/Show",
+		scheduledStart,
+		secondId
+	);
+
+	assert.notEqual(first, second);
+	assert.match(first, new RegExp(firstId));
+	assert.match(second, new RegExp(secondId));
+	assert.doesNotMatch(first, /[/:]/);
+});
+
 test("cancel(): scheduled row transitions to cancelled", async () => {
 	const bus = new EventBus();
 	const events = captureEvents(bus);
@@ -428,6 +478,68 @@ test("toPublicRecording(): serialises Date fields as ISO strings", () => {
 	});
 	assert.equal(public_.scheduledStart, start.toISOString());
 	assert.equal(public_.scheduledEnd, end.toISOString());
+});
+
+test("toPublicRecording(): never exposes storage paths or raw recorder output", () => {
+	const now = new Date("2026-01-01T00:00:00.000Z");
+	const row = {
+		id: "00000000-0000-4000-8000-000000000001",
+		channelId: "00000000-0000-4000-8000-000000000002",
+		programId: null,
+		title: "x",
+		status: "failed",
+		scheduledStart: now,
+		scheduledEnd: new Date(now.getTime() + 300_000),
+		actualStart: now,
+		actualEnd: now,
+		startReason: null,
+		filePath: "/private/recordings/customer-secret.mkv",
+		fileSize: 1,
+		durationSeconds: 1,
+		errorMessage:
+			"ffmpeg /private/recordings/customer-secret.mkv?token=top-secret exited 1",
+		schedulerJobId: null,
+		seriesRuleId: null,
+		manuallyProtected: false,
+		watchedAt: null,
+		resumePositionSeconds: null,
+		createdAt: now,
+		updatedAt: now
+	} satisfies RecordingRecord;
+	const publicRecording = toPublicRecording(row);
+
+	assert.equal(publicRecording.filePath, null);
+	assert.equal(publicRecording.errorMessage, "process_terminated");
+	assert.doesNotMatch(
+		JSON.stringify(publicRecording),
+		/private|customer-secret|top-secret/
+	);
+	assert.equal(
+		toPublicRecording({ ...row, errorMessage: "file_missing" }).errorMessage,
+		"file_missing"
+	);
+});
+
+test("toPublicRecordingMetadata(): replaces provider artwork URLs with an owned path", () => {
+	const recordingId = "00000000-0000-4000-8000-000000000001";
+	const metadata = toPublicRecordingMetadata(recordingId, {
+		subtitle: "Pilot",
+		description: null,
+		episode: 1,
+		season: 1,
+		categories: [],
+		artworkUrl: "https://provider.internal/art.jpg?token=secret",
+		originalAirDate: null
+	});
+
+	assert.equal(
+		metadata?.artworkUrl,
+		`/api/v1/recordings/${recordingId}/artwork`
+	);
+	assert.doesNotMatch(
+		JSON.stringify(metadata),
+		/provider\.internal|token=secret/
+	);
 });
 
 test("toPublicRecording(): hides legacy late-start flags within startup grace", () => {

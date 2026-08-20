@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 declare global {
 	interface Window {
@@ -63,6 +63,11 @@ const baseSettings = {
 
 async function mockBackend(page: Page) {
 	let settings = JSON.parse(JSON.stringify(baseSettings));
+	let preferences = {
+		ui: structuredClone(baseSettings.ui),
+		channels: structuredClone(baseSettings.channels),
+		player: structuredClone(baseSettings.player)
+	};
 	await page.route("**/api/v1/system/status", (route) =>
 		route.fulfill({
 			status: 200,
@@ -90,6 +95,19 @@ async function mockBackend(page: Page) {
 			status: 200,
 			contentType: "application/json",
 			body: JSON.stringify(settings)
+		});
+	});
+	await page.route("**/api/v1/preferences", async (route) => {
+		if (route.request().method() === "PATCH") {
+			const body = route.request().postDataJSON() as Partial<
+				typeof preferences
+			>;
+			preferences = { ...preferences, ...body };
+		}
+		await route.fulfill({
+			status: 200,
+			contentType: "application/json",
+			body: JSON.stringify(preferences)
 		});
 	});
 	// Stub the channels list so WatchPage's Promise.all resolves cleanly.
@@ -182,19 +200,23 @@ test.describe("Video player", () => {
 		}
 	});
 
-	test("quality switcher persists the user's choice via the settings API", async ({
+	test("quality switcher persists the user's choice via the preferences API", async ({
 		page
 	}) => {
 		await mockBackend(page);
 		const patches: Array<Record<string, unknown>> = [];
-		await page.route("**/api/v1/settings", async (route) => {
+		await page.route("**/api/v1/preferences", async (route) => {
 			if (route.request().method() === "PATCH") {
 				patches.push(route.request().postDataJSON() as Record<string, unknown>);
 			}
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify(baseSettings)
+				body: JSON.stringify({
+					ui: baseSettings.ui,
+					channels: baseSettings.channels,
+					player: baseSettings.player
+				})
 			});
 		});
 		await page.goto(`/watch/${CHANNEL_ID}`);
@@ -228,7 +250,7 @@ test.describe("Video player", () => {
 	}) => {
 		await mockBackend(page);
 		const patches: Array<{ player?: Record<string, unknown> }> = [];
-		await page.route("**/api/v1/settings", async (route) => {
+		await page.route("**/api/v1/preferences", async (route) => {
 			if (route.request().method() === "PATCH") {
 				patches.push(
 					route.request().postDataJSON() as { player?: Record<string, unknown> }
@@ -237,7 +259,11 @@ test.describe("Video player", () => {
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: JSON.stringify(baseSettings)
+				body: JSON.stringify({
+					ui: baseSettings.ui,
+					channels: baseSettings.channels,
+					player: baseSettings.player
+				})
 			});
 		});
 		await page.goto(`/watch/${CHANNEL_ID}`);

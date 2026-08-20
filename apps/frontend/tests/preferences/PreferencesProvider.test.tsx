@@ -1,4 +1,7 @@
-import { settingsDefaults, type Settings } from "@signalhaven/shared";
+import {
+	userPreferencesDefaults,
+	type UserPreferences
+} from "@signalhaven/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,20 +22,20 @@ vi.mock("../../lib/api-client", async () => {
 	);
 	return {
 		...actual,
-		getSettings: vi.fn(),
-		updateSettings: vi.fn()
+		getPreferences: vi.fn(),
+		updatePreferences: vi.fn()
 	};
 });
 
-import { getSettings, updateSettings } from "../../lib/api-client";
+import { getPreferences, updatePreferences } from "../../lib/api-client";
 
-const getSettingsMock = vi.mocked(getSettings);
-const updateSettingsMock = vi.mocked(updateSettings);
+const getPreferencesMock = vi.mocked(getPreferences);
+const updatePreferencesMock = vi.mocked(updatePreferences);
 
-const savedSettings: Settings = {
-	...settingsDefaults,
+const savedPreferences: UserPreferences = {
+	...userPreferencesDefaults,
 	ui: {
-		...settingsDefaults.ui,
+		...userPreferencesDefaults.ui,
 		theme: "dark",
 		density: "compact",
 		animations: false,
@@ -47,21 +50,26 @@ function Probe() {
 		<div>
 			<span data-testid="status">{preferences.status}</span>
 			<span data-testid="clock">
-				{String(preferences.settings.ui.use24HourClock)}
+				{String(preferences.preferences.ui.use24HourClock)}
 			</span>
 			{preferences.error ? (
 				<span role="alert">{preferences.error.message}</span>
 			) : null}
+			<button type="button" onClick={() => void preferences.retry()}>
+				Retry
+			</button>
 			<button
 				type="button"
 				onClick={() =>
-					void preferences.saveSettings({
-						channels: {
-							favorites: ["00000000-0000-4000-8000-000000000001"],
-							hidden: [],
-							order: []
-						}
-					})
+					void preferences
+						.savePreferences({
+							channels: {
+								favorites: ["00000000-0000-4000-8000-000000000001"],
+								hidden: [],
+								order: []
+							}
+						})
+						.catch(() => undefined)
 				}
 			>
 				Save first
@@ -69,13 +77,15 @@ function Probe() {
 			<button
 				type="button"
 				onClick={() =>
-					void preferences.saveSettings({
-						channels: {
-							favorites: ["00000000-0000-4000-8000-000000000002"],
-							hidden: [],
-							order: []
-						}
-					})
+					void preferences
+						.savePreferences({
+							channels: {
+								favorites: ["00000000-0000-4000-8000-000000000002"],
+								hidden: [],
+								order: []
+							}
+						})
+						.catch(() => undefined)
 				}
 			>
 				Save second
@@ -87,7 +97,11 @@ function Probe() {
 function renderProvider() {
 	return render(
 		<ThemeProvider>
-			<PreferencesProvider>
+			<PreferencesProvider
+				accountId="00000000-0000-4000-8000-000000000001"
+				authGeneration={1}
+				bootstrap={null}
+			>
 				<Probe />
 			</PreferencesProvider>
 		</ThemeProvider>
@@ -95,24 +109,24 @@ function renderProvider() {
 }
 
 beforeEach(() => {
-	getSettingsMock.mockReset();
-	updateSettingsMock.mockReset();
+	getPreferencesMock.mockReset();
+	updatePreferencesMock.mockReset();
 	document.documentElement.removeAttribute("data-density");
 	document.documentElement.removeAttribute("data-animations");
 });
 
 describe("PreferencesProvider", () => {
-	it("loads settings once at the app boundary and applies appearance", async () => {
-		getSettingsMock.mockResolvedValue(savedSettings);
+	it("loads preferences once at the account boundary and applies appearance", async () => {
+		getPreferencesMock.mockResolvedValue(savedPreferences);
 		renderProvider();
 
 		expect(screen.getByTestId("status")).toHaveTextContent("loading");
 		await waitFor(() =>
 			expect(screen.getByTestId("status")).toHaveTextContent("ready")
 		);
-		expect(getSettingsMock).toHaveBeenCalledTimes(1);
+		expect(getPreferencesMock).toHaveBeenCalledTimes(1);
 		expect(screen.getByTestId("clock")).toHaveTextContent("true");
-		// Appearance is applied by a follow-up effect after settings become ready.
+		// Appearance is applied by a follow-up effect after preferences become ready.
 		await waitFor(() => {
 			expect(document.documentElement).toHaveAttribute(
 				"data-density",
@@ -126,8 +140,11 @@ describe("PreferencesProvider", () => {
 		});
 	});
 
-	it("falls back to schema defaults and exposes a diagnosable load error", async () => {
-		getSettingsMock.mockRejectedValue(new Error("Malformed saved settings"));
+	it("fails closed after load errors and retries the complete snapshot", async () => {
+		const user = userEvent.setup();
+		getPreferencesMock
+			.mockRejectedValueOnce(new Error("Malformed saved settings"))
+			.mockResolvedValueOnce(savedPreferences);
 		renderProvider();
 
 		await waitFor(() =>
@@ -137,21 +154,29 @@ describe("PreferencesProvider", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			/malformed saved settings/i
 		);
+		await user.click(screen.getByRole("button", { name: "Save first" }));
+		expect(updatePreferencesMock).not.toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: "Retry" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("status")).toHaveTextContent("ready")
+		);
+		expect(screen.getByTestId("clock")).toHaveTextContent("true");
 	});
 
 	it("serializes saves so stale responses cannot overwrite newer preferences", async () => {
 		const user = userEvent.setup();
-		getSettingsMock.mockResolvedValue(savedSettings);
-		let resolveFirst!: (settings: Settings) => void;
-		updateSettingsMock
+		getPreferencesMock.mockResolvedValue(savedPreferences);
+		let resolveFirst!: (preferences: UserPreferences) => void;
+		updatePreferencesMock
 			.mockImplementationOnce(
 				() =>
-					new Promise<Settings>((resolve) => {
+					new Promise<UserPreferences>((resolve) => {
 						resolveFirst = resolve;
 					})
 			)
 			.mockResolvedValueOnce({
-				...savedSettings,
+				...savedPreferences,
 				channels: {
 					favorites: ["00000000-0000-4000-8000-000000000002"],
 					hidden: [],
@@ -165,16 +190,43 @@ describe("PreferencesProvider", () => {
 
 		await user.click(screen.getByRole("button", { name: "Save first" }));
 		await user.click(screen.getByRole("button", { name: "Save second" }));
-		expect(updateSettingsMock).toHaveBeenCalledTimes(1);
+		expect(updatePreferencesMock).toHaveBeenCalledTimes(1);
 
 		resolveFirst({
-			...savedSettings,
+			...savedPreferences,
 			channels: {
 				favorites: ["00000000-0000-4000-8000-000000000001"],
 				hidden: [],
 				order: []
 			}
 		});
-		await waitFor(() => expect(updateSettingsMock).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(updatePreferencesMock).toHaveBeenCalledTimes(2));
+	});
+
+	it("drops queued saves when the owning account provider unmounts", async () => {
+		const user = userEvent.setup();
+		getPreferencesMock.mockResolvedValue(savedPreferences);
+		let resolveFirst!: (preferences: UserPreferences) => void;
+		updatePreferencesMock.mockImplementation(
+			() =>
+				new Promise<UserPreferences>((resolve) => {
+					resolveFirst = resolve;
+				})
+		);
+		const mounted = renderProvider();
+		await waitFor(() =>
+			expect(screen.getByTestId("status")).toHaveTextContent("ready")
+		);
+
+		await user.click(screen.getByRole("button", { name: "Save first" }));
+		await user.click(screen.getByRole("button", { name: "Save second" }));
+		expect(updatePreferencesMock).toHaveBeenCalledTimes(1);
+		mounted.unmount();
+		resolveFirst(savedPreferences);
+
+		await waitFor(() => expect(updatePreferencesMock).toHaveBeenCalledTimes(1));
+		expect(localStorage.getItem("signalhaven:theme")).toBe("system");
+		expect(localStorage.getItem("signalhaven:density")).toBe("comfortable");
+		expect(localStorage.getItem("signalhaven:animations")).toBe("on");
 	});
 });

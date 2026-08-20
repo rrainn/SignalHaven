@@ -15,6 +15,7 @@ import {
 	CommercialAnalysisService,
 	COMMERCIAL_ANALYSIS_JOB_KIND
 } from "../src/commercials/commercial-analysis.service";
+import { EventBus, type PublishedEvent } from "../src/events/event-bus";
 import type { CommercialAnalysisRecord } from "../src/repositories/commercials.repository";
 import type { RecordingRecord } from "../src/repositories/recordings.repository";
 import type { JobContext, JobHandler } from "../src/scheduler/scheduler";
@@ -102,10 +103,14 @@ test("detector failure is persisted without changing a completed recording", asy
 	const recording = completedRecording();
 	const repository = new FakeCommercialsRepository();
 	const scheduler = new FakeScheduler();
+	const bus = new EventBus();
+	const events: PublishedEvent<"recordings">[] = [];
+	bus.subscribe("recordings", (event) => events.push(event));
 	const service = new CommercialAnalysisService({
 		repository,
 		recordings: { getById: async () => recording },
 		scheduler,
+		bus,
 		resolveConfig: async () => ({
 			enabled: true,
 			executablePath: "/usr/bin/comskip",
@@ -113,7 +118,9 @@ test("detector failure is persisted without changing a completed recording", asy
 		}),
 		createDetector: () => ({
 			detect: async () => {
-				throw new Error(`${recording.filePath} produced malformed output`);
+				throw new Error(
+					`${recording.filePath} failed via /etc/private.conf token=secret-123`
+				);
 			}
 		})
 	});
@@ -125,7 +132,34 @@ test("detector failure is persisted without changing a completed recording", asy
 	assert.equal(repository.analysis?.status, "failed");
 	assert.doesNotMatch(
 		repository.analysis?.diagnosticMessage ?? "",
-		/recordings\/show/
+		/recordings\/show|\/etc\/private|secret-123/
+	);
+	const publicAnalysis = await service.get(recording.id);
+	assert.equal(publicAnalysis.status, "failed");
+	assert.doesNotMatch(
+		JSON.stringify(publicAnalysis),
+		/recordings\/show|\/etc\/private|secret-123|usr\/bin\/comskip/
+	);
+	assert.equal(publicAnalysis.detectorVersion, "test-v1");
+	assert.deepEqual(
+		events.map((event) => ({
+			event: event.event,
+			userId: event.audience?.userId
+		})),
+		[
+			{
+				event: "commercial.analysis.queued",
+				userId: recording.userId
+			},
+			{
+				event: "commercial.analysis.running",
+				userId: recording.userId
+			},
+			{
+				event: "commercial.analysis.failed",
+				userId: recording.userId
+			}
+		]
 	);
 });
 
@@ -185,7 +219,7 @@ test("active work is visible only while Comskip is running", async () => {
 	const running = scheduler.run(recording.id);
 	await detectorStarted;
 
-	assert.deepEqual(service.getActiveWork(), [
+	assert.deepEqual(service.getActiveWork(recording.userId!), [
 		{
 			recordingId: recording.id,
 			label: recording.title,
@@ -193,10 +227,14 @@ test("active work is visible only while Comskip is running", async () => {
 			startedAt: new Date(0).toISOString()
 		}
 	]);
+	assert.deepEqual(
+		service.getActiveWork("44444444-4444-4444-8444-444444444444"),
+		[]
+	);
 
 	finishDetection?.();
 	await running;
-	assert.deepEqual(service.getActiveWork(), []);
+	assert.deepEqual(service.getActiveWork(recording.userId!), []);
 });
 
 class FakeScheduler {
@@ -298,6 +336,7 @@ function completedRecording(): RecordingRecord {
 	const now = new Date("2026-01-01T00:00:00Z");
 	return {
 		id: "11111111-1111-4111-8111-111111111111",
+		userId: "33333333-3333-4333-8333-333333333333",
 		channelId: "22222222-2222-4222-8222-222222222222",
 		programId: null,
 		title: "Show",

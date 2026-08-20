@@ -2,12 +2,14 @@ import { sql } from "drizzle-orm";
 import {
 	bigint,
 	boolean,
+	check,
 	customType,
 	date,
 	index,
 	integer,
 	jsonb,
 	pgTable,
+	primaryKey,
 	text,
 	timestamp,
 	unique,
@@ -20,6 +22,114 @@ const tsvector = customType<{ data: string }>({
 		return "tsvector";
 	}
 });
+
+/** The stable pending owner lets legacy rows satisfy ownership before setup. */
+export const BOOTSTRAP_ADMIN_USER_ID = "00000000-0000-4000-8000-000000000001";
+
+export const users = pgTable(
+	"users",
+	{
+		id: uuid("id").primaryKey(),
+		username: text("username"),
+		usernameNormalized: text("username_normalized"),
+		passwordHash: text("password_hash"),
+		role: text("role").notNull(),
+		activatedAt: timestamp("activated_at", { withTimezone: true }),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [
+		check("users_role_check", sql`${table.role} IN ('admin', 'user')`),
+		check(
+			"users_activation_complete_check",
+			sql`(
+				(${table.activatedAt} IS NULL AND ${table.username} IS NULL AND ${table.usernameNormalized} IS NULL AND ${table.passwordHash} IS NULL AND ${table.role} = 'admin')
+				OR
+				(${table.activatedAt} IS NOT NULL AND ${table.username} IS NOT NULL AND ${table.usernameNormalized} IS NOT NULL AND ${table.passwordHash} IS NOT NULL)
+			)`
+		),
+		uniqueIndex("users_username_normalized_unique")
+			.on(table.usernameNormalized)
+			.where(sql`${table.usernameNormalized} IS NOT NULL`)
+	]
+);
+
+/** Only a SHA-256 digest of each opaque session token is persisted. */
+export const sessions = pgTable(
+	"sessions",
+	{
+		id: uuid("id").primaryKey(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		tokenHash: text("token_hash").notNull(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [
+		uniqueIndex("sessions_token_hash_unique").on(table.tokenHash),
+		index("sessions_user_id_idx").on(table.userId),
+		index("sessions_expires_at_idx").on(table.expiresAt)
+	]
+);
+
+/** Preference groups are separate rows so independent clients can patch safely. */
+export const userPreferences = pgTable(
+	"user_preferences",
+	{
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		key: text("key").notNull(),
+		value: jsonb("value").notNull()
+	},
+	(table) => [
+		primaryKey({ columns: [table.userId, table.key] }),
+		check(
+			"user_preferences_key_check",
+			sql`${table.key} IN ('ui', 'channels', 'player')`
+		)
+	]
+);
+
+/** Short-lived media credentials are bound to one session and one resource. */
+export const mediaTickets = pgTable(
+	"media_tickets",
+	{
+		tokenHash: text("token_hash").primaryKey(),
+		sessionId: uuid("session_id")
+			.notNull()
+			.references(() => sessions.id, { onDelete: "cascade" }),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		resourceKind: text("resource_kind").notNull(),
+		resourceId: text("resource_id").notNull(),
+		claims: jsonb("claims").notNull(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [
+		check(
+			"media_tickets_resource_kind_check",
+			sql`${table.resourceKind} IN ('live', 'recording')`
+		),
+		index("media_tickets_session_id_idx").on(table.sessionId),
+		index("media_tickets_user_id_idx").on(table.userId),
+		index("media_tickets_expires_at_idx").on(table.expiresAt)
+	]
+);
 
 export const tuners = pgTable("tuners", {
 	id: uuid("id").primaryKey(),
@@ -230,6 +340,9 @@ export const recordings = pgTable(
 	"recordings",
 	{
 		id: uuid("id").primaryKey(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "restrict" }),
 		channelId: uuid("channel_id")
 			.notNull()
 			.references(() => logicalChannels.id, { onDelete: "restrict" }),
@@ -286,6 +399,7 @@ export const recordings = pgTable(
 			table.status,
 			table.scheduledStart
 		),
+		index("recordings_user_id_idx").on(table.userId),
 		index("recordings_series_rule_idx").on(table.seriesRuleId),
 		index("recordings_episode_identity_idx").on(table.episodeIdentityKey),
 		index("recordings_channel_scheduled_start_idx").on(
@@ -304,34 +418,41 @@ export const recordings = pgTable(
 			table.title.op("gin_trgm_ops")
 		),
 		uniqueIndex("recordings_active_program_unique")
-			.on(table.programId)
+			.on(table.userId, table.programId)
 			.where(
 				sql`${table.programId} IS NOT NULL AND ${table.status} IN ('scheduled', 'recording')`
 			)
 	]
 );
 
-export const seriesRules = pgTable("series_rules", {
-	id: uuid("id").primaryKey(),
-	title: text("title").notNull(),
-	channelId: uuid("channel_id").references(() => logicalChannels.id, {
-		onDelete: "set null"
-	}),
-	epgChannelId: uuid("epg_channel_id").references(() => epgChannels.id, {
-		onDelete: "set null"
-	}),
-	keepCount: integer("keep_count").notNull(),
-	newOnly: boolean("new_only").notNull().default(false),
-	episodePolicy: text("episode_policy").notNull().default("all"),
-	priority: integer("priority").notNull().default(0),
-	retentionDays: integer("retention_days"),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.defaultNow()
-		.notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true })
-		.defaultNow()
-		.notNull()
-});
+export const seriesRules = pgTable(
+	"series_rules",
+	{
+		id: uuid("id").primaryKey(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "restrict" }),
+		title: text("title").notNull(),
+		channelId: uuid("channel_id").references(() => logicalChannels.id, {
+			onDelete: "set null"
+		}),
+		epgChannelId: uuid("epg_channel_id").references(() => epgChannels.id, {
+			onDelete: "set null"
+		}),
+		keepCount: integer("keep_count").notNull(),
+		newOnly: boolean("new_only").notNull().default(false),
+		episodePolicy: text("episode_policy").notNull().default("all"),
+		priority: integer("priority").notNull().default(0),
+		retentionDays: integer("retention_days"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull()
+	},
+	(table) => [index("series_rules_user_id_idx").on(table.userId)]
+);
 
 /** Atomic, durable claim preventing a rule from recording one episode twice. */
 export const seriesRuleEpisodes = pgTable(
@@ -435,6 +556,10 @@ export const commercialMarkers = pgTable(
 );
 
 export const schema = {
+	users,
+	sessions,
+	userPreferences,
+	mediaTickets,
 	tuners,
 	logicalChannels,
 	channels,

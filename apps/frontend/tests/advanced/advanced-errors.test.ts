@@ -2,11 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ADVANCED_MODE_STORAGE_KEY } from "../../app/_advanced/AdvancedModeProvider";
 import { getHealth } from "../../lib/api-client";
+import {
+	clearAccountBrowserState,
+	setAuthenticatedClientRole
+} from "../../lib/account-browser-state";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+	clearAccountBrowserState();
+	vi.unstubAllGlobals();
+});
 
 describe("advanced client errors", () => {
 	it("adds the server code and request id when advanced mode is enabled", async () => {
+		setAuthenticatedClientRole("admin");
 		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
 		vi.stubGlobal(
 			"fetch",

@@ -5,6 +5,7 @@ import { settingsDefaults } from "@signalhaven/shared";
 import request from "supertest";
 
 import { createApp } from "../src/app";
+import { createTestAuthentication } from "../src/auth/middleware";
 import { EventBus } from "../src/events/event-bus";
 import type { HealthRepository } from "../src/repositories/health.repository";
 import type { SettingsRepository } from "../src/repositories/settings.repository";
@@ -83,6 +84,7 @@ function buildHarness(
 	} as unknown as SystemStatusService;
 
 	const app = createApp({
+		authentication: createTestAuthentication(),
 		env: { ...process.env, NODE_ENV: "test" },
 		healthRepository: stubHealthRepository(),
 		settingsService,
@@ -106,13 +108,12 @@ test("PATCH /api/v1/settings round-trip persists and returns merged document", a
 
 	const patchResponse = await request(app)
 		.patch("/api/v1/settings")
-		.send({ ui: { theme: "dark", epgHoursVisible: 6, use24HourClock: true } });
+		.send({ storage: { path: "/srv/recordings", quotaGb: 250 } });
 
 	assert.equal(patchResponse.status, 200);
-	assert.equal(patchResponse.body.ui.theme, "dark");
-	assert.equal(patchResponse.body.ui.epgHoursVisible, 6);
+	assert.equal(patchResponse.body.storage.path, "/srv/recordings");
+	assert.equal(patchResponse.body.storage.quotaGb, 250);
 	// Other top-level keys preserved at their defaults.
-	assert.deepEqual(patchResponse.body.storage, settingsDefaults.storage);
 	assert.deepEqual(
 		patchResponse.body.transcoding,
 		settingsDefaults.transcoding
@@ -148,7 +149,7 @@ test("PATCH /api/v1/settings rejects invalid values", async () => {
 
 	const response = await request(app)
 		.patch("/api/v1/settings")
-		.send({ ui: { theme: "neon", epgHoursVisible: 6, use24HourClock: false } });
+		.send({ storage: { path: "/srv/recordings", quotaGb: -1 } });
 
 	assert.equal(response.status, 400);
 	assert.equal(response.body.error.code, "bad_request");
@@ -183,18 +184,17 @@ test("PATCH preserves keys that were not part of the patch body", async () => {
 
 	await request(app)
 		.patch("/api/v1/settings")
-		.send({ storage: { path: "/srv/recordings" } })
+		.send({ storage: { path: "/srv/recordings", quotaGb: null } })
 		.expect(200);
 
 	await request(app)
 		.patch("/api/v1/settings")
-		.send({ ui: { theme: "light", epgHoursVisible: 8, use24HourClock: false } })
+		.send({ observability: { debugBundleEnabled: true } })
 		.expect(200);
 
 	const response = await request(app).get("/api/v1/settings");
 	assert.equal(response.body.storage.path, "/srv/recordings");
-	assert.equal(response.body.ui.theme, "light");
-	assert.equal(response.body.ui.epgHoursVisible, 8);
+	assert.equal(response.body.observability.debugBundleEnabled, true);
 });
 
 test("PATCH publishes a settings.updated event on the WS bus", async () => {

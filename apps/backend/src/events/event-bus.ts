@@ -1,4 +1,4 @@
-import type { EventTopic } from "@signalhaven/shared";
+import type { EventTopic, UserRole } from "@signalhaven/shared";
 
 /**
  * Map of topic -> event payload type. Modules add entries to this interface
@@ -24,6 +24,11 @@ export interface PublishedEvent<TTopic extends EventTopic = EventTopic> {
 	/** Free-form discriminator within a topic (e.g. "started", "progress"). */
 	event: string;
 	data: EventPayloadMap[TTopic];
+	/** Audience metadata is enforced by every remote event transport. */
+	audience?: {
+		userId?: string;
+		role?: UserRole;
+	};
 }
 
 export type EventListener<TTopic extends EventTopic = EventTopic> = (

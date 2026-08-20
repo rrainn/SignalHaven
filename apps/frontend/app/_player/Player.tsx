@@ -334,7 +334,7 @@ function buildSrc(
 	return `${base}?${search.toString()}`;
 }
 
-/** Create the stable id that joins one player's short HLS requests together. */
+/** Create the stable id that joins one client's short HLS requests together. */
 function createViewerId(): string {
 	return crypto.randomUUID();
 }
@@ -510,6 +510,10 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		const [playbackStats, setPlaybackStats] = useState<PlaybackStats | null>(
 			null
 		);
+		const [viewerIdentity, setViewerIdentity] = useState<{
+			key: string;
+			id: string;
+		} | null>(null);
 
 		useEffect(() => {
 			advancedEnabledRef.current = advancedEnabled;
@@ -553,14 +557,32 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				absoluteCurrentTime * 1_000 < marker.endMs
 		);
 
-		const viewerId = useMemo(
-			() => (srcProp || isRecording ? null : createViewerId()),
-			[channelId, isRecording, quality, srcProp]
-		);
-		const effectiveSrc = useMemo(
-			() => srcProp ?? buildSrc(channelId, quality, viewerId ?? undefined),
-			[srcProp, channelId, quality, viewerId]
-		);
+		const viewerIdentityKey =
+			srcProp !== undefined || isRecording ? null : `${channelId}:${quality}`;
+		const viewerId =
+			viewerIdentityKey !== null && viewerIdentity?.key === viewerIdentityKey
+				? viewerIdentity.id
+				: null;
+
+		useEffect(() => {
+			if (viewerIdentityKey === null) {
+				setViewerIdentity(null);
+				return;
+			}
+			// A client effect keeps SSR and the first hydrated render identical while
+			// preventing a changed channel/profile from reusing its previous identity.
+			setViewerIdentity((current) =>
+				current?.key === viewerIdentityKey
+					? current
+					: { key: viewerIdentityKey, id: createViewerId() }
+			);
+		}, [viewerIdentityKey]);
+
+		const effectiveSrc = useMemo(() => {
+			if (srcProp !== undefined) return srcProp;
+			if (isRecording) return buildSrc(channelId, quality);
+			return viewerId ? buildSrc(channelId, quality, viewerId) : null;
+		}, [srcProp, isRecording, channelId, quality, viewerId]);
 
 		useEffect(() => {
 			if (!viewerId) return;
@@ -637,6 +659,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 		// remains mounted; live sources reuse HLS.js while zero-based recording
 		// windows replace its MediaSource to keep their timelines isolated.
 		useEffect(() => {
+			// Live playback cannot start until the browser owns its viewer identity.
+			if (effectiveSrc === null) return;
 			const video = videoRef.current;
 			if (!video) return;
 			const sourceGeneration = ++sourceGenerationRef.current;
@@ -2034,7 +2058,7 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 											reload();
 										} else {
 											const v = videoRef.current;
-											if (v) {
+											if (v && effectiveSrc !== null) {
 												setLoading(true);
 												setLoadingStage(
 													bufferEventAccumulatorRef.current.playbackStarted

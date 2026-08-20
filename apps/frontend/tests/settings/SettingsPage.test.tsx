@@ -1,4 +1,4 @@
-import type { SystemInfo } from "@signalhaven/shared";
+import { settingsDefaults, type SystemInfo } from "@signalhaven/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ vi.mock("../../lib/api-client", async () => {
 	);
 	return {
 		...actual,
+		getSettings: vi.fn(),
 		getSystemInfo: vi.fn(),
 		listEpgSources: vi.fn(),
 		listTuners: vi.fn()
@@ -17,12 +18,14 @@ vi.mock("../../lib/api-client", async () => {
 
 import { SettingsPage } from "../../app/_settings/SettingsPage";
 import {
+	getSettings,
 	getSystemInfo,
 	listEpgSources,
 	listTuners
 } from "../../lib/api-client";
 
 const getSystemInfoMock = vi.mocked(getSystemInfo);
+const getSettingsMock = vi.mocked(getSettings);
 const listEpgSourcesMock = vi.mocked(listEpgSources);
 const listTunersMock = vi.mocked(listTuners);
 
@@ -34,6 +37,8 @@ const systemInfo: SystemInfo = {
 
 describe("SettingsPage", () => {
 	beforeEach(() => {
+		getSettingsMock.mockReset();
+		getSettingsMock.mockResolvedValue(settingsDefaults);
 		getSystemInfoMock.mockReset();
 		listEpgSourcesMock.mockReset();
 		listTunersMock.mockReset();

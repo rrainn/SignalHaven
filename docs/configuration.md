@@ -24,10 +24,10 @@ When enabled, the UI adds:
   client-facing errors.
 
 Stopping recording FFmpeg work cancels that recording and preserves the
-normal recording cancellation semantics. Advanced mode is a visibility and
-diagnostics preference, not an authorization boundary; deploy SignalHaven's API
-behind the same trusted-network or authentication controls used for the rest
-of the application.
+normal recording cancellation semantics. The browser-local Advanced mode flag
+is only a visibility preference; the backend independently requires an
+administrator session for every advanced diagnostic and machine-topology API.
+See [Local accounts and sessions](accounts.md) for the wider deployment boundary.
 
 The Advanced page can also show the server's public IP address. This lookup is
 disabled by default because enabling it sends the server's public IP and normal
@@ -111,29 +111,33 @@ stopping one session does not interrupt viewers using a different seek window.
 
 ### Frontend runtime
 
-| Variable                     | Default                 | Description                                                 |
-| ---------------------------- | ----------------------- | ----------------------------------------------------------- |
-| `SIGNALHAVEN_BACKEND_ORIGIN` | `http://localhost:3000` | Dev/proxy backend origin used by Next.js `/api/*` rewrites. |
-| `NEXT_PUBLIC_API_BASE_URL`   | _empty_                 | Optional API base URL override for frontend requests.       |
-| `NEXT_PUBLIC_DISABLE_SW`     | _unset_                 | Set to `1` to disable service worker registration.          |
+| Variable                     | Default                 | Description                                                                                                                                                                                                  |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SIGNALHAVEN_BACKEND_ORIGIN` | `http://localhost:3001` | Trusted backend origin used by Next.js API rewrites and uncached server-side account bootstrap. Set the same value at build and runtime; the container pins both paths to its internal backend on port 3001. |
+| `NEXT_PUBLIC_API_BASE_URL`   | _empty_                 | Optional API base URL override for frontend requests.                                                                                                                                                        |
+| `NEXT_PUBLIC_DISABLE_SW`     | _unset_                 | Set to `1` to disable service worker registration.                                                                                                                                                           |
 
 ### Test and CI helpers
 
-| Variable                   | Default | Description                                                   |
-| -------------------------- | ------- | ------------------------------------------------------------- |
-| `COVERAGE_LINES_THRESHOLD` | `70`    | Backend line-coverage threshold for `test:coverage`.          |
-| `SIGNALHAVEN_RUN_PERF`     | `0`     | Enables optional backend perf test blocks when set to truthy. |
+| Variable                           | Default | Description                                                                                       |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `COVERAGE_LINES_THRESHOLD`         | `70`    | Backend line-coverage threshold for `test:coverage`.                                              |
+| `SIGNALHAVEN_E2E_CLIENT_API_MOCKS` | `0`     | Lets Playwright's per-page routes own auth bootstrap in E2E only. Never set this in a deployment. |
+| `SIGNALHAVEN_RUN_PERF`             | `0`     | Enables optional backend perf test blocks when set to truthy.                                     |
 
 ## Settings object
 
-`GET /api/v1/settings` returns the persisted settings document with these top-level keys.
+Administrator-only `GET /api/v1/settings` returns the persisted global machine
+settings document with these top-level keys. Account-specific `ui`, `channels`,
+and `player` values are returned and patched through `/api/v1/preferences`;
+changing them never affects another user.
 
 ### `storage`
 
-| Key       | Type             | Default | Description                                                 |
-| --------- | ---------------- | ------- | ----------------------------------------------------------- |
-| `path`    | `string \| null` | `null`  | Absolute recordings directory path.                         |
-| `quotaGb` | `number \| null` | `null`  | Maximum recordings library size in GB (`null` = unlimited). |
+| Key       | Type             | Default | Description                                                                                                                                                          |
+| --------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | `string \| null` | `null`  | Absolute recordings directory path.                                                                                                                                  |
+| `quotaGb` | `number \| null` | `null`  | Global completed-recordings ceiling in GB (`null` = unlimited). Cleanup measures all accounts but deletes only from the account whose new media crossed the ceiling. |
 
 ### `transcoding`
 

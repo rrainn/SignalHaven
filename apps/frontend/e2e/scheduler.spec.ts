@@ -4,7 +4,7 @@ import {
 	type Page,
 	type Route,
 	type WebSocketRoute
-} from "@playwright/test";
+} from "./fixtures";
 
 /**
  * E2E for the U9 scheduler page.

@@ -1,13 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { AppShell, NAV_ITEMS } from "../app/_layout/AppShell";
 import { ThemeProvider } from "../app/_theme/ThemeProvider";
 
 let pathname = "/guide";
+let authRole: "admin" | "user" = "admin";
+const prefetch = vi.fn();
+
+vi.mock("../app/_auth/AuthProvider", () => ({
+	useAuth: () => ({
+		state: {
+			status: "signed-in" as const,
+			user: {
+				id: "00000000-0000-4000-8000-000000000001",
+				username: authRole === "admin" ? "operator" : "viewer",
+				role: authRole
+			}
+		},
+		signOut: vi.fn()
+	})
+}));
 
 vi.mock("next/navigation", () => ({
-	usePathname: () => pathname
+	usePathname: () => pathname,
+	useRouter: () => ({ prefetch })
 }));
 
 function renderShell() {
@@ -23,6 +41,8 @@ function renderShell() {
 describe("AppShell", () => {
 	beforeEach(() => {
 		pathname = "/guide";
+		authRole = "admin";
+		prefetch.mockReset();
 	});
 
 	it("renders the brand, theme toggle, and primary navigation", () => {
@@ -47,6 +67,22 @@ describe("AppShell", () => {
 				expect(within(nav).getByText(text)).toBeInTheDocument();
 			}
 		}
+	});
+
+	it("warms persistent navigation only after the user shows intent", async () => {
+		const user = userEvent.setup();
+		renderShell();
+		const [desktopNav] = screen.getAllByRole("navigation", {
+			name: /primary/i
+		});
+		if (!desktopNav) throw new Error("Desktop navigation was not rendered");
+		const settings = within(desktopNav).getByRole("link", {
+			name: "Settings"
+		});
+
+		expect(prefetch).not.toHaveBeenCalled();
+		await user.hover(settings);
+		expect(prefetch).toHaveBeenCalledWith("/settings");
 	});
 
 	it("includes a skip-to-content link as the first focusable element", () => {
@@ -92,5 +128,19 @@ describe("AppShell", () => {
 		expect(within(mobileNav).getAllByTestId("nav-icon")).toHaveLength(
 			NAV_ITEMS.length
 		);
+	});
+
+	it("shows the active identity and removes administrator destinations for users", () => {
+		authRole = "user";
+		renderShell();
+
+		expect(screen.getByTestId("active-username")).toHaveTextContent("viewer");
+		expect(
+			screen.getByRole("button", { name: /sign out viewer/i })
+		).toBeVisible();
+		for (const nav of screen.getAllByRole("navigation", { name: /primary/i })) {
+			expect(within(nav).queryByText("Settings")).toBeNull();
+			expect(within(nav).queryByText("Advanced")).toBeNull();
+		}
 	});
 });

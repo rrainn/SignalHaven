@@ -148,7 +148,7 @@ export function WatchPage(props: WatchPageProps) {
 						hidden: [...initialHidden],
 						order: [...initialOrder]
 					}
-				: (preferences?.settings.channels ?? {
+				: (preferences?.preferences.channels ?? {
 						favorites: [],
 						hidden: [],
 						order: []
@@ -157,7 +157,7 @@ export function WatchPage(props: WatchPageProps) {
 			initialFavorites,
 			initialHidden,
 			initialOrder,
-			preferences?.settings.channels,
+			preferences?.preferences.channels,
 			useFixture
 		]
 	);
@@ -418,7 +418,7 @@ export function WatchPage(props: WatchPageProps) {
 				return;
 			}
 			if (preferences) {
-				await preferences.saveSettings({ channels: nextPreferences });
+				await preferences.savePreferences({ channels: nextPreferences });
 			}
 		});
 

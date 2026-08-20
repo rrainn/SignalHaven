@@ -4,7 +4,7 @@ import {
 	type Page,
 	type Route,
 	type WebSocketRoute
-} from "@playwright/test";
+} from "./fixtures";
 
 /**
  * Cross-page DVR action regression coverage for GitHub issue 85.
