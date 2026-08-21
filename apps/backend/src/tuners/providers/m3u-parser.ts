@@ -8,15 +8,19 @@
  *   #EXTM3U                      – optional header
  *   #EXTINF:<duration>,<title>   – channel metadata, optionally preceded by
  *                                  ` key="value"` attribute pairs
+ *   #EXTVLCOPT:http-*=<value>    – supported per-entry HTTP request metadata
  *
  * Recognised `#EXTINF` attributes (case-insensitive):
- *   tvg-id, tvg-name, tvg-logo, group-title, channel-id
+ *   tvg-id, tvg-name, tvg-logo, group-title, channel-id, user-agent,
+ *   http-user-agent, referrer, referer, http-referrer, origin, http-origin
  *
  * Anything we don't understand (other `#EXTVLCOPT`, `#EXT-X-…` tags, blank
  * lines, comments) is ignored. Malformed entries (e.g. an `#EXTINF` with
  * no following URL, or a URL without a recognised scheme) are skipped and
  * surfaced via the optional `onWarn` callback so callers can log them.
  */
+import type { TunerHttpHeaders } from "@signalhaven/shared";
+
 export interface ParsedM3uChannel {
 	/** The playable URL exposed by the playlist for this entry. */
 	url: string;
@@ -32,6 +36,8 @@ export interface ParsedM3uChannel {
 	groupTitle?: string;
 	/** Optional explicit `channel-id` attribute. */
 	channelId?: string;
+	/** Supported request headers required by this entry's upstream. */
+	httpHeaders?: TunerHttpHeaders;
 }
 
 export interface ParseM3uOptions {
@@ -41,6 +47,17 @@ export interface ParseM3uOptions {
 
 const ATTR_RE = /([A-Za-z0-9_-]+)="([^"]*)"/g;
 const URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const MAX_HEADER_VALUE_LENGTH = 4096;
+
+/** Locate the title separator without mistaking commas inside quoted values. */
+function findUnquotedComma(value: string): number {
+	let quoted = false;
+	for (let index = 0; index < value.length; index += 1) {
+		if (value[index] === '"') quoted = !quoted;
+		if (value[index] === "," && !quoted) return index;
+	}
+	return -1;
+}
 
 /**
  * Parse the prefix that follows `#EXTINF:` — `<duration>[ key="v" ...],<title>`.
@@ -54,7 +71,7 @@ function parseExtinf(line: string): {
 	if (trimmed.length === 0) {
 		return null;
 	}
-	const commaIdx = trimmed.indexOf(",");
+	const commaIdx = findUnquotedComma(trimmed);
 	const head = commaIdx === -1 ? trimmed : trimmed.slice(0, commaIdx);
 	const title = commaIdx === -1 ? "" : trimmed.slice(commaIdx + 1).trim();
 
@@ -72,6 +89,48 @@ function parseExtinf(line: string): {
 	return { attrs, title };
 }
 
+/** Map common M3U header spellings into the provider-neutral stream shape. */
+function headersFromAttributes(
+	attrs: Record<string, string>
+): TunerHttpHeaders {
+	const headers: TunerHttpHeaders = {};
+	const userAgent = attrs["user-agent"] ?? attrs["http-user-agent"];
+	const referer =
+		attrs["referrer"] ?? attrs["referer"] ?? attrs["http-referrer"];
+	const origin = attrs["origin"] ?? attrs["http-origin"];
+	if (isSafeHeaderValue(userAgent)) headers.userAgent = userAgent;
+	if (isSafeHeaderValue(referer)) headers.referer = referer;
+	if (isSafeHeaderValue(origin)) headers.origin = origin;
+	return headers;
+}
+
+/** Reject line breaks so playlist metadata cannot inject additional headers. */
+function isSafeHeaderValue(value: string | undefined): value is string {
+	return (
+		value !== undefined &&
+		value.length > 0 &&
+		value.length <= MAX_HEADER_VALUE_LENGTH &&
+		!/[\r\n]/.test(value)
+	);
+}
+
+/** Apply a supported EXTVLCOPT directive to the pending entry. */
+function applyHeaderDirective(
+	line: string,
+	headers: TunerHttpHeaders
+): boolean {
+	const match =
+		/^#EXTVLCOPT:(http-user-agent|http-referrer|http-origin)=(.*)$/i.exec(line);
+	if (!match) return false;
+	const key = match[1]?.toLowerCase();
+	const value = match[2]?.trim();
+	if (!isSafeHeaderValue(value)) return true;
+	if (key === "http-user-agent") headers.userAgent = value;
+	if (key === "http-referrer") headers.referer = value;
+	if (key === "http-origin") headers.origin = value;
+	return true;
+}
+
 /**
  * Parse a single line into either a directive or a URL. Empty lines and
  * comments (anything starting with `#` that isn't a recognised directive)
@@ -81,8 +140,11 @@ async function* iterateChannels(
 	lines: AsyncIterable<string>,
 	options: ParseM3uOptions
 ): AsyncGenerator<ParsedM3uChannel> {
-	let pendingExtinf: { attrs: Record<string, string>; title: string } | null =
-		null;
+	let pendingExtinf: {
+		attrs: Record<string, string>;
+		title: string;
+		httpHeaders: TunerHttpHeaders;
+	} | null = null;
 	let lineNumber = 0;
 	for await (const raw of lines) {
 		lineNumber += 1;
@@ -102,10 +164,19 @@ async function* iterateChannels(
 				pendingExtinf = null;
 				continue;
 			}
-			pendingExtinf = parsed;
+			pendingExtinf = {
+				...parsed,
+				httpHeaders: headersFromAttributes(parsed.attrs)
+			};
 			continue;
 		}
 		if (line.startsWith("#")) {
+			if (
+				pendingExtinf &&
+				applyHeaderDirective(line, pendingExtinf.httpHeaders)
+			) {
+				continue;
+			}
 			// Other directives (#EXTM3U, #EXTVLCOPT, #EXT-X-…) and comments are
 			// ignored; they don't pair with a URL on the next line.
 			continue;
@@ -130,6 +201,9 @@ async function* iterateChannels(
 		if (attrs["tvg-logo"]) channel.tvgLogo = attrs["tvg-logo"];
 		if (attrs["group-title"]) channel.groupTitle = attrs["group-title"];
 		if (attrs["channel-id"]) channel.channelId = attrs["channel-id"];
+		if (meta && Object.keys(meta.httpHeaders).length > 0) {
+			channel.httpHeaders = meta.httpHeaders;
+		}
 		yield channel;
 	}
 	if (pendingExtinf) {

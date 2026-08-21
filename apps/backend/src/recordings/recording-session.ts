@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { stat } from "node:fs/promises";
 
-import { parseFfmpegLine } from "../streaming/transcoder";
+import type { TunerHttpHeaders } from "@signalhaven/shared";
+
+import { httpInputArgs, parseFfmpegLine } from "../streaming/transcoder";
 
 /** Hooks for tests to swap out the ffmpeg invocation. */
 export interface RecordingRunner {
@@ -16,6 +18,8 @@ const DEFAULT_RUNNER: RecordingRunner = {
 export interface RecordingSessionOptions {
 	/** Upstream URL fed to ffmpeg as `-i`. */
 	upstreamUrl: string;
+	/** Provider-required request headers forwarded to FFmpeg. */
+	httpHeaders?: TunerHttpHeaders;
 	/** Absolute path to the output `.mkv` file. */
 	outputPath: string;
 	/** Hard cap on recording wall-clock duration in seconds (`-t`). */
@@ -45,6 +49,8 @@ export function buildRecordingFfmpegArgs(options: {
 	input: string;
 	output: string;
 	durationSeconds: number;
+	/** Provider-required request headers applied before `-i`. */
+	httpHeaders?: TunerHttpHeaders;
 }): string[] {
 	return [
 		"-hide_banner",
@@ -54,6 +60,7 @@ export function buildRecordingFfmpegArgs(options: {
 		"-y",
 		"-fflags",
 		"+genpts",
+		...httpInputArgs(options.httpHeaders),
 		"-i",
 		options.input,
 		"-t",
@@ -94,7 +101,8 @@ export class RecordingSession {
 		this.args = buildRecordingFfmpegArgs({
 			input: options.upstreamUrl,
 			output: options.outputPath,
-			durationSeconds: options.durationSeconds
+			durationSeconds: options.durationSeconds,
+			...(options.httpHeaders ? { httpHeaders: options.httpHeaders } : {})
 		});
 
 		this.process = this.runner.spawn(this.args);

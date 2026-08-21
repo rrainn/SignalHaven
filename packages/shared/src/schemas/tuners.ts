@@ -179,8 +179,33 @@ export const tunerStreamOptionsSchema = z.object({
 
 export type TunerStreamOptions = z.infer<typeof tunerStreamOptionsSchema>;
 
+const tunerHttpHeaderValueSchema = z
+	.string()
+	.min(1)
+	.max(4096)
+	.refine(
+		(value) => !/[\r\n]/.test(value),
+		"HTTP header values cannot contain newlines"
+	);
+
+/** Supported per-stream HTTP headers carried from provider metadata to FFmpeg. */
+export const tunerHttpHeadersSchema = z
+	.object({
+		/** Override FFmpeg's default user agent for protected IPTV endpoints. */
+		userAgent: tunerHttpHeaderValueSchema.optional(),
+		/** Supply the HTTP Referer expected by providers that validate embedding pages. */
+		referer: tunerHttpHeaderValueSchema.optional(),
+		/** Supply the request origin when a provider enforces origin checks. */
+		origin: tunerHttpHeaderValueSchema.optional()
+	})
+	.strict();
+
+export type TunerHttpHeaders = z.infer<typeof tunerHttpHeadersSchema>;
+
 export const tunerStreamUrlSchema = z.object({
-	url: z.string().url()
+	url: z.string().url(),
+	/** Provider-supplied request metadata required to open the stream. */
+	httpHeaders: tunerHttpHeadersSchema.optional()
 });
 
 export type TunerStreamUrl = z.infer<typeof tunerStreamUrlSchema>;

@@ -1456,6 +1456,7 @@ export class RecordingsService {
 		try {
 			session = new RecordingSession({
 				upstreamUrl: source.upstreamUrl,
+				...(source.httpHeaders ? { httpHeaders: source.httpHeaders } : {}),
 				outputPath,
 				durationSeconds: plannedDurationSeconds,
 				...(this.runner ? { runner: this.runner } : {})

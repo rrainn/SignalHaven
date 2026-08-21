@@ -157,8 +157,8 @@ function deriveChannelNumber(index: number): string {
 interface CachedLineup {
 	expiresAt: number;
 	channels: TunerLineupChannel[];
-	/** Maps channelId -> source URL so getStreamUrl() can resolve without re-fetching. */
-	urls: Map<string, string>;
+	/** Maps channelId -> complete stream request so playback retains entry headers. */
+	streams: Map<string, TunerStreamUrl>;
 	/** Maps channelId -> logo URL for the proxy endpoint. */
 	logos: Map<string, string>;
 }
@@ -178,7 +178,7 @@ interface CachedLogo {
  *   * Extended M3U attributes (`tvg-id`, `tvg-logo`, `tvg-name`, `group-title`)
  *     are parsed and surfaced on the returned lineup.
  *   * `getStreamUrl()` returns the channel URL exactly as it appears in the
- *     playlist – no redirection, no rewriting.
+ *     playlist and carries supported per-entry HTTP metadata to FFmpeg.
  *   * `supportsTranscoding=true`: upstream HLS/TS streams are transcoded by
  *     FFmpeg further down the pipeline.
  *   * The playlist body is consumed as a stream (`linesFromChunks` +
@@ -231,11 +231,14 @@ export class IptvProvider implements TunerProvider {
 		_options?: TunerStreamOptions
 	): Promise<TunerStreamUrl> {
 		const cached = await this.ensureLineup();
-		const url = cached.urls.get(channelId);
-		if (!url) {
+		const stream = cached.streams.get(channelId);
+		if (!stream) {
 			throw new Error(`Unknown IPTV channel id: ${channelId}`);
 		}
-		return { url };
+		return {
+			...stream,
+			...(stream.httpHeaders ? { httpHeaders: { ...stream.httpHeaders } } : {})
+		};
 	}
 
 	async getStatus(): Promise<TunerStatus> {
@@ -372,7 +375,7 @@ export class IptvProvider implements TunerProvider {
 	private async fetchAndParseLineup(now: number): Promise<CachedLineup> {
 		const lines = await this.openPlaylistLines();
 		const channels: TunerLineupChannel[] = [];
-		const urls = new Map<string, string>();
+		const streams = new Map<string, TunerStreamUrl>();
 		const logos = new Map<string, string>();
 		const seenIds = new Set<string>();
 		let index = 0;
@@ -406,14 +409,17 @@ export class IptvProvider implements TunerProvider {
 				logos.set(id, entry.tvgLogo);
 			}
 			channels.push(channel);
-			urls.set(id, entry.url);
+			streams.set(id, {
+				url: entry.url,
+				...(entry.httpHeaders ? { httpHeaders: { ...entry.httpHeaders } } : {})
+			});
 			index += 1;
 		}
 
 		return {
 			expiresAt: now + this.options.lineupTtlMs,
 			channels,
-			urls,
+			streams,
 			logos
 		};
 	}

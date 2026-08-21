@@ -94,7 +94,8 @@ export class DefaultChannelStreamResolver implements StreamSourceResolver {
 					sourceChannelId: row.id,
 					providerId: row.tunerId,
 					providerChannelId,
-					upstreamUrl: stream.url
+					upstreamUrl: stream.url,
+					...(stream.httpHeaders ? { httpHeaders: stream.httpHeaders } : {})
 				};
 			})
 		);

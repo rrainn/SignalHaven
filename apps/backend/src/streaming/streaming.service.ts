@@ -1,6 +1,7 @@
 import type {
 	HwaccelKind,
 	TranscodeProfile,
+	TunerHttpHeaders,
 	TunerLease,
 	TunerLeasePurpose
 } from "@signalhaven/shared";
@@ -37,6 +38,8 @@ export interface ResolvedStreamSource {
 	providerChannelId: string;
 	/** Upstream URL fed to ffmpeg. */
 	upstreamUrl: string;
+	/** Provider-required HTTP request headers retained with the upstream URL. */
+	httpHeaders?: TunerHttpHeaders;
 	/** Optional probe data for the upstream's elementary streams. */
 	inputCodecs?: InputCodecInfo;
 	/**
@@ -341,6 +344,7 @@ export class StreamingService {
 				sessionId: key,
 				channelId,
 				upstreamUrl: source.upstreamUrl,
+				...(source.httpHeaders ? { httpHeaders: source.httpHeaders } : {}),
 				lease,
 				releaseLease: () => this.allocator.release(lease.leaseId),
 				lingerMs: timeShift.enabled ? timeShift.idleGraceMs : this.lingerMs,

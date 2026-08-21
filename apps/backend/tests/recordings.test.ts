@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EventBus, type PublishedEvent } from "../src/events/event-bus";
+import { buildRecordingFfmpegArgs } from "../src/recordings/recording-session";
 import {
 	RecordingsService,
 	RECORDING_EVENT,
@@ -35,6 +36,26 @@ function captureEvents(bus: EventBus): PublishedEvent[] {
 	});
 	return events;
 }
+
+test("recording FFmpeg inputs receive per-entry HTTP headers", () => {
+	const args = buildRecordingFfmpegArgs({
+		input: "https://stream.example/protected.ts",
+		output: "/tmp/protected.mkv",
+		durationSeconds: 60,
+		httpHeaders: {
+			userAgent: "SignalHaven Test Client",
+			referer: "https://guide.example/watch"
+		}
+	});
+	const inputIndex = args.indexOf("-i");
+
+	assert.deepEqual(args.slice(inputIndex - 4, inputIndex), [
+		"-user_agent",
+		"SignalHaven Test Client",
+		"-referer",
+		"https://guide.example/watch"
+	]);
+});
 
 /**
  * In-memory stand-in for `RecordingsRepository`. Mirrors the subset of

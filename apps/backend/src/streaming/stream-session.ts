@@ -14,6 +14,7 @@ import { basename, join, resolve, sep } from "node:path";
 import type {
 	HwaccelKind,
 	TranscodeProfile,
+	TunerHttpHeaders,
 	TunerLease
 } from "@signalhaven/shared";
 
@@ -47,6 +48,19 @@ export class AdaptiveEncoderCapacityError extends Error {
 	}
 }
 
+/** A live source failed before FFmpeg produced a playable HLS manifest. */
+export class UpstreamStreamError extends Error {
+	readonly category: "input_unreachable" | "invalid_data" | "startup_timeout";
+
+	constructor(
+		category: "input_unreachable" | "invalid_data" | "startup_timeout"
+	) {
+		super("Upstream stream unavailable");
+		this.name = "UpstreamStreamError";
+		this.category = category;
+	}
+}
+
 /**
  * Build the FFmpeg arguments used to transcode/remux the upstream URL into a
  * low-latency-friendly HLS playlist + MPEG-TS segments in `outDir`.
@@ -63,6 +77,7 @@ export function buildFfmpegArgs(
 		profile?: TranscodeProfile;
 		hwaccel?: HwaccelKind | null;
 		inputCodecs?: InputCodecInfo;
+		httpHeaders?: TunerHttpHeaders;
 		captionsEnabled?: boolean;
 		timeShiftWindowSeconds?: number;
 	} = {}
@@ -73,6 +88,7 @@ export function buildFfmpegArgs(
 		profile: options.profile ?? "direct",
 		hwaccel: options.hwaccel ?? null,
 		captionsEnabled: options.captionsEnabled ?? false,
+		...(options.httpHeaders ? { httpHeaders: options.httpHeaders } : {}),
 		...(options.timeShiftWindowSeconds !== undefined
 			? { timeShiftWindowSeconds: options.timeShiftWindowSeconds }
 			: {}),
@@ -120,6 +136,8 @@ export interface StreamSessionOptions {
 	channelId?: string;
 	/** Upstream URL fed to ffmpeg. */
 	upstreamUrl: string;
+	/** Provider-required request headers forwarded to FFmpeg. */
+	httpHeaders?: TunerHttpHeaders;
 	/** Tuner lease this session owns; released on tear-down. */
 	lease: TunerLease;
 	/** Hook invoked during tear-down so the manager can release the lease. */
@@ -200,6 +218,7 @@ export class StreamSession {
 	readonly captionsEnabled: boolean;
 
 	private readonly upstreamUrl: string;
+	private readonly httpHeaders: TunerHttpHeaders | undefined;
 	private readonly channelId: string;
 	private readonly releaseLease: () => void;
 	private readonly lingerMs: number;
@@ -280,6 +299,7 @@ export class StreamSession {
 		this.sessionId = options.sessionId;
 		this.channelId = options.channelId ?? options.sessionId;
 		this.upstreamUrl = options.upstreamUrl;
+		this.httpHeaders = options.httpHeaders;
 		this.lease = options.lease;
 		this.releaseLease = options.releaseLease;
 		this.lingerMs = options.lingerMs;
@@ -356,6 +376,7 @@ export class StreamSession {
 			this.profile === "auto"
 				? buildAdaptiveFfmpegArgs({
 						input: this.upstreamUrl,
+						...(this.httpHeaders ? { httpHeaders: this.httpHeaders } : {}),
 						outDir: this.outDir,
 						hwaccel: this.hwaccel,
 						...(this.timeShiftWindowSeconds !== undefined
@@ -365,6 +386,7 @@ export class StreamSession {
 					})
 				: buildFfmpegArgs(this.upstreamUrl, this.outDir, {
 						profile: this.profile,
+						...(this.httpHeaders ? { httpHeaders: this.httpHeaders } : {}),
 						hwaccel: this.hwaccel,
 						captionsEnabled: this.captionsEnabled,
 						...(this.timeShiftWindowSeconds !== undefined
@@ -983,11 +1005,12 @@ export class StreamSession {
 				// Not ready yet.
 			}
 			if (Date.now() - start > this.startTimeoutMs) {
-				const err = new Error(
+				const err =
 					this.profile === "auto" && !this.adaptiveCapacityPassed
-						? "Adaptive encoder failed the sustained 1.25x capacity check"
-						: "Timed out waiting for ffmpeg HLS output"
-				);
+						? new Error(
+								"Adaptive encoder failed the sustained 1.25x capacity check"
+							)
+						: new UpstreamStreamError("startup_timeout");
 				if (this.profile === "auto" && !this.adaptiveCapacityPassed) {
 					this.lastError = {
 						category: "encoder_capacity",
@@ -1056,13 +1079,24 @@ export class StreamSession {
 			clearTimeout(this.lingerTimer);
 			this.lingerTimer = undefined;
 		}
-		if (error && this.rejectReady) {
-			this.rejectReady(error);
+		const reportedError = error ? this.classifyStartupError(error) : undefined;
+		if (reportedError && this.rejectReady) {
+			this.rejectReady(reportedError);
 		}
-		if (error && this.state === "starting" && !this.stopRequested) {
-			this.logStartupFailure(exitCode, signal, error);
+		if (reportedError && this.state === "starting" && !this.stopRequested) {
+			this.logStartupFailure(exitCode, signal, error ?? reportedError);
 		}
-		this.finalize(error);
+		this.finalize(reportedError);
+	}
+
+	/** Keep infrastructure failures distinct while making source failures actionable. */
+	private classifyStartupError(error: Error): Error {
+		if (this.state !== "starting") return error;
+		const category = this.lastDiagnostic?.category;
+		if (category === "input_unreachable" || category === "invalid_data") {
+			return new UpstreamStreamError(category);
+		}
+		return error;
 	}
 
 	/** Emit the single durable summary required to diagnose startup failures. */

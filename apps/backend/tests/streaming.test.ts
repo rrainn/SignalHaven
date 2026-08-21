@@ -1040,7 +1040,10 @@ test("failed startup writes one sanitized structured log without subscribers", a
 			}
 		});
 
-		await assert.rejects(streaming.attach(channelId), /ffmpeg exited/);
+		await assert.rejects(
+			streaming.attach(channelId),
+			/Upstream stream unavailable/
+		);
 		assert.equal(logs.length, 1, "one terminal summary avoids per-line spam");
 		assert.equal(logs[0]?.message, "Stream session failed to start");
 		assert.deepEqual(logs[0]?.context, {
