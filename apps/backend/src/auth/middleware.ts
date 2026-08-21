@@ -246,20 +246,34 @@ export function setSessionCookie(
 	expiresAt: Date,
 	secure: boolean
 ): void {
+	// Expire the former API-only scope before issuing the document-wide cookie.
+	clearSessionCookieAtPath(res, secure, "/api/v1");
 	res.cookie(SESSION_COOKIE_NAME, token, {
 		httpOnly: true,
 		sameSite: "strict",
 		secure,
-		path: "/api/v1",
+		// Next.js authenticates document requests before rendering protected pages.
+		path: "/",
 		expires: expiresAt
 	});
 }
 
 export function clearSessionCookie(res: Response, secure: boolean): void {
+	clearSessionCookieAtPath(res, secure, "/");
+	// Older clients may still retain the scope used before page authentication.
+	clearSessionCookieAtPath(res, secure, "/api/v1");
+}
+
+/** Clears one exact cookie scope because browsers key cookies by name and path. */
+function clearSessionCookieAtPath(
+	res: Response,
+	secure: boolean,
+	path: string
+): void {
 	res.clearCookie(SESSION_COOKIE_NAME, {
 		httpOnly: true,
 		sameSite: "strict",
 		secure,
-		path: "/api/v1"
+		path
 	});
 }

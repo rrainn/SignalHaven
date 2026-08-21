@@ -610,7 +610,27 @@ test("session cookies follow the actual LAN or trusted-proxy HTTPS request", asy
 		.set("Origin", "http://dvr.local")
 		.send(payload);
 	assert.equal(http.status, 200);
-	assert.doesNotMatch(http.headers["set-cookie"]?.[0] ?? "", /; Secure/i);
+	const setCookieHeader = http.headers["set-cookie"];
+	const httpCookies = Array.isArray(setCookieHeader)
+		? setCookieHeader
+		: setCookieHeader
+			? [setCookieHeader]
+			: [];
+	const httpCookie = httpCookies.find((cookie) =>
+		/; Path=\/(?:;|$)/i.test(cookie)
+	);
+	assert.ok(httpCookie);
+	assert.doesNotMatch(httpCookie, /; Secure/i);
+	// Server-rendered page requests also need the session to preserve sign-in.
+	assert.match(httpCookie, /; Path=\/(?:;|$)/i);
+	// Remove the old API-only cookie so duplicate token names cannot survive migration.
+	assert.ok(
+		httpCookies.some(
+			(cookie) =>
+				/; Path=\/api\/v1(?:;|$)/i.test(cookie) &&
+				/Expires=Thu, 01 Jan 1970 00:00:00 GMT/i.test(cookie)
+		)
+	);
 	const wrongScheme = await request(app)
 		.post("/auth/login")
 		.set("Host", "dvr.local")
