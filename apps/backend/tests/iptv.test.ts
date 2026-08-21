@@ -237,6 +237,37 @@ test("parseM3uText handles CRLF line endings", async () => {
 	assert.equal(channels[0]?.title, "A");
 });
 
+test("parseM3uText keeps quoted commas and per-entry HTTP headers", async () => {
+	const text = `#EXTM3U
+#EXTINF:-1 user-agent="Mozilla/5.0 (Macintosh, Intel Mac OS X)" referrer="https://guide.example/watch",Protected Channel
+http://stream.example/protected.m3u8
+#EXTINF:-1,Directive Headers
+#EXTVLCOPT:http-user-agent=SignalHaven Test Client
+#EXTVLCOPT:http-referrer=https://guide.example/directive
+http://stream.example/directive.m3u8
+`;
+	const channels = await parseM3uText(text);
+
+	assert.deepEqual(channels, [
+		{
+			url: "http://stream.example/protected.m3u8",
+			title: "Protected Channel",
+			httpHeaders: {
+				userAgent: "Mozilla/5.0 (Macintosh, Intel Mac OS X)",
+				referer: "https://guide.example/watch"
+			}
+		},
+		{
+			url: "http://stream.example/directive.m3u8",
+			title: "Directive Headers",
+			httpHeaders: {
+				userAgent: "SignalHaven Test Client",
+				referer: "https://guide.example/directive"
+			}
+		}
+	]);
+});
+
 // -------------------------------------------------------------- provider ---
 
 test("IptvProvider.getCapabilities reports supportsTranscoding=true", async () => {
@@ -246,6 +277,28 @@ test("IptvProvider.getCapabilities reports supportsTranscoding=true", async () =
 	assert.deepEqual(provider.getCapabilities(), {
 		supportsTranscoding: true,
 		concurrentStreams: 4
+	});
+});
+
+test("IptvProvider.getStreamUrl preserves entry HTTP headers", async () => {
+	const url = "http://playlist.example/protected.m3u";
+	const playlist = `#EXTM3U
+#EXTINF:-1 user-agent="SignalHaven Test Client" referrer="https://guide.example/watch",Protected
+http://stream.example/protected.ts
+`;
+	const { fetch } = makeFetch({
+		[url]: () => textBodyResponse(playlist)
+	});
+	const provider = new IptvProvider(makeRow(url), { fetch });
+	const [channel] = await provider.getLineup();
+
+	assert.ok(channel);
+	assert.deepEqual(await provider.getStreamUrl(channel.channelId), {
+		url: "http://stream.example/protected.ts",
+		httpHeaders: {
+			userAgent: "SignalHaven Test Client",
+			referer: "https://guide.example/watch"
+		}
 	});
 });
 

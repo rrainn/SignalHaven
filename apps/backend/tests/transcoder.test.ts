@@ -51,6 +51,25 @@ test("adaptive output uses one ingest and a complete aligned quality ladder", ()
 	assert.match(args[args.indexOf("-hls_segment_filename") + 1] ?? "", /\.m4s$/);
 });
 
+test("live FFmpeg inputs receive HTTP headers before the input URL", () => {
+	const args = buildAdaptiveFfmpegArgs({
+		input: "https://stream.example/protected.m3u8",
+		outDir: OUT_DIR,
+		httpHeaders: {
+			userAgent: "SignalHaven Test Client",
+			referer: "https://guide.example/watch"
+		}
+	});
+	const inputIndex = args.indexOf("-i");
+
+	assert.deepEqual(args.slice(inputIndex - 4, inputIndex), [
+		"-user_agent",
+		"SignalHaven Test Client",
+		"-referer",
+		"https://guide.example/watch"
+	]);
+});
+
 test("adaptive output omits duplicate upscale rungs when source size is known", () => {
 	const args = buildAdaptiveFfmpegArgs({
 		input: INPUT,

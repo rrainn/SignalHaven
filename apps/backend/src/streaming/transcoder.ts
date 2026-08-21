@@ -1,6 +1,10 @@
 import { join } from "node:path";
 
-import type { HwaccelKind, TranscodeProfile } from "@signalhaven/shared";
+import type {
+	HwaccelKind,
+	TranscodeProfile,
+	TunerHttpHeaders
+} from "@signalhaven/shared";
 
 /**
  * Browser-friendly h264 profile/level pairs we can stream-copy. Anything
@@ -93,6 +97,8 @@ const PROFILE_TARGETS: Record<
 export interface BuildFfmpegArgsOptions {
 	/** Upstream URL fed to ffmpeg as `-i`. */
 	input: string;
+	/** Provider-required HTTP request metadata applied before `-i`. */
+	httpHeaders?: TunerHttpHeaders;
 	/** Directory to write playlist + segments into. */
 	outDir: string;
 	/** Profile selected by the user / channel. Defaults to `direct`. */
@@ -125,6 +131,8 @@ export interface BuildFfmpegArgsOptions {
 export interface BuildAdaptiveFfmpegArgsOptions {
 	/** One acquired upstream shared by every rendition in the process. */
 	input: string;
+	/** Provider-required HTTP request metadata applied before `-i`. */
+	httpHeaders?: TunerHttpHeaders;
 	/** Root containing the master and rendition subdirectories. */
 	outDir: string;
 	/** Configured encoder backend used by the full ladder capacity check. */
@@ -233,6 +241,7 @@ export function buildAdaptiveFfmpegArgs(
 		...(options.inputSeekSeconds && options.inputSeekSeconds > 0
 			? ["-ss", String(options.inputSeekSeconds)]
 			: []),
+		...httpInputArgs(options.httpHeaders),
 		"-i",
 		options.input,
 		"-filter_complex",
@@ -292,6 +301,33 @@ function reconnectInputArgs(input: string): string[] {
 				"2"
 			]
 		: [];
+}
+
+/** Build shell-free FFmpeg protocol options for the supported HTTP headers. */
+export function httpInputArgs(headers?: TunerHttpHeaders): string[] {
+	if (!headers) return [];
+	const args: string[] = [];
+	if (isSafeHttpHeader(headers.origin)) {
+		// FFmpeg has no dedicated origin option, so use its literal header input.
+		args.push("-headers", `Origin: ${headers.origin}\r\n`);
+	}
+	if (isSafeHttpHeader(headers.userAgent)) {
+		args.push("-user_agent", headers.userAgent);
+	}
+	if (isSafeHttpHeader(headers.referer)) {
+		args.push("-referer", headers.referer);
+	}
+	return args;
+}
+
+/** Defense in depth for stream metadata supplied by external playlists. */
+function isSafeHttpHeader(value: string | undefined): value is string {
+	return (
+		value !== undefined &&
+		value.length > 0 &&
+		value.length <= 4096 &&
+		!/[\r\n]/.test(value)
+	);
 }
 
 /**
@@ -363,6 +399,7 @@ export function buildFfmpegArgs(options: BuildFfmpegArgsOptions): string[] {
 		...inputSeek,
 		...(outputMode === "live" ? reconnectInputArgs(options.input) : []),
 		...(outputMode === "live" ? ["-thread_queue_size", "512"] : []),
+		...httpInputArgs(options.httpHeaders),
 		"-i",
 		options.input,
 		...codec,

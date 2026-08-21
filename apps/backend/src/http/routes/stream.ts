@@ -4,7 +4,8 @@ import { z } from "zod";
 
 import {
 	AdaptiveEncoderCapacityError,
-	MAX_SEGMENT_NAME_LENGTH
+	MAX_SEGMENT_NAME_LENGTH,
+	UpstreamStreamError
 } from "../../streaming/stream-session";
 import type { PlaybackProfile } from "../../streaming/stream-session";
 import {
@@ -31,8 +32,7 @@ const viewerReleaseParamSchema = z.object({
 	viewerId: z.string().uuid()
 });
 
-const segmentParamSchema = z.object({
-	channelId: z.string().min(1).max(128),
+const segmentParamSchema = channelIdParamSchema.extend({
 	segment: z
 		.string()
 		.min(1)
@@ -40,8 +40,16 @@ const segmentParamSchema = z.object({
 		.regex(/^[A-Za-z0-9._-]+$/, "Invalid segment name")
 });
 
-const renditionParamSchema = segmentParamSchema.extend({
+const renditionParamSchema = channelIdParamSchema.extend({
 	rendition: z.enum(["1080p", "720p", "480p"])
+});
+
+const renditionSegmentParamSchema = renditionParamSchema.extend({
+	segment: z
+		.string()
+		.min(1)
+		.max(MAX_SEGMENT_NAME_LENGTH)
+		.regex(/^[A-Za-z0-9._-]+$/, "Invalid segment name")
 });
 
 /**
@@ -246,7 +254,10 @@ export function createStreamRouter(
 
 	router.get(
 		"/stream/:channelId/variants/:rendition/segments/:segment",
-		validate({ params: renditionParamSchema, query: profileQuerySchema }),
+		validate({
+			params: renditionSegmentParamSchema,
+			query: profileQuerySchema
+		}),
 		async (req, res, next) => {
 			const channelId = req.params["channelId"] as string;
 			const rendition = req.params["rendition"] as string;
@@ -375,6 +386,15 @@ function translate(err: unknown, role?: "admin" | "user"): unknown {
 			role === "admin"
 				? err.message
 				: "Adaptive streaming is unavailable. Choose a manual quality profile or ask an administrator for help."
+		);
+	}
+	if (err instanceof UpstreamStreamError) {
+		return new HttpError(
+			502,
+			"upstream_stream_unavailable",
+			"Upstream stream unavailable",
+			undefined,
+			true
 		);
 	}
 	if (err instanceof TunerUnavailableError) {
