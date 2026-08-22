@@ -1,6 +1,10 @@
 "use client";
 
-import type { EpgGridProgram } from "@signalhaven/shared";
+import type {
+	ChannelDiagnostics,
+	ChannelListItem,
+	EpgGridProgram
+} from "@signalhaven/shared";
 import { CircleDot, Repeat, Star, XCircle } from "lucide-react";
 
 import { RecordingStatusBadge } from "../_recordings/RecordingStatusBadge";
@@ -10,8 +14,11 @@ import { cn } from "../_ui/cn";
 import { IconButton } from "../_ui/IconButton";
 import { Spinner } from "../_ui/Spinner";
 import { formatTimeLabel } from "../_guide/time";
+import { ChannelInfoMenu } from "./ChannelInfoMenu";
 
 export interface NowNextPanelProps {
+	/** Full channel metadata is unavailable only while the watch page boots. */
+	channel: ChannelListItem | null;
 	channelName: string;
 	channelNumber: string;
 	/** Whether the current channel is in the user's favorites. */
@@ -32,6 +39,10 @@ export interface NowNextPanelProps {
 	/** Inline "Record series" handler. */
 	onRecordSeries: (program: EpgGridProgram) => void;
 	pendingAction?: ProgramRecordingAction | undefined;
+	/** Optional diagnostics loader used by deterministic previews and tests. */
+	loadChannelDiagnostics?:
+		| ((channelId: string) => Promise<ChannelDiagnostics>)
+		| undefined;
 }
 
 /**
@@ -41,6 +52,7 @@ export interface NowNextPanelProps {
  */
 export function NowNextPanel(props: NowNextPanelProps) {
 	const {
+		channel,
 		channelName,
 		channelNumber,
 		isFavorite,
@@ -52,7 +64,8 @@ export function NowNextPanel(props: NowNextPanelProps) {
 		onRecord,
 		onCancel,
 		onRecordSeries,
-		pendingAction
+		pendingAction,
+		loadChannelDiagnostics
 	} = props;
 
 	const activeRecording =
@@ -92,6 +105,14 @@ export function NowNextPanel(props: NowNextPanelProps) {
 							)}
 						/>
 					</IconButton>
+					{channel ? (
+						<ChannelInfoMenu
+							channel={channel}
+							{...(loadChannelDiagnostics
+								? { loadDiagnostics: loadChannelDiagnostics }
+								: {})}
+						/>
+					) : null}
 				</div>
 				{now ? (
 					<span className="text-xs text-secondary">

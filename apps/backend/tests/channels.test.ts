@@ -138,7 +138,7 @@ function buildMatcher() {
 }
 
 /** Build an Express app wired to the testcontainer database. */
-function buildApp() {
+function buildApp(authentication = createTestAuthentication()) {
 	const bus = getEventBus();
 	const tunersService = new TunersService({
 		repository: new TunersRepository(db),
@@ -147,7 +147,7 @@ function buildApp() {
 	});
 	const epgMatcherService = buildMatcher();
 	return createApp({
-		authentication: createTestAuthentication(),
+		authentication,
 		tunersService,
 		epgMatcherService,
 		channelsRepository: new ChannelsRepository(db)
@@ -322,6 +322,54 @@ test("GET /api/v1/channels returns channels in sortOrder ascending order", async
 	assert.equal(res.body.items[0].name, "Alpha");
 	assert.equal(res.body.items[1].name, "Beta");
 	assert.equal(res.body.items[2].name, "Gamma");
+});
+
+test("GET /api/v1/channels/:id/diagnostics resolves the original provider stream URL", async () => {
+	const tuner = await new TunersRepository(db).create({
+		kind: "hls",
+		name: "Direct HLS",
+		config: {
+			url: "https://streams.example.test/live/news.m3u8?token=diagnostic",
+			channelName: "Provider News"
+		}
+	});
+	const channel = await seedChannel(tuner.id, {
+		name: "Displayed News",
+		number: "42",
+		sortOrder: 7,
+		tvgId: "news.example"
+	});
+
+	const response = await request(buildApp()).get(
+		`/api/v1/channels/${channel.id}/diagnostics`
+	);
+
+	assert.equal(response.status, 200);
+	assert.equal(response.headers["cache-control"], "private, no-store");
+	assert.equal(response.body.channel.name, "Displayed News");
+	assert.equal(response.body.channel.number, "42");
+	assert.equal(response.body.sources[0].tunerName, "Direct HLS");
+	assert.equal(response.body.sources[0].resolvedProviderChannelId, "1");
+	assert.equal(
+		response.body.sources[0].streamUrl,
+		"https://streams.example.test/live/news.m3u8?token=diagnostic"
+	);
+});
+
+test("GET /api/v1/channels/:id/diagnostics is restricted to administrators", async () => {
+	const tuner = await seedTuner();
+	const channel = await seedChannel(tuner.id);
+	const standardUserAuthentication = createTestAuthentication({
+		id: randomUUID(),
+		username: "viewer",
+		role: "user"
+	});
+
+	const response = await request(buildApp(standardUserAuthentication)).get(
+		`/api/v1/channels/${channel.id}/diagnostics`
+	);
+
+	assert.equal(response.status, 403);
 });
 
 test("POST /api/v1/channels/merge groups sources under the primary channel", async () => {

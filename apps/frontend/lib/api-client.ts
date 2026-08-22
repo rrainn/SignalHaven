@@ -5,6 +5,7 @@ import {
 	authSetupSchema,
 	authStatusSchema,
 	channelListSchema,
+	channelDiagnosticsSchema,
 	channelMergeSchema,
 	channelQualitySchema,
 	comskipWorkListSchema,
@@ -55,6 +56,7 @@ import {
 	type AuthSetup,
 	type AuthStatus,
 	type ChannelList,
+	type ChannelDiagnostics,
 	type ChannelMerge,
 	type ChannelQuality,
 	type ComskipWorkList,
@@ -414,6 +416,18 @@ export function getChannelQuality(
 		`/api/v1/channels/${encodeURIComponent(id)}/quality`,
 		channelQualitySchema,
 		init
+	);
+}
+
+/** Resolve administrator-only channel and upstream source diagnostics. */
+export function getChannelDiagnostics(
+	id: string,
+	init?: ApiRequestInit
+): Promise<ChannelDiagnostics> {
+	return apiRequest(
+		`/api/v1/channels/${encodeURIComponent(id)}/diagnostics`,
+		channelDiagnosticsSchema,
+		{ ...init, cache: "no-store" }
 	);
 }
 

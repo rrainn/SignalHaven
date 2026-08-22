@@ -6,6 +6,7 @@ import {
 	authStatusSchema,
 	channelEpgMappingPutSchema,
 	channelEpgMappingSchema,
+	channelDiagnosticsSchema,
 	channelListSchema,
 	channelMergeSchema,
 	epgCandidatesResponseSchema,
@@ -160,6 +161,10 @@ const ChannelEpgMappingPut = registry.register(
 	channelEpgMappingPutSchema
 );
 const ChannelList = registry.register("ChannelList", channelListSchema);
+const ChannelDiagnostics = registry.register(
+	"ChannelDiagnostics",
+	channelDiagnosticsSchema
+);
 const ChannelMerge = registry.register("ChannelMerge", channelMergeSchema);
 const Recording = registry.register("Recording", recordingSchema);
 const RecordingCreate = registry.register(
@@ -962,6 +967,30 @@ registry.registerPath({
 		},
 		404: {
 			description: "Channel or logo not found.",
+			content: { "application/json": { schema: ErrorResponse } }
+		}
+	}
+});
+
+registry.registerPath({
+	method: "get",
+	path: "/api/v1/channels/{id}/diagnostics",
+	summary: "Resolve detailed channel source diagnostics",
+	description:
+		"Administrator-only, no-store view of persisted channel metadata and the original upstream URL resolved through the live playback path. URLs and request headers may contain credentials.",
+	tags: ["channels"],
+	request: { params: z.object({ id: z.string().uuid() }) },
+	responses: {
+		200: {
+			description: "Logical channel and resolved physical sources.",
+			content: { "application/json": { schema: ChannelDiagnostics } }
+		},
+		403: {
+			description: "Administrator access is required.",
+			content: { "application/json": { schema: ErrorResponse } }
+		},
+		404: {
+			description: "Channel not found.",
 			content: { "application/json": { schema: ErrorResponse } }
 		}
 	}
@@ -1819,6 +1848,7 @@ export {
 	EpgCandidatesResponse,
 	ChannelEpgMapping,
 	ChannelEpgMappingPut,
+	ChannelDiagnostics,
 	ChannelList,
 	ChannelMerge,
 	Recording,

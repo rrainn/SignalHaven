@@ -187,6 +187,45 @@ const server = createServer((req, res) => {
 			"application/vnd.apple.mpegurl; charset=utf-8"
 		);
 	}
+	const diagnosticChannel = channels.find(
+		(channel) => path === `/api/v1/channels/${channel.id}/diagnostics`
+	);
+	if (diagnosticChannel) {
+		// Keep the production watch diagnostics interactive in visual smoke tests.
+		return send(res, 200, {
+			channel: {
+				id: diagnosticChannel.id,
+				number: diagnosticChannel.number,
+				name: diagnosticChannel.name,
+				logoUrl: null,
+				tvgId: diagnosticChannel.tvgId,
+				enabled: diagnosticChannel.enabled,
+				sortOrder: diagnosticChannel.sortOrder,
+				mappedEpgChannelId: null
+			},
+			sources: [
+				{
+					id: diagnosticChannel.id,
+					tunerId: TUNER_ID,
+					tunerName: "Demo tuner",
+					tunerKind: "hdhomerun",
+					number: diagnosticChannel.number,
+					name: diagnosticChannel.name,
+					logoUrl: null,
+					tvgId: diagnosticChannel.tvgId,
+					enabled: true,
+					status: "active",
+					priority: 0,
+					preferred: true,
+					storedProviderChannelId: diagnosticChannel.number,
+					resolvedProviderChannelId: diagnosticChannel.number,
+					streamUrl: `http://192.168.1.10:5004/auto/v${diagnosticChannel.number}`,
+					error: null
+				}
+			],
+			checkedAt: new Date().toISOString()
+		});
+	}
 
 	switch (path) {
 		case "/api/v1/health":
