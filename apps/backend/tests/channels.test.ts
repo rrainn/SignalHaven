@@ -349,7 +349,9 @@ test("GET /api/v1/channels/:id/diagnostics resolves the original provider stream
 	assert.equal(response.body.channel.name, "Displayed News");
 	assert.equal(response.body.channel.number, "42");
 	assert.equal(response.body.sources[0].tunerName, "Direct HLS");
-	assert.equal(response.body.sources[0].resolvedProviderChannelId, "1");
+	// Diagnostics must report the same fallback identifier passed to playback
+	// when a legacy row has no stored provider channel ID or lineup match.
+	assert.equal(response.body.sources[0].resolvedProviderChannelId, "42");
 	assert.equal(
 		response.body.sources[0].streamUrl,
 		"https://streams.example.test/live/news.m3u8?token=diagnostic"
