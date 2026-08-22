@@ -317,8 +317,8 @@ interface AirPlayAvailabilityEvent extends Event {
 
 /**
  * Build the master playlist URL for a channel; respects the optional
- * `quality` pin by appending `?profile=<profile>`. `auto` requests the
- * multivariant graph so hls.js can change renditions before buffer exhaustion.
+ * `quality` pin by appending `?profile=<profile>`. `auto` retains the proven
+ * single-stream browser conversion; explicit quality choices remain available.
  */
 function buildSrc(
 	channelId: string,
@@ -326,7 +326,7 @@ function buildSrc(
 	viewerId?: string
 ): string {
 	const base = `/api/v1/stream/${encodeURIComponent(channelId)}/master.m3u8`;
-	const profile = !quality || quality === "auto" ? "auto" : quality;
+	const profile = !quality || quality === "auto" ? "original-quality" : quality;
 	const search = new URLSearchParams({ profile });
 	if (viewerId) {
 		search.set("viewerId", viewerId);
@@ -378,7 +378,8 @@ function buildViewerReleaseUrl(
 	quality: PlayerQuality,
 	viewerId: string
 ): string {
-	const query = new URLSearchParams({ profile: quality });
+	const profile = quality === "auto" ? "original-quality" : quality;
+	const query = new URLSearchParams({ profile });
 	return `/api/v1/stream/${encodeURIComponent(channelId)}/viewers/${encodeURIComponent(viewerId)}/release?${query.toString()}`;
 }
 
