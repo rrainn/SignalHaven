@@ -2,6 +2,7 @@
 
 import type {
 	ChannelListItem,
+	ChannelDiagnostics,
 	ChannelsSettings,
 	EpgGrid,
 	EpgGridProgram,
@@ -92,6 +93,10 @@ export interface WatchPageProps {
 		| undefined;
 	/** Disable live subscriptions, primarily for deterministic tests. */
 	liveUpdates?: boolean | undefined;
+	/** Optional diagnostics seam used by isolated previews and tests. */
+	loadChannelDiagnostics?:
+		| ((channelId: string) => Promise<ChannelDiagnostics>)
+		| undefined;
 }
 
 const DEFAULT_FAVORITES: readonly string[] = [];
@@ -134,7 +139,8 @@ export function WatchPage(props: WatchPageProps) {
 		onRecord,
 		onCancel,
 		onRecordSeries,
-		liveUpdates
+		liveUpdates,
+		loadChannelDiagnostics
 	} = props;
 
 	const useFixture = Boolean(initialChannels);
@@ -485,6 +491,7 @@ export function WatchPage(props: WatchPageProps) {
 
 	const nowNext = (
 		<NowNextPanel
+			channel={currentChannel}
 			channelName={channelName}
 			channelNumber={channelNumber}
 			isFavorite={favoriteIds.has(currentChannelId)}
@@ -499,6 +506,7 @@ export function WatchPage(props: WatchPageProps) {
 			pendingAction={
 				nowProgram ? recordingPending.get(nowProgram.id) : undefined
 			}
+			{...(loadChannelDiagnostics ? { loadChannelDiagnostics } : {})}
 		/>
 	);
 

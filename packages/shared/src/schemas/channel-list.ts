@@ -2,7 +2,7 @@ import "../zod-openapi-setup";
 
 import { z } from "zod";
 
-import { tunerKindSchema } from "./tuners";
+import { tunerHttpHeadersSchema, tunerKindSchema } from "./tuners";
 
 /** Availability of one tuner-specific source without changing group membership. */
 export const channelSourceStatusSchema = z.enum([
@@ -70,6 +70,49 @@ export const channelListSchema = z.object({
 });
 
 export type ChannelList = z.infer<typeof channelListSchema>;
+
+/** One persisted source and the provider coordinates resolved for playback. */
+export const channelDiagnosticsSourceSchema = z.object({
+	id: z.string().uuid(),
+	tunerId: z.string().uuid(),
+	tunerName: z.string(),
+	tunerKind: tunerKindSchema,
+	number: z.string(),
+	name: z.string(),
+	logoUrl: z.string().nullable(),
+	tvgId: z.string().nullable(),
+	enabled: z.boolean(),
+	status: channelSourceStatusSchema,
+	priority: z.number().int().nonnegative(),
+	preferred: z.boolean(),
+	storedProviderChannelId: z.string().nullable(),
+	resolvedProviderChannelId: z.string().nullable(),
+	streamUrl: z.string().nullable(),
+	httpHeaders: tunerHttpHeadersSchema.optional(),
+	error: z.string().nullable()
+});
+
+export type ChannelDiagnosticsSource = z.infer<
+	typeof channelDiagnosticsSourceSchema
+>;
+
+/** Administrator-only channel metadata used to diagnose source mismatches. */
+export const channelDiagnosticsSchema = z.object({
+	channel: z.object({
+		id: z.string().uuid(),
+		number: z.string(),
+		name: z.string(),
+		logoUrl: z.string().nullable(),
+		tvgId: z.string().nullable(),
+		enabled: z.boolean(),
+		sortOrder: z.number().int(),
+		mappedEpgChannelId: z.string().uuid().nullable()
+	}),
+	sources: z.array(channelDiagnosticsSourceSchema),
+	checkedAt: z.string().datetime()
+});
+
+export type ChannelDiagnostics = z.infer<typeof channelDiagnosticsSchema>;
 
 /** Merge selected logical channels into the primary channel's stable identity. */
 export const channelMergeSchema = z

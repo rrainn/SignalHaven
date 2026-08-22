@@ -1,6 +1,7 @@
 import {
 	channelEpgMappingPutSchema,
 	channelEpgMappingSchema,
+	channelDiagnosticsSchema,
 	channelIdParamSchema,
 	channelListSchema,
 	channelMergeSchema,
@@ -19,6 +20,7 @@ import {
 	type EpgMatcherService
 } from "../../epg/epg-matcher.service";
 import type { TunersService } from "../../tuners/tuners.service";
+import { resolvePersistedChannelSource } from "../../streaming/channel-resolver";
 import {
 	ChannelGroupingError,
 	type ChannelsRepository
@@ -106,6 +108,72 @@ export function createChannelsRouter(
 						active: Boolean(metrics),
 						checkedAt: new Date().toISOString(),
 						...(metrics ?? {})
+					})
+				);
+			} catch (error) {
+				next(translate(error));
+			}
+		}
+	);
+
+	router.get(
+		"/channels/:id/diagnostics",
+		requireAdmin,
+		validate({ params: channelIdParamSchema }),
+		async (req, res, next) => {
+			try {
+				const channelId = req.params["id"] as string;
+				const summaries =
+					await channelsRepository.listLogicalChannelSummaries();
+				const direct = await channelsRepository.getById(channelId);
+				const logicalId = direct?.logicalChannelId ?? channelId;
+				const summary = summaries.find((item) => item.channel.id === logicalId);
+				if (!summary) throw new ChannelNotFoundError(channelId);
+
+				// Resolve every persisted source independently so one broken fallback
+				// does not hide the healthy source coordinates needed for debugging.
+				const sources = await Promise.all(
+					summary.sources.map(async (source, index) => {
+						try {
+							const resolved = await resolvePersistedChannelSource(
+								source,
+								tunersService
+							);
+							return {
+								...toDiagnosticSource(source, index),
+								resolvedProviderChannelId: resolved.providerChannelId,
+								streamUrl: resolved.upstreamUrl,
+								...(resolved.httpHeaders
+									? { httpHeaders: resolved.httpHeaders }
+									: {}),
+								error: null
+							};
+						} catch (error) {
+							return {
+								...toDiagnosticSource(source, index),
+								resolvedProviderChannelId: null,
+								streamUrl: null,
+								error: error instanceof Error ? error.message : String(error)
+							};
+						}
+					})
+				);
+
+				res.setHeader("Cache-Control", "private, no-store");
+				res.json(
+					channelDiagnosticsSchema.parse({
+						channel: {
+							id: summary.channel.id,
+							number: summary.channel.number,
+							name: summary.channel.name,
+							logoUrl: summary.channel.logoUrl ?? null,
+							tvgId: summary.sources[0]?.tvgId ?? null,
+							enabled: summary.channel.enabled,
+							sortOrder: summary.channel.sortOrder,
+							mappedEpgChannelId: summary.mappedEpgChannelId
+						},
+						sources,
+						checkedAt: new Date().toISOString()
 					})
 				);
 			} catch (error) {
@@ -294,6 +362,30 @@ function toChannelListItem(
 			priority: source.sourcePriority,
 			preferred: index === 0
 		}))
+	};
+}
+
+/** Project persisted fields that remain useful even when URL resolution fails. */
+function toDiagnosticSource(
+	source: Awaited<
+		ReturnType<ChannelsRepository["listLogicalChannelSummaries"]>
+	>[number]["sources"][number],
+	index: number
+) {
+	return {
+		id: source.id,
+		tunerId: source.tunerId,
+		tunerName: source.tunerName,
+		tunerKind: source.tunerKind,
+		number: source.number,
+		name: source.name,
+		logoUrl: source.logoUrl ?? null,
+		tvgId: source.tvgId ?? null,
+		enabled: source.enabled,
+		status: source.sourceStatus,
+		priority: source.sourcePriority,
+		preferred: index === 0,
+		storedProviderChannelId: source.providerChannelId ?? null
 	};
 }
 

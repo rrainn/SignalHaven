@@ -31,6 +31,10 @@ vi.mock("../../app/_player/useHls", () => ({
 }));
 
 import { WatchPage } from "../../app/_watch/WatchPage";
+import {
+	ADVANCED_MODE_STORAGE_KEY,
+	AdvancedModeProvider
+} from "../../app/_advanced/AdvancedModeProvider";
 
 /**
  * Smoke / behavioural tests for the U7-watch live watch page.
@@ -417,5 +421,84 @@ describe("WatchPage", () => {
 		expect(mobile.getByRole("tab", { name: /now playing/i })).toBeVisible();
 		expect(mobile.getByRole("tab", { name: /up next/i })).toBeVisible();
 		expect(mobile.getByRole("tab", { name: /channels/i })).toBeVisible();
+	});
+
+	it("shows detailed source information from the advanced channel menu", async () => {
+		const user = userEvent.setup();
+		window.localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
+		const loadChannelDiagnostics = vi.fn().mockResolvedValue({
+			channel: {
+				id: CHANNEL_A,
+				number: "5",
+				name: "Alpha",
+				logoUrl: null,
+				tvgId: "alpha.example",
+				enabled: true,
+				sortOrder: 5,
+				mappedEpgChannelId: "77777777-7777-4777-8777-777777777777"
+			},
+			sources: [
+				{
+					id: "22222222-2222-4222-8222-222222222222",
+					tunerId: "11111111-1111-4111-8111-111111111111",
+					tunerName: "Living Room IPTV",
+					tunerKind: "iptv",
+					number: "5",
+					name: "Alpha source",
+					tvgId: "alpha.example",
+					enabled: true,
+					status: "active",
+					priority: 0,
+					preferred: true,
+					storedProviderChannelId: "alpha-stream",
+					resolvedProviderChannelId: "alpha-stream",
+					streamUrl: "https://streams.example.test/live/alpha.m3u8",
+					httpHeaders: { referer: "https://guide.example.test" },
+					error: null
+				}
+			],
+			checkedAt: "2026-01-01T12:00:00.000Z"
+		});
+
+		render(
+			<AdvancedModeProvider>
+				<WatchPage
+					initialChannelId={CHANNEL_A}
+					initialChannels={channels}
+					initialGrid={grid}
+					initialPlayerSettings={playerSettings}
+					nowOverride={NOW}
+					onChannelChange={() => {}}
+					loadChannelDiagnostics={loadChannelDiagnostics}
+				/>
+			</AdvancedModeProvider>
+		);
+
+		const desktop = within(screen.getByTestId("watch-desktop"));
+		const menuButton = await desktop.findByRole("button", {
+			name: "More channel actions"
+		});
+		await user.click(menuButton);
+		await user.click(desktop.getByRole("menuitem", { name: "More Info" }));
+
+		expect(
+			await screen.findByRole("dialog", { name: "Channel information" })
+		).toBeVisible();
+		expect(
+			screen.getByText("https://streams.example.test/live/alpha.m3u8")
+		).toBeVisible();
+		expect(screen.getByText("Living Room IPTV")).toBeVisible();
+		expect(screen.getAllByText("alpha-stream")).toHaveLength(2);
+		expect(loadChannelDiagnostics).toHaveBeenCalledWith(CHANNEL_A);
+
+		await user.click(screen.getByRole("button", { name: "Close dialog" }));
+		expect(menuButton).toHaveFocus();
+	});
+
+	it("keeps channel diagnostics hidden when advanced mode is disabled", () => {
+		renderPage();
+		expect(
+			screen.queryByRole("button", { name: "More channel actions" })
+		).not.toBeInTheDocument();
 	});
 });

@@ -1,4 +1,7 @@
-import type { ChannelsRepository } from "../repositories/channels.repository";
+import type {
+	ChannelRecord,
+	ChannelsRepository
+} from "../repositories/channels.repository";
 import {
 	TunerNotFoundError,
 	type TunersService,
@@ -10,6 +13,37 @@ import {
 	type ResolvedStreamSource,
 	type StreamSourceResolver
 } from "./streaming.service";
+
+/**
+ * Resolve one persisted source using the same lineup reconciliation used by
+ * live playback. Diagnostics call this helper so the URL they show cannot
+ * drift from the URL the streaming pipeline would open.
+ */
+export async function resolvePersistedChannelSource(
+	row: ChannelRecord,
+	tuners: TunersService
+): Promise<ResolvedStreamSource> {
+	const provider = await tuners.getProviderById(row.tunerId);
+	let providerChannelId = row.providerChannelId ?? row.number;
+	try {
+		const lineup = await provider.getLineup();
+		const match = lineup.find(
+			(entry) =>
+				entry.channelId === row.providerChannelId || entry.number === row.number
+		);
+		if (match) providerChannelId = match.channelId;
+	} catch {
+		// A stable provider id can remain playable during a lineup outage.
+	}
+	const stream = await provider.getStreamUrl(providerChannelId);
+	return {
+		sourceChannelId: row.id,
+		providerId: row.tunerId,
+		providerChannelId,
+		upstreamUrl: stream.url,
+		...(stream.httpHeaders ? { httpHeaders: stream.httpHeaders } : {})
+	};
+}
 
 /**
  * Resolves a persisted `channels.id` UUID into the upstream coordinates the
@@ -75,29 +109,7 @@ export class DefaultChannelStreamResolver implements StreamSourceResolver {
 			);
 		}
 		const settled = await Promise.allSettled(
-			sourceRows.map(async (row): Promise<ResolvedStreamSource> => {
-				const provider = await this.tuners.getProviderById(row.tunerId);
-				let providerChannelId = row.providerChannelId ?? row.number;
-				try {
-					const lineup = await provider.getLineup();
-					const match = lineup.find(
-						(entry) =>
-							entry.channelId === row.providerChannelId ||
-							entry.number === row.number
-					);
-					if (match) providerChannelId = match.channelId;
-				} catch {
-					// A stable provider id can remain playable during a lineup outage.
-				}
-				const stream = await provider.getStreamUrl(providerChannelId);
-				return {
-					sourceChannelId: row.id,
-					providerId: row.tunerId,
-					providerChannelId,
-					upstreamUrl: stream.url,
-					...(stream.httpHeaders ? { httpHeaders: stream.httpHeaders } : {})
-				};
-			})
+			sourceRows.map((row) => resolvePersistedChannelSource(row, this.tuners))
 		);
 		const candidates = settled.flatMap((result) =>
 			result.status === "fulfilled" ? [result.value] : []
