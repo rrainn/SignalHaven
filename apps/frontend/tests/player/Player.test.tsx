@@ -339,6 +339,41 @@ describe("Player", () => {
 		).toBeInTheDocument();
 	});
 
+	it("keeps Extra Stats visible above playback errors", async () => {
+		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
+		render(
+			<AdvancedModeProvider>
+				<Player
+					channelId={CHANNEL_ID}
+					isRecording
+					hlsCtorOverride={FakeHlsCtor}
+				/>
+			</AdvancedModeProvider>
+		);
+		const instance = fakeInstances[0]!;
+		const errorHandler = instance.on.mock.calls.find(
+			([event]) => event === FakeHls.Events.ERROR
+		)?.[1] as ((event: unknown, data: unknown) => void) | undefined;
+
+		await act(async () => undefined);
+		act(() => {
+			errorHandler?.(undefined, {
+				fatal: true,
+				details: "manifestLoadError"
+			});
+		});
+		fireEvent.contextMenu(screen.getByTestId("player"), {
+			clientX: 20,
+			clientY: 20
+		});
+		fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem"));
+
+		// Diagnostics belong above the blocking error surface but below the
+		// interactive recovery controls and context menu.
+		expect(screen.getByTestId("player-extra-stats")).toHaveClass("z-[35]");
+		expect(screen.getByTestId("player-error")).toHaveClass("z-30");
+	});
+
 	it("explains playback health with distinct and contextual extra stats", async () => {
 		localStorage.setItem(ADVANCED_MODE_STORAGE_KEY, "true");
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {

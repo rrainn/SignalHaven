@@ -1901,7 +1901,8 @@ export const Player = forwardRef<PlayerHandle, PlayerProps>(
 				{extraStats && playbackStats ? (
 					<dl
 						data-testid="player-extra-stats"
-						className="pointer-events-none absolute left-2 top-2 z-20 grid max-w-[calc(100%-1rem)] grid-cols-[auto_1fr] gap-x-2 rounded bg-black/80 p-2 font-mono text-[10px] leading-4 sm:left-3 sm:top-3 sm:max-w-[calc(100%-1.5rem)] sm:gap-x-3 sm:p-3 sm:text-[11px] sm:leading-5"
+						// Keep diagnostics visible above errors without covering interactive controls.
+						className="pointer-events-none absolute left-2 top-2 z-[35] grid max-w-[calc(100%-1rem)] grid-cols-[auto_1fr] gap-x-2 rounded bg-black/80 p-2 font-mono text-[10px] leading-4 sm:left-3 sm:top-3 sm:max-w-[calc(100%-1.5rem)] sm:gap-x-3 sm:p-3 sm:text-[11px] sm:leading-5"
 					>
 						<dt>Stream bitrate</dt>
 						<dd>
