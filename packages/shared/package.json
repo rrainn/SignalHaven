@@ -10,7 +10,7 @@
 		"lint": "eslint --cache --cache-location ../../node_modules/.cache/eslint/shared --ext .ts src"
 	},
 	"dependencies": {
-		"@asteasolutions/zod-to-openapi": "^8.5.0",
+		"@asteasolutions/zod-to-openapi": "^9.1.0",
 		"zod": "^4.1.12"
 	}
 }

@@ -14,7 +14,7 @@
 		"db:generate": "drizzle-kit generate"
 	},
 	"dependencies": {
-		"@asteasolutions/zod-to-openapi": "^8.5.0",
+		"@asteasolutions/zod-to-openapi": "^9.1.0",
 		"@signalhaven/shared": "file:../../packages/shared",
 		"archiver": "^7.0.1",
 		"compression": "^1.8.1",
