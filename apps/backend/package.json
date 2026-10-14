@@ -39,7 +39,7 @@
 		"@types/compression": "^1.8.1",
 		"@types/cors": "^2.8.19",
 		"@types/express": "^5.0.6",
-		"@types/node": "^26.1.1",
+		"@types/node": "^26.4.0",
 		"@types/pg": "^8.20.0",
 		"@types/pg-copy-streams": "^1.2.5",
 		"@types/sax": "^1.2.7",
