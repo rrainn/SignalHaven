@@ -30,8 +30,12 @@ export class BonjourPublisher {
 		private readonly config: BonjourConfig,
 		private readonly serverId: string
 	) {
-		// Ciao uses shared UDP sockets and watches host interfaces for address changes.
-		this.responder = getResponder();
+		// Restrict receiving sockets too, so Docker bridges do not repeat LAN traffic.
+		this.responder = getResponder(
+			config.restrictedAddresses
+				? { interface: config.restrictedAddresses }
+				: undefined
+		);
 	}
 
 	/** Creates and announces one DNS-SD service registration. */
