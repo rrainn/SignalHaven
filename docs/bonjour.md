@@ -93,6 +93,13 @@ could advertise a reverse proxy that clients cannot actually reach.
 The generated UUID is stored in the `signalhaven-bonjour` volume. Keep that
 volume across updates so saved selections retain the same identity.
 
+`SIGNALHAVEN_BONJOUR_INTERFACES` restricts both the responder's receiving sockets
+and the advertised service addresses. Set it to the physical LAN interface or
+its IP address on hosts with Docker bridges to avoid processing copies of LAN
+multicast traffic on every bridge. Ciao also retains a loopback socket for local
+discovery; Docker bridge sockets are excluded unless explicitly selected.
+Leaving the setting unset preserves discovery on all eligible interfaces.
+
 ## Requirements and support
 
 The container integration supports Docker Engine on Linux and requires host
